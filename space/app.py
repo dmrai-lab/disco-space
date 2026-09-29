@@ -193,7 +193,8 @@ def build():
         def run_with_progress(*args, progress=gr.Progress()):
             return run_pipeline(*args, progress=progress)
         go.click(run_with_progress, inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
-                 outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1)
+                 outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1,
+                 api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay):
             ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay], outputs=dwi_view, show_progress="hidden")
         gt_tab.select(ground_truth_views, outputs=[strands_view, gt_matrix])

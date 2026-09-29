@@ -32,6 +32,35 @@ def gpu_runner(fn):
     return run
 
 
+@spaces.GPU(duration=60)
+def probe():
+    """What the GPU worker sees: the device, the memory, the mounted layout and how fast it reads (an API endpoint
+    for the deployment check, `/probe`)."""
+    import glob, json, time
+    import numpy as np
+    out = dict(torch=torch.__version__, cuda=torch.cuda.is_available(), device=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+               gpu_memory_gb=round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1) if torch.cuda.is_available() else None,
+               data=sorted(os.path.basename(p) for p in glob.glob("/data/moments/*"))[:12], backend=os.environ.get("DISCO_BACKEND"),
+               resident=os.environ.get("DISCO_RESIDENT"))
+    try:
+        with open("/proc/meminfo") as f:
+            mem = dict(l.split(":") for l in f.read().splitlines() if ":" in l)
+        out["host_ram_total_gb"] = round(int(mem["MemTotal"].split()[0]) / 1e6, 1); out["host_ram_available_gb"] = round(int(mem["MemAvailable"].split()[0]) / 1e6, 1)
+    except Exception as e:
+        out["meminfo"] = repr(e)[:100]
+    files = sorted(glob.glob("/data/moments/m_*.npy"))
+    if files:
+        t0 = time.perf_counter(); m = np.load(files[0], mmap_mode="r"); chunk = np.array(m[:100000]); dt = time.perf_counter() - t0
+        out["read_mb"] = round(chunk.nbytes / 1e6, 1); out["read_mb_per_s"] = round(chunk.nbytes / 1e6 / dt, 1)
+        t0 = time.perf_counter(); dev = torch.as_tensor(chunk, device="cuda"); torch.cuda.synchronize(); out["upload_mb_per_s"] = round(chunk.nbytes / 1e6 / (time.perf_counter() - t0), 1)
+    return json.dumps(out)
+
+
 if __name__ == "__main__":
+    import gradio as gr
     A._load()                                            # the layout from the mounted bucket, on the CPU side
-    A.build(runner=gpu_runner).queue(max_size=16).launch()
+    demo = A.build(runner=gpu_runner)
+    with demo:
+        probe_out = gr.Textbox(visible=False)
+        gr.Button("probe", visible=False).click(probe, outputs=probe_out, api_name="probe")
+    demo.queue(max_size=16).launch()

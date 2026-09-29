@@ -29,6 +29,7 @@ RUN ldconfig
 
 COPY --chown=user space /app/space
 COPY --chown=user data /app/data
+COPY --chown=user tests /app/tests
 COPY --chown=user entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh && mkdir -p /data && chown user /data
 

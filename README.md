@@ -39,8 +39,10 @@ Dockerfile.base / .space    the same split in two: the stack as ghcr.io/dmrai-la
 requirements.txt            the pins (dmipy packages by commit)
 space/config.toml           dataset + layout revision, the timing classes, DiSCo's shells, presets, tracking, the gate
 space/pipeline.py           replay -> noise -> CSD -> track -> score, plain functions with timings
-space/app.py                Gradio Blocks over pipeline.py
-data/                       DiSCo mask, regions, gradient table, ground-truth matrices (CC BY 4.0, see SOURCE.md)
+space/app.py                Gradio Blocks over pipeline.py: three tabs (acquisition; ground truth: the strands in 3-D; results:
+                            DWI slice viewer with FOD peaks, 3-D tractogram, connectome, timings, downloads); the progress bar names the stage
+space/viewers.py            the figures (matplotlib slices and matrices, Plotly 3-D views); nothing derived here
+data/                       DiSCo mask, regions, gradient table, ground-truth matrices and strands (CC BY 4.0, see SOURCE.md)
 tests/test_pipeline.py      CPU: protocol construction, DiSCo's table, the score on the ground truth itself
 tests/test_acceptance.py    GPU + data: the gate (Pearson, missed pairs, the reference volume, timings)
 .github/workflows/gate.yml  the gate as a Hugging Face Job on an L4 (GitHub runners have no GPU)

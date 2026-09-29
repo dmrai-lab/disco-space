@@ -1,0 +1,78 @@
+# The DiSCo Space: what is pinned. Every number the app shows comes from pipeline.py on this configuration.
+
+[data]
+repo = "SubstrateCommons/disco-replay"          # the public replay dataset
+moments = "disco/moments"                        # the shape-moment layout written by dmipy-sim's write_shape_moments
+revision = ""                                    # the dataset revision the layout is read at ("" = the head; set on deploy)
+source_manifest_sha256 = ""                      # the columnar manifest the layout was contracted from (from its manifest.json)
+
+# The timing classes ("shapes") the layout holds: PGSE with square pulses (slew_rate = inf) at TE = 53.5 ms.
+# delta / Delta / TE in seconds; label is what the app shows.
+[shapes."d10.2-D16.7"]
+label = "DiSCo δ 10.2 / Δ 16.7 ms (shells b = 0, 1000, 1925)"
+delta = 0.0102
+Delta = 0.0167
+TE = 0.0535
+[shapes."d7.6-D45.9"]
+label = "DiSCo δ 7.6 / Δ 45.9 ms (shell b = 3091)"
+delta = 0.0076
+Delta = 0.0459
+TE = 0.0535
+[shapes."d17.7-D35.8"]
+label = "DiSCo δ 17.7 / Δ 35.8 ms (shell b = 13183)"
+delta = 0.0177
+Delta = 0.0358
+TE = 0.0535
+[shapes."d12-D24"]
+label = "clinical δ 12 / Δ 24 ms"
+delta = 0.012
+Delta = 0.024
+TE = 0.0535
+[shapes."d17-D30"]
+label = "research δ 17 / Δ 30 ms"
+delta = 0.017
+Delta = 0.030
+TE = 0.0535
+[shapes."d8-D20"]
+label = "Connectome 2.0 δ 8 / Δ 20 ms"
+delta = 0.008
+Delta = 0.020
+TE = 0.0535
+
+# DiSCo's own protocol: which timing class each shell of the dataset's gradient table plays (b in s/mm^2, the
+# table's rows are assigned to the nearest b here).
+[disco]
+shells = [
+  { b = 0, shape = "d10.2-D16.7" },
+  { b = 1000, shape = "d10.2-D16.7" },
+  { b = 1925, shape = "d10.2-D16.7" },
+  { b = 3091, shape = "d7.6-D45.9" },
+  { b = 13183, shape = "d17.7-D35.8" },
+]
+
+# Presets the app offers besides "DiSCo 364" (which comes from the dataset's table). b in s/mm^2.
+[presets."clinical b1000 x 30"]
+n_b0 = 1
+shells = [{ shape = "d12-D24", b = 1000, n_dirs = 30 }]
+[presets."research 3-shell x 90"]
+n_b0 = 3
+shells = [
+  { shape = "d17-D30", b = 1000, n_dirs = 90 },
+  { shape = "d17-D30", b = 2000, n_dirs = 90 },
+  { shape = "d17-D30", b = 3000, n_dirs = 90 },
+]
+[presets."Connectome 2.0 b6000 x 60"]
+n_b0 = 2
+shells = [{ shape = "d8-D20", b = 6000, n_dirs = 60 }]
+
+[tracking]
+density = 4          # seeds per region voxel = density^3 (4 -> 659,840 seeds, the DiSCo score's setting)
+step_mm = 0.5
+max_angle = 30.0
+max_steps = 500
+
+# The acceptance gate (tests/test_acceptance.py) on the DiSCo 364 protocol, noiseless.
+[gate]
+pearson_count_min = 0.90
+missed_pairs_max = 0
+reference_max_abs_diff = 1e-3     # the replay of DiSCo 364 against disco/reference/disco_replay_bare.nii.gz

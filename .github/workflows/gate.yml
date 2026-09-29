@@ -1,0 +1,40 @@
+# The gate: the CPU tests on the runner; the acceptance test as a Hugging Face Job on an L4 (GitHub runners have
+# no GPU), through tools/gate_job.py. Needs the repository secret HF_TOKEN (an account with Jobs enabled; the
+# dataset is public, so no write access).
+name: gate
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install the stack without CUDA
+        run: |
+          sed -e 's/^jax\[cuda12\]==/jax==/' requirements.txt > requirements-cpu.txt
+          grep -v '^gradio' requirements-cpu.txt > r.txt
+          pip install pytest -r r.txt
+      - run: JAX_PLATFORMS=cpu pytest tests/test_pipeline.py -q
+
+  acceptance-l4:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "huggingface_hub>=1.0"
+      - name: the acceptance test on an L4 Job
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          test -n "$HF_TOKEN" || { echo "no HF_TOKEN secret: the GPU gate cannot run"; exit 1; }
+          python tools/gate_job.py --sha ${{ github.event.pull_request.head.sha || github.sha }} --repo-url https://github.com/${{ github.repository }}

@@ -1,0 +1,17 @@
+# The pinned stack of the DiSCo Space. The dmipy packages take no version bumps until after the replay paper, so
+# they are pinned by commit; jax at the version the numbers in README.md were measured with.
+jax[cuda12]==0.10.2
+jaxopt==0.8.5
+numpy>=1.26,<3
+scipy>=1.11
+nibabel==5.4.2
+safetensors>=0.4
+huggingface_hub>=0.30
+requests>=2.31
+matplotlib>=3.8
+pillow>=10
+gradio==6.28.0
+dipy>=1.9                       # dmipy-fit's tensor fit for the response function reads a dipy GradientTable
+dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@e7fa5b1
+dmipy-fit @ git+https://github.com/dmrai-lab/dmipy-fit@052db04e879feb373933e09c1bc5794626c96960
+dmipy-tract @ git+https://github.com/dmrai-lab/dmipy-tract@cda453cb1f20487453efafd36616c6ded96d9c8b

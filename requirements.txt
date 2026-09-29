@@ -12,6 +12,6 @@ matplotlib>=3.8
 pillow>=10
 gradio==6.28.0
 dipy>=1.9                       # dmipy-fit's tensor fit for the response function reads a dipy GradientTable
-dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@e7fa5b1
+dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@06d805b0f7e0a4afa80fb099d9ec6f723900d633
 dmipy-fit @ git+https://github.com/dmrai-lab/dmipy-fit@052db04e879feb373933e09c1bc5794626c96960
 dmipy-tract @ git+https://github.com/dmrai-lab/dmipy-tract@cda453cb1f20487453efafd36616c6ded96d9c8b

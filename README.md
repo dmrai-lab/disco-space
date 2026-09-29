@@ -81,3 +81,10 @@ ground truth: 95 false, 0 missed); the two machines agree to the last digit (det
 DiSCo 364 protocol from the layout is within 2.0e-7 of the published reference volume on every voxel (K = 64 bands,
 band error 1.4e-4 against the pack's floor 4.8e-3). The L4 run is the gate job in the Space's own image
 (`tools/gate_job.py`, 2026-09-29).
+
+**Live Space** (`rfick/disco`, A10G small after two "not enough hardware capacity" failures on the L4 on 2026-09-29,
+through its API with `tools/live_check.py`): first request after a cold start 150 s wall (layout on the device 104 s
+once per process, then 49.6 s for DiSCo 364 at SNR 30 including every compile: replay 9.4, noise 1.1, CSD 6.5,
+tracking 32.4, score 0.3; Pearson 0.924 / 0.926). A custom two-shell protocol (77 measurements) right after: 34 s
+wall, 11.8 s in the pipeline (replay 1.4, CSD 4.3, tracking 5.2), Pearson 0.904. The `.tck` (290 MB), the DWI with
+its table and the FOD field download from the page.

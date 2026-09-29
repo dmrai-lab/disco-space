@@ -118,15 +118,24 @@ def timings_table(res, state):
     return rows
 
 
+CUSTOM = "custom shells"
+
+
 def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs):
+    """The acquisition the page asks for: DiSCo's own table, a config preset, or the shell rows."""
     if preset == "DiSCo 364":
         return P.disco_protocol(cfg)[0]
+    if preset in cfg["presets"]:
+        p = cfg["presets"][preset]
+        return P.Protocol(tuple(P.Shell(s["shape"], float(s["b"]), int(s["n_dirs"])) for s in p["shells"]), n_b0=int(p["n_b0"]), name=preset)
+    if preset != CUSTOM:
+        raise ValueError(f"unknown acquisition {preset!r}")
     shells = []
     for k in range(MAX_SHELLS):
         on, shape, b, n = shell_inputs[4 * k: 4 * k + 4]
         if on:
             shells.append(P.Shell(str(shape), float(b), int(n)))
-    return P.Protocol(tuple(shells), n_b0=int(n_b0), name=preset)
+    return P.Protocol(tuple(shells), n_b0=int(n_b0), name=CUSTOM)
 
 
 def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, *shell_inputs):
@@ -149,7 +158,7 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, *s
 def build():
     import gradio as gr
     cfg = P.config()
-    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"])
+    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM]
     shape_names = list(shapes)
     labels = {n: shapes[n]["label"] for n in shape_names}
     with gr.Blocks(title="DiSCo replay to tractogram") as demo:

@@ -69,13 +69,14 @@ The gate on the DiSCo 364 protocol, noiseless, 659,840 seeds (`tests/test_accept
 
 | stage | L40S first call (s) | L40S steady (s) | L4 first call (s) | L4 steady (s) |
 |---|---|---|---|---|
-| layout on the device (once per process, from a local copy) | 8.1 | | | |
-| replay, 364 measurements on 3 timing classes | 2.5 | 2.4 | | |
-| CSD (response + `csd_tournier07_jax`, order 8) | 4.6 | 2.9 | | |
-| tracking (probabilistic, density 4) | 18.7 | 2.5 | | |
-| whole pipeline | 26.0 | 7.9 | | |
+| layout on the device (once per process; L40S from a local copy, L4 from the Hub, 13 GB) | 8.1 | | 84.0 | |
+| replay, 364 measurements on 3 timing classes | 2.5 | 2.4 | 4.6 | 5.0 |
+| CSD (response + `csd_tournier07_jax`, order 8) | 4.6 | 2.9 | 5.4 | 3.6 |
+| tracking (probabilistic, density 4) | 18.7 | 2.5 | 24.7 | 7.1 |
+| whole pipeline | 26.0 | 7.9 | 34.9 | 15.9 |
 
-Score: Pearson 0.927 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected (25 in the ground
-truth: 95 false, 0 missed). The replay of the DiSCo 364 protocol from the layout is within 2.0e-7 of the published
-reference volume on every voxel (K = 64 bands, band error 1.4e-4 against the pack's floor 4.8e-3). The L4 columns
-are filled by the gate job (`tools/gate_job.py`).
+Score on both: Pearson 0.927 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected (25 in the
+ground truth: 95 false, 0 missed); the two machines agree to the last digit (deterministic ops). The replay of the
+DiSCo 364 protocol from the layout is within 2.0e-7 of the published reference volume on every voxel (K = 64 bands,
+band error 1.4e-4 against the pack's floor 4.8e-3). The L4 run is the gate job in the Space's own image
+(`tools/gate_job.py`, 2026-09-29).

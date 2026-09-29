@@ -3,8 +3,8 @@
 [data]
 repo = "SubstrateCommons/disco-replay"          # the public replay dataset
 moments = "disco/moments"                        # the shape-moment layout written by dmipy-sim's write_shape_moments
-revision = ""                                    # the dataset revision the layout is read at ("" = the head; set on deploy)
-source_manifest_sha256 = ""                      # the columnar manifest the layout was contracted from (from its manifest.json)
+revision = "697981904fbc4fe324188533c54fe8bcb76ac32f"   # the dataset revision the layout is read at (set on deploy)
+source_manifest_sha256 = "499e411b7f7412ffa72a8885ee22a7bed9198e992a517b81c273ceeaeafd629e"   # the columnar manifest the layout was contracted from (its manifest.json names it)
 
 # The timing classes ("shapes") the layout holds: PGSE with square pulses (slew_rate = inf) at TE = 53.5 ms.
 # delta / Delta / TE in seconds; label is what the app shows.

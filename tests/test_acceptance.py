@@ -2,7 +2,7 @@
 bare reference volume, and the noiseless pipeline scores the connectome within the reference's band with no ground-
 truth pair missed. Prints the per-stage timings (first call and steady) and writes them to ``gate.json``.
 
-    JAX_PLATFORMS=cuda pytest tests/test_acceptance.py -s
+    JAX_PLATFORMS=cuda XLA_FLAGS=--xla_gpu_deterministic_ops=true pytest tests/test_acceptance.py -s
     DISCO_MOMENTS=/local/dir pytest ...        # a local copy of the layout instead of the Hub
 """
 import json
@@ -72,4 +72,4 @@ def test_the_noiseless_pipeline_scores_within_the_references_band(layout):
         json.dump(table, f, indent=1)
     assert s["pearson_count"] >= CFG["gate"]["pearson_count_min"], s
     assert s["missed_pairs"] <= CFG["gate"]["missed_pairs_max"], s
-    assert first.score["pearson_count"] == pytest.approx(s["pearson_count"])   # the same key: the same tractogram
+    assert first.score["pearson_count"] == s["pearson_count"]   # the same key: the same tractogram (deterministic XLA ops)

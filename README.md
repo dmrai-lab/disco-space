@@ -50,8 +50,13 @@ tests/test_acceptance.py    GPU + data: the gate (Pearson, missed pairs, the ref
 pip install -r requirements.txt
 python -m space.app                              # http://localhost:7860; the layout downloads into the Hub cache
 pytest tests/test_pipeline.py                    # CPU
-JAX_PLATFORMS=cuda pytest tests/test_acceptance.py -s   # the gate, on a GPU with the layout reachable
+JAX_PLATFORMS=cuda XLA_FLAGS=--xla_gpu_deterministic_ops=true pytest tests/test_acceptance.py -s   # the gate, on a GPU
 ```
+
+**Determinism.** The image runs with `XLA_FLAGS=--xla_gpu_deterministic_ops=true` (the Dockerfile sets it): without it
+the GPU scatter-add of the replay differs between runs by up to 5e-7 on the normalised signal, which the CSD
+amplifies to 1e-2 on the SH coefficients and the tracker into a few different streamlines (Pearson moved by 1e-5).
+With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2.31 s on the L40S).
 
 ## Measured
 

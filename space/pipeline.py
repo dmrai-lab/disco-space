@@ -142,6 +142,10 @@ class Layout:
         uri = local or f"hf://{d['repo']}/{d['moments']}"
         self.moments = ShapeMoments.open(uri, revision=d.get("revision") or None) if uri.startswith("hf://") else ShapeMoments(uri)
         self.shapes = cfg["shapes"]
+        want = d.get("source_manifest_sha256")
+        got = self.moments.manifest["source"]["manifest_sha256"]
+        if want and got != want:
+            raise ValueError(f"the layout at {uri} was contracted from columnar manifest {got[:12]}, the config pins {want[:12]}")
         missing = [s for s in self.shapes if s not in self.moments.shapes]
         if missing:
             raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {self.moments.shapes}")

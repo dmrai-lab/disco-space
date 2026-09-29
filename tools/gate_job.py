@@ -22,7 +22,7 @@ open("/etc/ld.so.conf.d/nvidia-wheels.conf", "w").write("\n".join(libs) + "\n")
 EOF
 ldconfig
 python -c "import jax; print('devices', jax.devices())"
-JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false pytest tests/test_acceptance.py -s -q -p no:cacheprovider
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS=--xla_gpu_deterministic_ops=true pytest tests/test_acceptance.py -s -q -p no:cacheprovider
 echo "=== gate.json"; cat gate.json; echo; echo "=== GATE PASSED"
 '''
 

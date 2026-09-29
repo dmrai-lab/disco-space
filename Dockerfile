@@ -9,6 +9,7 @@ RUN useradd -m -u 1000 user
 ENV PATH=/home/user/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    XLA_FLAGS=--xla_gpu_deterministic_ops=true \
     JAX_COMPILATION_CACHE_DIR=/data/jax-cache \
     JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0.5 \
     HF_HOME=/data/hf \

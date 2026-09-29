@@ -7,7 +7,7 @@ sdk: docker
 app_port: 7860
 pinned: false
 license: mit
-short_description: One Monte-Carlo walk of the DiSCo phantom, any acquisition, a connectome, while you wait
+short_description: DiSCo replay, any acquisition, a connectome, while you wait
 ---
 
 # The DiSCo Space

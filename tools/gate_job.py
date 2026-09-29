@@ -17,7 +17,7 @@ cd /app
 pip install -q --retries 10 pytest
 python -c "import jax; print('devices', jax.devices())"
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS=--xla_gpu_deterministic_ops=true HF_HOME=/tmp/hf JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache \
-  GATE_OUT=/tmp/gate.json pytest tests/test_acceptance.py -s -q -p no:cacheprovider
+  GATE_OUT=/tmp/gate.json PYTHONPATH=/app pytest tests/test_acceptance.py -s -q -p no:cacheprovider
 echo "=== gate.json"; cat /tmp/gate.json; echo; echo "=== GATE PASSED"
 '''
 

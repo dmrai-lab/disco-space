@@ -22,7 +22,7 @@ p = snapshot_download(os.environ["SPACE"], repo_type="space", revision=os.enviro
 print("files at", p)
 EOF
 cd /w
-pip install -q pytest -r requirements.txt
+pip install -q --retries 10 --timeout 60 pytest -r requirements.txt
 python - <<'EOF'
 import glob, os, site
 libs = sorted(set(os.path.dirname(p) for sp in site.getsitepackages() for p in glob.glob(os.path.join(sp, "nvidia", "*", "lib"))))

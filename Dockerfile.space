@@ -1,0 +1,13 @@
+# The Space's image on the prebuilt base (tools/deploy.py --base-tag renders BASE_TAG and uploads this as the
+# Space's Dockerfile): the application files on top of ghcr.io/dmrai-lab/disco-space, nothing installed here.
+FROM ghcr.io/dmrai-lab/disco-space:BASE_TAG
+
+COPY --chown=user space /app/space
+COPY --chown=user data /app/data
+COPY --chown=user tests /app/tests
+COPY --chown=user entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+USER user
+EXPOSE 7860
+CMD ["/app/entrypoint.sh"]

@@ -1,0 +1,28 @@
+# The Space's base image: python 3.11 with the pinned stack (requirements.txt) and the CUDA wheels' libraries on the
+# loader path, no application files. Built by .github/workflows/image.yml into ghcr.io/dmrai-lab/disco-space:<sha>;
+# Dockerfile.space starts FROM it, so a Space build copies files instead of installing 3 GB of wheels.
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 user
+ENV PATH=/home/user/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    XLA_FLAGS=--xla_gpu_deterministic_ops=true \
+    JAX_COMPILATION_CACHE_DIR=/data/jax-cache \
+    JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0.5 \
+    HF_HOME=/data/hf \
+    MPLCONFIGDIR=/tmp/mpl
+
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir --retries 10 --timeout 60 -r /app/requirements.txt
+
+# the CUDA wheels' libraries, or the plugin falls back to the CPU silently
+RUN python - <<'EOF'
+import glob, os, site
+libs = sorted(set(os.path.dirname(p) for sp in site.getsitepackages() for p in glob.glob(os.path.join(sp, "nvidia", "*", "lib"))))
+open("/etc/ld.so.conf.d/nvidia-wheels.conf", "w").write("\n".join(libs) + "\n")
+EOF
+RUN ldconfig && mkdir -p /data && chown user /data

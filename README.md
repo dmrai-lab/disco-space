@@ -33,7 +33,8 @@ against the published reference volume by the gate.
 ## Layout
 
 ```
-Dockerfile, entrypoint.sh   python:3.11-slim, the pinned stack, ldconfig for the CUDA wheels, caches on /data
+Dockerfile, entrypoint.sh   python:3.11-slim, the pinned stack, ldconfig for the CUDA wheels, caches on /data (self-contained)
+Dockerfile.base / .space    the same split in two: the stack as ghcr.io/dmrai-lab/disco-space (image.yml), the app on top
 requirements.txt            the pins (dmipy packages by commit)
 space/config.toml           dataset + layout revision, the timing classes, DiSCo's shells, presets, tracking, the gate
 space/pipeline.py           replay -> noise -> CSD -> track -> score, plain functions with timings
@@ -42,9 +43,13 @@ data/                       DiSCo mask, regions, gradient table, ground-truth ma
 tests/test_pipeline.py      CPU: protocol construction, DiSCo's table, the score on the ground truth itself
 tests/test_acceptance.py    GPU + data: the gate (Pearson, missed pairs, the reference volume, timings)
 .github/workflows/gate.yml  the gate as a Hugging Face Job on an L4 (GitHub runners have no GPU)
+.github/workflows/image.yml the base image to GHCR on every change to the pins (the package must be public for HF to pull it)
 ```
 
 ## Run it
+
+Deploy on the prebuilt base: `python tools/deploy.py --base-tag <commit sha or latest>` (a Space build then copies files
+instead of installing the stack; the gate job runs in the Space's own image either way).
 
 ```bash
 pip install -r requirements.txt

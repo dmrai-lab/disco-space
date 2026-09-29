@@ -1,0 +1,24 @@
+# Deploy: a tag `v*` pushes that commit's files to the Space (tools/deploy.py); Hugging Face rebuilds the image.
+# Needs the repository secrets HF_TOKEN (write access to the Space) and, optionally, the variable DISCO_SPACE
+# (default rfick/disco). The gate ran on the commit before it was tagged.
+name: deploy
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  space:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "huggingface_hub>=1.0"
+      - env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DISCO_SPACE: ${{ vars.DISCO_SPACE || 'rfick/disco' }}
+        run: |
+          test -n "$HF_TOKEN" || { echo "no HF_TOKEN secret"; exit 1; }
+          python tools/deploy.py --sha ${{ github.sha }}

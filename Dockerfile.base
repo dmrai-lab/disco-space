@@ -17,12 +17,12 @@ ENV PATH=/home/user/.local/bin:$PATH \
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir --retries 10 --timeout 60 -r /app/requirements.txt
-
+# One layer: the install and the trim together, or the deleted bytes stay in the install layer and are pulled anyway.
 # What the image does not use, measured (2026-09-29, 6.6 GB before): the multi-GPU libraries nccl + nvshmem (870 MB) and
 # cudnn's convolution engines (precompiled / adv / cnn, 830 MB); JAX initialises and the gate reproduces its numbers
 # without them. The packages' test suites (115 MB) go too.
-RUN pip uninstall -y -q nvidia-nccl-cu12 nvidia-nvshmem-cu12 \
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir --retries 10 --timeout 60 -r /app/requirements.txt \
+    && pip uninstall -y -q nvidia-nccl-cu12 nvidia-nvshmem-cu12 \
     && cd /usr/local/lib/python3.11/site-packages \
     && rm -f nvidia/cudnn/lib/libcudnn_engines_precompiled.so* nvidia/cudnn/lib/libcudnn_adv.so* nvidia/cudnn/lib/libcudnn_cnn.so* \
     && rm -rf numpy/*/tests numpy/tests scipy/*/tests scipy/tests pandas/tests matplotlib/tests dipy/*/tests

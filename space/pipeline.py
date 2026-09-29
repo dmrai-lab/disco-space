@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import os
 import time
-import tomllib
+try:
+    import tomllib                                   # 3.11+
+except ModuleNotFoundError:                          # the ZeroGPU image is Python 3.10
+    import tomli as tomllib
 from dataclasses import dataclass, field
 from typing import Optional
 

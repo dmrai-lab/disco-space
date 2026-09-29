@@ -2,6 +2,7 @@
 # and never touches the GPU. The dmipy packages by commit (the torch backends: dmipy-sim#511, dmipy-fit#38,
 # dmipy-tract#5).
 torch>=2.4
+tomli; python_version < "3.11"          # the ZeroGPU image is Python 3.10 (its README python_version is ignored)
 spaces>=0.30
 gradio==6.28.0
 jax>=0.4.30

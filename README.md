@@ -60,4 +60,17 @@ With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2
 
 ## Measured
 
-Filled by the gate's run on the target hardware (see the issue tracker for the current table).
+The gate on the DiSCo 364 protocol, noiseless, 659,840 seeds (`tests/test_acceptance.py`, deterministic XLA ops):
+
+| stage | L40S first call (s) | L40S steady (s) | L4 first call (s) | L4 steady (s) |
+|---|---|---|---|---|
+| layout on the device (once per process, from a local copy) | 8.1 | | | |
+| replay, 364 measurements on 3 timing classes | 2.5 | 2.4 | | |
+| CSD (response + `csd_tournier07_jax`, order 8) | 4.6 | 2.9 | | |
+| tracking (probabilistic, density 4) | 18.7 | 2.5 | | |
+| whole pipeline | 26.0 | 7.9 | | |
+
+Score: Pearson 0.927 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected (25 in the ground
+truth: 95 false, 0 missed). The replay of the DiSCo 364 protocol from the layout is within 2.0e-7 of the published
+reference volume on every voxel (K = 64 bands, band error 1.4e-4 against the pack's floor 4.8e-3). The L4 columns
+are filled by the gate job (`tools/gate_job.py`).

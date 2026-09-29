@@ -18,9 +18,13 @@ DURATION = int(os.environ.get("DISCO_GPU_SECONDS", "240"))
 
 
 def gpu_runner(fn):
-    """``fn`` under the GPU for ``DURATION`` seconds, deterministic, full precision."""
+    """``fn`` under the GPU for ``DURATION`` seconds, deterministic, full precision. The progress bar is declared
+    on the decorated function itself (``progress=gr.Progress()``), which is how ZeroGPU forwards it into the GPU
+    worker; a progress object passed in from outside cannot cross the process boundary."""
+    import gradio as gr
+
     @spaces.GPU(duration=DURATION)
-    def run(*args, progress=None):
+    def run(*args, progress=gr.Progress()):
         torch.use_deterministic_algorithms(True)
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False

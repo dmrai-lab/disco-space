@@ -192,11 +192,10 @@ def build(runner=None):
                     with gr.Column():
                         tck = gr.File(label="tractogram (.tck, MRtrix)")
                         volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
-        run = run_pipeline if runner is None else runner(run_pipeline)
-
         def run_with_progress(*args, progress=gr.Progress()):
-            return run(*args, progress=progress)
-        go.click(run_with_progress, inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
+            return run_pipeline(*args, progress=progress)
+        # a runner (the ZeroGPU entry) owns the call and its progress object: Gradio hands it the inputs only
+        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
                  outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay):

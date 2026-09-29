@@ -52,7 +52,10 @@ tests/test_acceptance.py    GPU + data: the gate (Pearson, missed pairs, the ref
 ## Run it
 
 Deploy on the prebuilt base: `python tools/deploy.py --base-tag <commit sha or latest>` (a Space build then copies files
-instead of installing the stack; the gate job runs in the Space's own image either way).
+instead of installing the stack; the gate job runs in the Space's own image either way). Measured 2026-09-29: the Space
+build on `ghcr.io/dmrai-lab/disco-space:latest` takes 91 s (82 s pulling the base layers) against 5-8 min installing the
+stack from PyPI; the app then needs another ~150 s to download the 13 GB layout and compile before it serves, which
+is the persistent-storage item, not the image's.
 
 ```bash
 pip install -r requirements.txt

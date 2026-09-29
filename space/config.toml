@@ -65,6 +65,13 @@ shells = [
 n_b0 = 2
 shells = [{ shape = "d8-D20", b = 6000, n_dirs = 60 }]
 
+# The compute backend: jax (the reference; the Docker Space) or torch (Hugging Face's shared GPU pool, disco-space#2);
+# DISCO_BACKEND in the environment overrides. resident = false rebuilds the layout's device tensors on every call
+# (a pool that drops the device between calls).
+[compute]
+backend = "jax"
+resident = true
+
 [tracking]
 density = 4          # seeds per region voxel = density^3 (4 -> 659,840 seeds, the DiSCo score's setting)
 step_mm = 0.5

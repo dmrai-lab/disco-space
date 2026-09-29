@@ -130,7 +130,9 @@ def ground_truth_views():
             V.ground_truth_matrix(layout.gt_count, layout.gt_area))
 
 
-def build():
+def build(runner=None):
+    """The Blocks. ``runner`` wraps :func:`run_pipeline` for the run button (the ZeroGPU entry passes
+    ``spaces.GPU(...)``); the wrapper receives the same positional inputs and Gradio's progress."""
     import gradio as gr
     cfg = P.config()
     shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM, UPLOADED]
@@ -190,8 +192,10 @@ def build():
                     with gr.Column():
                         tck = gr.File(label="tractogram (.tck, MRtrix)")
                         volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
+        run = run_pipeline if runner is None else runner(run_pipeline)
+
         def run_with_progress(*args, progress=gr.Progress()):
-            return run_pipeline(*args, progress=progress)
+            return run(*args, progress=progress)
         go.click(run_with_progress, inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
                  outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives

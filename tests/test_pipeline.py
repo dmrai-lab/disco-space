@@ -119,3 +119,13 @@ def test_the_volumes_round_trip(tmp_path):
     np.testing.assert_allclose(back, np.nan_to_num(dwi).astype(np.float32))
     np.testing.assert_allclose(np.loadtxt(paths["bvals"]), m.bvals); np.testing.assert_allclose(np.loadtxt(paths["bvecs"]).T, m.dirs, atol=1e-8)
     assert np.asarray(nib.load(paths["fod"]).dataobj).shape == (4, 4, 4, 45)
+
+
+def test_the_backend_and_residency_come_from_the_config_or_the_environment(monkeypatch):
+    monkeypatch.delenv("DISCO_BACKEND", raising=False); monkeypatch.delenv("DISCO_RESIDENT", raising=False)
+    assert P.backend(CFG) == CFG["compute"]["backend"] == "jax" and P.resident(CFG) is True
+    monkeypatch.setenv("DISCO_BACKEND", "torch"); monkeypatch.setenv("DISCO_RESIDENT", "0")
+    assert P.backend(CFG) == "torch" and P.resident(CFG) is False
+    monkeypatch.setenv("DISCO_BACKEND", "numpy")
+    with pytest.raises(ValueError, match="backend"):
+        P.backend(CFG)

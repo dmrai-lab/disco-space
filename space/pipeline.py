@@ -32,6 +32,28 @@ def config(path=CONFIG_PATH):
         return tomllib.load(f)
 
 
+BACKENDS = ("jax", "torch")
+
+
+def resident(cfg):
+    """Whether the layout's device tensors stay across calls: ``DISCO_RESIDENT`` (``0``/``false`` for a pool that
+    drops the device between calls) else the config's ``[compute] resident`` (true)."""
+    env = os.environ.get("DISCO_RESIDENT")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no")
+    return bool(cfg.get("compute", {}).get("resident", True))
+
+
+def backend(cfg):
+    """The compute backend: ``DISCO_BACKEND`` in the environment, else the config's ``[compute] backend`` (``jax``).
+    ``torch`` is for a host that runs PyTorch only (disco-space#2): the layout image, the CSD solver and the tracker
+    all switch together."""
+    b = os.environ.get("DISCO_BACKEND") or cfg.get("compute", {}).get("backend", "jax")
+    if b not in BACKENDS:
+        raise ValueError(f"backend must be one of {BACKENDS}, got {b!r}")
+    return b
+
+
 # ---- the acquisition -------------------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -185,6 +207,8 @@ class Layout:
         uri = local or f"hf://{d['repo']}/{d['moments']}"
         self.moments = ShapeMoments.open(uri, revision=d.get("revision") or None) if uri.startswith("hf://") else ShapeMoments(uri)
         self.shapes = cfg["shapes"]
+        self.backend = backend(cfg)
+        self.resident = resident(cfg)
         want = d.get("source_manifest_sha256")
         got = self.moments.manifest["source"]["manifest_sha256"]
         if want and got != want:
@@ -200,9 +224,12 @@ class Layout:
             raise ValueError(f"the layout's grid {tuple(self.moments.grid.shape)} is not the mask's {self.mask.shape}")
 
     def warm(self):
-        """Every timing class on the device (the first call to each compiles and transfers)."""
+        """Every timing class on the device (the first call to each compiles and transfers); nothing when the tiles
+        are not kept resident."""
+        if not self.resident:
+            return
         for s in self.shapes:
-            self.moments.image(s, [0.0], [[0.0, 0.0, 1.0]])
+            self.moments.image(s, [0.0], [[0.0, 0.0, 1.0]], backend=self.backend)
 
 
 # ---- the stages -------------------------------------------------------------------------------------------------
@@ -215,7 +242,8 @@ def replay(layout, meas):
     floor = np.zeros(layout.mask.shape)
     for name in np.unique(meas.shape):
         rows = meas.shape == name
-        S[..., rows], f = layout.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows])
+        S[..., rows], f = layout.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=layout.backend,
+                                                resident=layout.resident)
         floor = np.fmax(floor, f)
     S0 = np.nanmean(S[..., meas.b0], axis=-1, keepdims=True)
     return S / S0, floor, time.perf_counter() - t0
@@ -240,9 +268,9 @@ def scheme(meas):
     return acquisition_scheme_from_bvalues(meas.bvals * 1e6, meas.dirs, delta=meas.delta, Delta=meas.Delta, TE=meas.TE, b0_threshold=10e6)
 
 
-def csd(dwi, meas, mask):
+def csd(dwi, meas, mask, backend="jax"):
     """``(sh, seconds)``: the FOD field ``(X, Y, Z, 45)`` in the tournier07 basis from the single-fibre response of
-    the volume, dmipy-fit's batched Tournier 2007 solver, fitted on ``mask`` (the voxels with signal)."""
+    the volume, dmipy-fit's batched Tournier 2007 solver on ``backend``, fitted on ``mask`` (the voxels with signal)."""
     from dmipy_fit.core.modeling_framework import MultiCompartmentSphericalHarmonicsModel
     from dmipy_fit.tissue_response.white_matter_response import white_matter_response_tournier07
     t0 = time.perf_counter()
@@ -250,7 +278,7 @@ def csd(dwi, meas, mask):
     sch = scheme(meas)
     S0_wm, response, _ = white_matter_response_tournier07(sch, data[mask])
     mc = MultiCompartmentSphericalHarmonicsModel(models=[response], sh_order=SH_ORDER)
-    fitted = mc.fit(sch, data, mask=mask, solver="csd_tournier07_jax", verbose=False)
+    fitted = mc.fit(sch, data, mask=mask, solver=f"csd_tournier07_{backend}", verbose=False)
     return np.asarray(fitted.fitted_parameters["sh_coeff"], np.float64), time.perf_counter() - t0
 
 
@@ -272,7 +300,8 @@ def track(sh, layout, settings=Tracking()):
     field = FODField(sh.astype(np.float32), np.eye(4), layout.mask | (layout.rois > 0))
     seeds = seeds_from_mask(layout.rois > 0, np.eye(4), density=settings.density)
     tg = _track(field, seeds, rule="probabilistic", step_mm=settings.step_mm, max_angle=settings.max_angle,
-                max_steps=settings.max_steps, relative_threshold=settings.relative_threshold, key=settings.key)
+                max_steps=settings.max_steps, relative_threshold=settings.relative_threshold, key=settings.key,
+                backend=layout.backend)
     return tg, seeds, time.perf_counter() - t0
 
 
@@ -339,7 +368,7 @@ def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progre
     at("replay"); dwi, floor, t_replay = replay(layout, meas)
     at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
-    at("csd"); sh, t_csd = csd(noisy, meas, signal)
+    at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=layout.backend)
     at("track"); tg, seeds, t_track = track(sh, layout, tracking)
     at("score"); t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
     return Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr,

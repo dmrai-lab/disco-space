@@ -19,13 +19,23 @@ def main():
     ap.add_argument("--space", default=os.environ.get("DISCO_SPACE", "rfick/disco"))
     ap.add_argument("--sha", default=None)
     ap.add_argument("--base-tag", default=None, help="deploy on ghcr.io/dmrai-lab/disco-space:<tag> through Dockerfile.space")
+    ap.add_argument("--zero", action="store_true", help="the ZeroGPU (Gradio SDK) deployment: README-zero.md, requirements-zero.txt, app.py")
     a = ap.parse_args()
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sha = a.sha or subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     from huggingface_hub import HfApi
     api = HfApi(token=os.environ.get("HF_TOKEN") or None)
     folder = root; staged = None
-    if a.base_tag:
+    if a.zero:
+        staged = tempfile.mkdtemp(prefix="disco-zero-")
+        for name in ("space", "data", "tests", "tools"):
+            shutil.copytree(os.path.join(root, name), os.path.join(staged, name), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for name in ("app.py", "pyproject.toml"):
+            shutil.copy(os.path.join(root, name), staged)
+        shutil.copy(os.path.join(root, "README-zero.md"), os.path.join(staged, "README.md"))
+        shutil.copy(os.path.join(root, "requirements-zero.txt"), os.path.join(staged, "requirements.txt"))
+        folder = staged
+    elif a.base_tag:
         staged = tempfile.mkdtemp(prefix="disco-space-")
         for name in ("space", "data", "tests", "tools"):
             shutil.copytree(os.path.join(root, name), os.path.join(staged, name), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -35,7 +45,8 @@ def main():
             g.write(f.read().replace("BASE_TAG", a.base_tag))
         folder = staged
     info = api.upload_folder(folder_path=folder, repo_id=a.space, repo_type="space", ignore_patterns=IGNORE,
-                             delete_patterns=["Dockerfile.base", "Dockerfile.space"] if a.base_tag else None,
+                             delete_patterns=["Dockerfile", "Dockerfile.base", "Dockerfile.space", "entrypoint.sh", "README-zero.md", "requirements-zero.txt"] if a.zero
+                             else (["Dockerfile.base", "Dockerfile.space"] if a.base_tag else None),
                              commit_message=f"disco-space {sha[:12]}" + (f" on base {a.base_tag[:12]}" if a.base_tag else ""))
     if staged:
         shutil.rmtree(staged)

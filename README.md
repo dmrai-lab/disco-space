@@ -79,6 +79,19 @@ the GPU scatter-add of the replay differs between runs by up to 5e-7 on the norm
 amplifies to 1e-2 on the SH coefficients and the tracker into a few different streamlines (Pearson moved by 1e-5).
 With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2.31 s on the L40S).
 
+## ZeroGPU
+
+`rfick/disco-zero` is the same application on Hugging Face's shared GPU pool (Gradio SDK, `zero-a10g`; the pool
+handed an RTX PRO 6000 Blackwell MIG slice with 51 GB): `DISCO_BACKEND=torch` switches the layout image, the CSD
+solver and the tracker to their PyTorch kernels (dmipy-sim#510, dmipy-fit#37, dmipy-tract#4), `spaces.GPU` wraps the
+run, the layout is preloaded into the parent process from the mounted bucket and the forked GPU worker inherits it
+(the mount reads at 80 MB/s, the host-to-device transfer at 8 GB/s), and nothing in the worker touches JAX (the noise
+draw comes from numpy there; a JAX call in the forked worker aborts the task). Measured 2026-09-29 through the API:
+DiSCo 364 at SNR 30 in 51 s wall, 21 s in the pipeline (replay 12.6 s with the per-call transfer and kernel compile,
+noise 0.5, CSD 3.6, tracking 4.5); a custom two-shell protocol in 44 s wall, 18.6 s in the pipeline. No idle cost, no
+sleep; per-visitor quotas instead of a queue on one card. Deploy with `tools/deploy.py --zero`
+(`README-zero.md`, `requirements-zero.txt`, the root `app.py`).
+
 ## Measured
 
 The gate on the DiSCo 364 protocol, noiseless, 659,840 seeds (`tests/test_acceptance.py`, deterministic XLA ops):

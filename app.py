@@ -14,7 +14,7 @@ import torch                                            # noqa: E402
 
 from space import app as A                              # noqa: E402
 
-DURATION = int(os.environ.get("DISCO_GPU_SECONDS", "240"))
+DURATION = int(os.environ.get("DISCO_GPU_SECONDS", "480"))
 
 
 def gpu_runner(fn):

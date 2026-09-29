@@ -227,9 +227,11 @@ class Layout:
             raise ValueError(f"the layout's grid {tuple(self.moments.grid.shape)} is not the mask's {self.mask.shape}")
 
     def warm(self):
-        """Every timing class on the device (the first call to each compiles and transfers); nothing when the tiles
-        are not kept resident."""
+        """Every timing class on the device (the first call to each compiles and transfers); when the tiles are not
+        kept resident (a pool that drops the device between calls), the padded host arrays are loaded into this
+        process instead, so a forked worker inherits them and pays the transfer alone."""
         if not self.resident:
+            self.moments.preload(list(self.shapes))
             return
         for s in self.shapes:
             self.moments.image(s, [0.0], [[0.0, 0.0, 1.0]], backend=self.backend)
@@ -364,7 +366,10 @@ STAGES = ("replay", "noise", "csd", "track", "score")
 def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progress=None):
     """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
     each of the ``STAGES`` begins (``k`` of ``n``), so a caller can say where the run is."""
+    t_run = time.perf_counter()
+
     def at(stage):
+        print(f"[pipeline] {stage} at +{time.perf_counter() - t_run:.1f} s", flush=True)      # the server log shows where a run is
         if progress:
             progress(stage, STAGES.index(stage), len(STAGES))
     meas = measurements(protocol, layout.shapes)

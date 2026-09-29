@@ -66,6 +66,8 @@ def test_noise_is_rician_at_the_given_snr_and_leaves_nan_alone():
     assert P.add_noise(dwi, None) is dwi
     with pytest.raises(ValueError, match="positive"):
         P.add_noise(dwi, 0.0)
+    out_t = P.add_noise(dwi, 20.0, seed=1, backend="torch")                # numpy's stream: same distribution, another realisation
+    assert np.isnan(out_t[0, 0, 0]).all() and abs(out_t[1:].std() - 0.05) < 0.005 and not np.array_equal(out_t[1:], out[1:])
 
 
 class _GroundTruth:

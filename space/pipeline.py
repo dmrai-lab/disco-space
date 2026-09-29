@@ -254,9 +254,11 @@ def replay(layout, meas):
     return S / S0, floor, time.perf_counter() - t0
 
 
-def add_noise(dwi, snr, seed=0):
+def add_noise(dwi, snr, seed=0, backend="jax"):
     """Rician noise at ``snr`` (the b = 0 SNR; the DWI is S0-normalised, so sigma = 1 / snr); ``None`` leaves the
-    signal noiseless. NaN voxels stay NaN."""
+    signal noiseless. NaN voxels stay NaN. The draw comes from JAX's generator on the jax backend and from numpy's
+    on the torch backend (a forked GPU worker must not touch JAX); the two streams differ, the distribution is the
+    same."""
     if snr is None:
         return dwi
     if snr <= 0:
@@ -264,7 +266,7 @@ def add_noise(dwi, snr, seed=0):
     from dmipy_sim.acquisition.noise import add_rician_noise
     valid = np.isfinite(dwi)
     out = np.array(dwi)
-    out[valid] = np.asarray(add_rician_noise(dwi[valid], 1.0 / snr, seed=seed))
+    out[valid] = np.asarray(add_rician_noise(dwi[valid], 1.0 / snr, seed=seed, rng="numpy" if backend == "torch" else "jax"))
     return out
 
 
@@ -374,7 +376,7 @@ def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progre
             progress(stage, STAGES.index(stage), len(STAGES))
     meas = measurements(protocol, layout.shapes)
     at("replay"); dwi, floor, t_replay = replay(layout, meas)
-    at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed); t_noise = time.perf_counter() - t0
+    at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=layout.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
     at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=layout.backend)
     at("track"); tg, seeds, t_track = track(sh, layout, tracking)

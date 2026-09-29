@@ -9,6 +9,7 @@ safetensors>=0.4
 huggingface_hub>=0.30
 requests>=2.31
 matplotlib>=3.8
+plotly>=5.20
 pillow>=10
 gradio==6.28.0
 dipy>=1.9                       # dmipy-fit's tensor fit for the response function reads a dipy GradientTable

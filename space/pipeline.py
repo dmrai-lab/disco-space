@@ -276,6 +276,20 @@ def track(sh, layout, settings=Tracking()):
     return tg, seeds, time.perf_counter() - t0
 
 
+def peaks(sh, n_dirs=362):
+    """The principal direction of every voxel's FOD, ``(X, Y, Z, 3)`` unit vectors, and its amplitude ``(X, Y, Z)``:
+    the largest FOD value over the tracker's hemisphere (zero where the FOD is zero or NaN)."""
+    from dmipy_tract import hemisphere, sh_matrix
+    dirs = hemisphere(n_dirs)
+    B = sh_matrix(SH_ORDER, dirs)                                     # (n_dirs, n_coef)
+    coef = np.nan_to_num(np.asarray(sh, np.float64)).reshape(-1, sh.shape[-1])
+    amp = coef @ B.T
+    k = np.argmax(amp, axis=1)
+    peak = np.take_along_axis(amp, k[:, None], axis=1)[:, 0]
+    d = np.where(peak[:, None] > 0, dirs[k], 0.0)
+    return d.reshape(sh.shape[:-1] + (3,)), np.clip(peak, 0, None).reshape(sh.shape[:-1])
+
+
 def connectome(tg, layout):
     """The symmetrised 16 x 16 streamline-count matrix (no self-connections)."""
     from dmipy_tract import connectivity
@@ -312,15 +326,22 @@ class Result:
     snr: Optional[float] = None
 
 
-def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0):
-    """The whole pipeline for one protocol: every stage's output and time."""
+STAGES = ("replay", "noise", "csd", "track", "score")
+
+
+def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progress=None):
+    """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
+    each of the ``STAGES`` begins (``k`` of ``n``), so a caller can say where the run is."""
+    def at(stage):
+        if progress:
+            progress(stage, STAGES.index(stage), len(STAGES))
     meas = measurements(protocol, layout.shapes)
-    dwi, floor, t_replay = replay(layout, meas)
-    t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed); t_noise = time.perf_counter() - t0
+    at("replay"); dwi, floor, t_replay = replay(layout, meas)
+    at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
-    sh, t_csd = csd(noisy, meas, signal)
-    tg, seeds, t_track = track(sh, layout, tracking)
-    t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
+    at("csd"); sh, t_csd = csd(noisy, meas, signal)
+    at("track"); tg, seeds, t_track = track(sh, layout, tracking)
+    at("score"); t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
     return Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr,
                   seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
                                total=t_replay + t_noise + t_csd + t_track + t_score))

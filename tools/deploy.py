@@ -7,7 +7,7 @@ import argparse
 import os
 import subprocess
 
-IGNORE = [".git/*", "__pycache__/*", "*.pyc", ".github/*", "tests/*", "tools/*", ".pytest_cache/*", ".gitignore", "gate.json"]
+IGNORE = [".git/*", "__pycache__/*", "*.pyc", ".github/*", ".pytest_cache/*", ".gitignore", "gate.json"]   # tests and tools go too: the gate job runs on the Space's own files
 
 
 def main():

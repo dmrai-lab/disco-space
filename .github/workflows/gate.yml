@@ -37,4 +37,5 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           test -n "$HF_TOKEN" || { echo "no HF_TOKEN secret: the GPU gate cannot run"; exit 1; }
-          python tools/gate_job.py --sha ${{ github.event.pull_request.head.sha || github.sha }} --repo-url https://github.com/${{ github.repository }}
+          python tools/deploy.py --sha ${{ github.event.pull_request.head.sha || github.sha }} --space ${{ vars.DISCO_STAGING_SPACE || 'rfick/disco-staging' }}
+          python tools/gate_job.py --space ${{ vars.DISCO_STAGING_SPACE || 'rfick/disco-staging' }}

@@ -12,7 +12,8 @@ short_description: DiSCo replay, any acquisition, a connectome, while you wait
 
 # The DiSCo Space
 
-The application behind the Hugging Face Space **SubstrateCommons/disco** (dmrai-lab/dmipy-sim#505): the Docker
+The application behind the Hugging Face Space **rfick/disco** (to move to SubstrateCommons once the organisation has
+compute credits; dmrai-lab/dmipy-sim#505): the Docker
 image, the pinned dependency stack, the Gradio page, the acceptance gate, and the deploy workflow. The libraries
 (dmipy-sim, dmipy-fit, dmipy-tract) stay free of all of it; this repository is the one place the world is pinned.
 

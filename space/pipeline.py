@@ -129,6 +129,49 @@ def disco_protocol(cfg):
     return Protocol(tuple(sh), n_b0=int(b0.sum()), directions=dirs[idx], bvals=bv[idx], name="DiSCo 364"), bv[idx]
 
 
+def protocol_from_table(bvals_path, bvecs_path, shape, shapes, *, name="uploaded table"):
+    """An uploaded gradient table (FSL bvals in s/mm^2 and bvecs, either orientation) as a Protocol whose rows all play
+    the timing class ``shape``: every row's own b-value and direction, the b = 0 rows first. Refuses a malformed
+    table, a class the layout does not hold, and a table without a b = 0 row."""
+    if shape not in shapes:
+        raise KeyError(f"no timing class {shape!r}; the layout holds {sorted(shapes)}")
+    bv = np.loadtxt(bvals_path, ndmin=1).ravel().astype(np.float64)
+    dirs = np.loadtxt(bvecs_path, ndmin=2).astype(np.float64)
+    if dirs.shape[0] == 3 and dirs.shape[1] != 3:
+        dirs = dirs.T
+    if dirs.ndim != 2 or dirs.shape[1] != 3 or dirs.shape[0] != len(bv):
+        raise ValueError(f"bvecs must be (N, 3) or (3, N) with N = {len(bv)} b-values, got {dirs.shape}")
+    if np.any(bv < 0) or not np.all(np.isfinite(bv)) or not np.all(np.isfinite(dirs)):
+        raise ValueError("the table has a negative or non-finite entry")
+    b0 = bv < 50
+    if not b0.any():
+        raise ValueError("the table needs a b = 0 row (the DWI is normalised by it)")
+    norm = np.linalg.norm(dirs, axis=1)
+    if np.any(norm[~b0] == 0):
+        raise ValueError("a b > 0 row has a zero direction")
+    dirs = np.where(b0[:, None], np.array([0.0, 0.0, 1.0]), dirs / np.where(norm > 0, norm, 1.0)[:, None])
+    order = np.r_[np.flatnonzero(b0), np.flatnonzero(~b0)]
+    rows = bv[order]; d = dirs[order]
+    shells_b, counts = np.unique(np.round(rows[~b0[order]]), return_counts=True)
+    shells = tuple(Shell(shape, float(b), int(n)) for b, n in zip(shells_b, counts))
+    return Protocol(shells, n_b0=int(b0.sum()), directions=d, bvals=rows, name=name)
+
+
+def write_volumes(res, out_dir, *, prefix="disco"):
+    """The result's DWI as NIfTI (float32, identity affine, NaN as 0) with its bvals (s/mm^2) and bvecs (3 x N), and
+    the FOD SH field as NIfTI (tournier07 basis, order 8); returns the four paths."""
+    import nibabel as nib
+    os.makedirs(out_dir, exist_ok=True)
+    paths = {}
+    dwi = os.path.join(out_dir, f"{prefix}_dwi.nii.gz")
+    nib.save(nib.Nifti1Image(np.nan_to_num(res.dwi).astype(np.float32), np.eye(4)), dwi); paths["dwi"] = dwi
+    bvals = os.path.join(out_dir, f"{prefix}.bvals"); np.savetxt(bvals, res.meas.bvals[None, :], fmt="%.1f"); paths["bvals"] = bvals
+    bvecs = os.path.join(out_dir, f"{prefix}.bvecs"); np.savetxt(bvecs, res.meas.dirs.T, fmt="%.8f"); paths["bvecs"] = bvecs
+    fod = os.path.join(out_dir, f"{prefix}_fod_sh.nii.gz")
+    nib.save(nib.Nifti1Image(np.nan_to_num(res.sh).astype(np.float32), np.eye(4)), fod); paths["fod"] = fod
+    return paths
+
+
 # ---- the data ---------------------------------------------------------------------------------------------------
 
 class Layout:

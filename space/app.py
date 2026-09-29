@@ -119,12 +119,18 @@ def timings_table(res, state):
 
 
 CUSTOM = "custom shells"
+UPLOADED = "uploaded table"
 
 
-def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs):
-    """The acquisition the page asks for: DiSCo's own table, a config preset, or the shell rows."""
+def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, table=None):
+    """The acquisition the page asks for: DiSCo's own table, a config preset, the shell rows, or an uploaded table
+    (``table`` = (bvals path, bvecs path, timing class))."""
     if preset == "DiSCo 364":
         return P.disco_protocol(cfg)[0]
+    if preset == UPLOADED:
+        if table is None or not table[0] or not table[1]:
+            raise ValueError("upload a bvals and a bvecs file for the uploaded table")
+        return P.protocol_from_table(table[0], table[1], table[2], cfg["shapes"])
     if preset in cfg["presets"]:
         p = cfg["presets"][preset]
         return P.Protocol(tuple(P.Shell(s["shape"], float(s["b"]), int(s["n_dirs"])) for s in p["shells"]), n_b0=int(p["n_b0"]), name=preset)
@@ -138,27 +144,30 @@ def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs):
     return P.Protocol(tuple(shells), n_b0=int(n_b0), name=CUSTOM)
 
 
-def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, *shell_inputs):
+def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs):
     state = _load()
     if state["error"]:
         raise RuntimeError(f"the layout did not load: {state['error']}")
     layout, cfg = state["layout"], state["cfg"]
-    protocol = _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs)
+    protocol = _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, table=(bvals_file, bvecs_file, table_shape))
     tracking = P.Tracking(density=int(density), step_mm=float(step_mm), max_angle=float(max_angle), key=int(key))
     res = P.run(layout, protocol, snr=(float(snr) if snr_on else None), tracking=tracking)
-    tck = os.path.join(tempfile.mkdtemp(), f"disco_{protocol.name.replace(' ', '_')}.tck")
+    out = tempfile.mkdtemp(); stem = f"disco_{protocol.name.replace(' ', '_')}"
+    tck = os.path.join(out, f"{stem}.tck")
     res.tractogram.to_tck(tck)
+    vols = P.write_volumes(res, out, prefix=stem)
     s = res.score
     headline = (f"**Pearson vs strand count {s['pearson_count']:.3f}, vs cross-sectional area {s['pearson_area']:.3f}** "
                 f"({protocol.n_meas} measurements, {len(res.tractogram):,} streamlines, "
                 f"{res.seconds['total']:.1f} s in total; replay floor median {np.nanmedian(res.floor[layout.mask]):.4f})")
-    return (headline, dwi_figure(res), tractogram_figure(res), matrix_figure(res, layout), timings_table(res, state), tck)
+    return (headline, dwi_figure(res), tractogram_figure(res), matrix_figure(res, layout), timings_table(res, state), tck,
+            [vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]])
 
 
 def build():
     import gradio as gr
     cfg = P.config()
-    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM]
+    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM, UPLOADED]
     shape_names = list(shapes)
     labels = {n: shapes[n]["label"] for n in shape_names}
     with gr.Blocks(title="DiSCo replay to tractogram") as demo:
@@ -183,6 +192,10 @@ def build():
                     shell_inputs += [on, shape, b, n]
                 gr.Markdown("Timing classes: " + "; ".join(f"`{n}` = {labels[n]}" for n in shape_names))
                 with gr.Row():
+                    bvals_file = gr.File(label="uploaded table: bvals (s/mm²)", file_count="single", type="filepath")
+                    bvecs_file = gr.File(label="uploaded table: bvecs", file_count="single", type="filepath")
+                    table_shape = gr.Dropdown(shape_names, value=shape_names[0], label="its timing class (every row)")
+                with gr.Row():
                     snr_on = gr.Checkbox(value=True, label="add Rician noise")
                     snr = gr.Slider(5, 100, value=30, step=1, label="SNR at b = 0")
                 with gr.Row():
@@ -198,8 +211,9 @@ def build():
                 mats = gr.Image(label="connectome vs ground truth", type="pil")
                 timings = gr.Dataframe(headers=["stage", "seconds"], label="timings", interactive=False)
                 tck = gr.File(label="tractogram (.tck, MRtrix)")
-        go.click(run_pipeline, inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, *shell_inputs],
-                 outputs=[headline, dwi, tract, mats, timings, tck], concurrency_limit=1)
+                volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
+        go.click(run_pipeline, inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
+                 outputs=[headline, dwi, tract, mats, timings, tck, volumes], concurrency_limit=1)
         demo.load(lambda: _load().get("error") and f"**the layout did not load:** {_load()['error']}" or "", outputs=headline)
     return demo
 

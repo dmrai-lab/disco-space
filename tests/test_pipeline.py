@@ -83,3 +83,39 @@ def test_the_score_of_the_ground_truth_is_one_and_the_pairs_add_up():
     assert s["connected_pairs"] == s["gt_pairs"] == 25
     empty = P.score(np.zeros((16, 16)), gt)
     assert empty["missed_pairs"] == 25 and empty["connected_pairs"] == 0
+
+
+def test_an_uploaded_table_is_a_protocol_on_one_timing_class(tmp_path):
+    """DiSCo's own bvals/bvecs uploaded on one class: every row's b and direction, b = 0 first, shells by rounded b;
+    the refusals: a transposed-wrong table, a missing b = 0, an unknown class."""
+    import os
+    p = P.protocol_from_table(os.path.join(P.DATA_DIR, "DiSCo_gradients.bvals"), os.path.join(P.DATA_DIR, "DiSCo_gradients_dipy.bvecs"),
+                              "d12-D24", CFG["shapes"])
+    m = P.measurements(p, CFG["shapes"])
+    assert p.n_meas == 364 and p.n_b0 == 4 and [s.b for s in p.shells] == [1000, 1925, 3094, 13192]
+    assert (m.shape == "d12-D24").all() and m.b0[:4].all()
+    np.testing.assert_allclose(np.linalg.norm(m.dirs, axis=1), 1.0, atol=1e-12)
+    np.savetxt(tmp_path / "b.bvals", [[1000, 1000]]); np.savetxt(tmp_path / "b.bvecs", np.eye(3)[:2].T)
+    with pytest.raises(ValueError, match="b = 0"):
+        P.protocol_from_table(tmp_path / "b.bvals", tmp_path / "b.bvecs", "d12-D24", CFG["shapes"])
+    np.savetxt(tmp_path / "c.bvals", [[0, 1000]]); np.savetxt(tmp_path / "c.bvecs", np.eye(3)[:2])
+    with pytest.raises(KeyError, match="no timing class"):
+        P.protocol_from_table(tmp_path / "c.bvals", tmp_path / "c.bvecs", "d99", CFG["shapes"])
+    np.savetxt(tmp_path / "d.bvecs", np.zeros((4, 3)))
+    with pytest.raises(ValueError, match="bvecs must be"):
+        P.protocol_from_table(tmp_path / "c.bvals", tmp_path / "d.bvecs", "d12-D24", CFG["shapes"])
+
+
+def test_the_volumes_round_trip(tmp_path):
+    """The DWI and FOD written as NIfTI read back with the table beside them."""
+    import nibabel as nib
+    p = P.Protocol((P.Shell("d12-D24", 1000, 6),), n_b0=1)
+    m = P.measurements(p, CFG["shapes"])
+    dwi = np.random.default_rng(0).random((4, 4, 4, 7)); dwi[0, 0, 0] = np.nan
+    sh = np.random.default_rng(1).random((4, 4, 4, 45))
+    res = P.Result(p, m, dwi, np.zeros((4, 4, 4)), sh, None, None, None, {}, {})
+    paths = P.write_volumes(res, str(tmp_path), prefix="t")
+    back = np.asarray(nib.load(paths["dwi"]).dataobj)
+    np.testing.assert_allclose(back, np.nan_to_num(dwi).astype(np.float32))
+    np.testing.assert_allclose(np.loadtxt(paths["bvals"]), m.bvals); np.testing.assert_allclose(np.loadtxt(paths["bvecs"]).T, m.dirs, atol=1e-8)
+    assert np.asarray(nib.load(paths["fod"]).dataobj).shape == (4, 4, 4, 45)

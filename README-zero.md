@@ -8,7 +8,7 @@ sdk_version: 6.28.0
 app_file: app.py
 pinned: false
 license: mit
-short_description: DiSCo replay, any acquisition, a connectome, on the shared GPU pool
+short_description: DiSCo replay to connectome on the shared GPU pool
 ---
 
 # The DiSCo Space on ZeroGPU

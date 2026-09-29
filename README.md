@@ -57,7 +57,15 @@ build on `ghcr.io/dmrai-lab/disco-space` takes 91 s (82 s pulling the base layer
 from PyPI, and 61 s after the trim in `Dockerfile.base` (the unused nccl + nvshmem, cudnn's convolution engines and
 the packages' test suites: compressed image 3.68 -> 2.42 GB; the gate in the trimmed image reproduces the Pearson to
 the last digit, 0.9270634171621878, steady 18.4 s on an A10G). The app then needs another ~150 s to download the
-13 GB layout and compile before it serves, which is the persistent-storage item, not the image's.
+13 GB layout and compile before it serves, which is the storage item, not the image's.
+
+**Storage.** Hugging Face replaced the persistent-storage tiers with Storage Buckets mounted as volumes: the layout
+sits in the private bucket `rfick/disco-space-data` (11.9 GB, copied server-side from the dataset with
+`HfApi.copy_files` in 2 s, about $0.20 a month at $18 per TB), mounted at `/data` with `set_space_volumes`, and the
+Space variable `DISCO_MOMENTS=/data/moments` points the app at it; the JAX compile cache lives on the same volume.
+Measured 2026-09-29 (A10G): a wake without a build serves in 16 s (was ~250 s), and the first DiSCo 364 request after
+that wake answers in 86 s wall (the layout read from the mount plus the run; 132 s on the first wake, when the compile
+cache is still empty).
 
 ```bash
 pip install -r requirements.txt

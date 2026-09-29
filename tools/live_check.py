@@ -11,7 +11,8 @@ for preset in ("DiSCo 364", "custom shells"):
     t0 = time.perf_counter()
     out = c.predict(preset, 2, True, 30, 4, 30.0, 0.5, 0, None, None, "d12-D24", *shells, api_name="/run_pipeline")
     print(preset, f"{time.perf_counter() - t0:.1f} s wall", flush=True)
-    headline, dwi, tract, mats, timings, tck, vols = out
+    # the page returns (state, headline, dwi, tractogram, matrices, timings, tck, volumes, z slider, m slider)
+    headline, dwi, tract, mats, timings, tck, vols = out[1:8]
     print(headline)
     print(timings)
     print("figures", dwi, tract, mats, "tck", tck, "volumes", vols, flush=True)

@@ -25,7 +25,7 @@ def retire_bucket(api, space):
     except Exception as e:                                  # absent already, or the API says so
         print("DISCO_MOMENTS variable:", repr(e)[:120])
     try:
-        api.set_space_volumes(space, volumes=[])
+        api.delete_space_volumes(space)
         print("no volumes mounted")
     except Exception as e:
         print("volumes:", repr(e)[:160])

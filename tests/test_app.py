@@ -6,55 +6,57 @@ import pytest
 
 from space import app as A
 from space import pipeline as P
+from space.sources import disco as D
 
 CFG = P.config()
+S = D.Disco
 ROWS = [True, "d12-D24", 1000, 30, 10.0, 20.0, 60.0, True, "d8-D20", 3000, 45, 8.0, 20.0, 60.0,
         False, "d17-D30", 3000, 90, 17.0, 30.0, 60.0, False, "d17-D30", 6000, 60, 17.0, 30.0, 60.0]
 
 
 def test_the_three_kinds_of_acquisition():
-    disco = A._protocol_from_inputs(CFG, "DiSCo 364", 5, *ROWS)
+    disco = A._protocol_from_inputs(S, CFG, "DiSCo 364", 5, *ROWS)
     assert disco.name == "DiSCo 364" and disco.n_meas == 364 and disco.n_b0 == 4        # the table's own, not the slider's
     name = next(iter(CFG["presets"]))
-    preset = A._protocol_from_inputs(CFG, name, 5, *ROWS)
+    preset = A._protocol_from_inputs(S, CFG, name, 5, *ROWS)
     assert preset.name == name and preset.n_b0 == CFG["presets"][name]["n_b0"]
     assert [s.shape for s in preset.shells] == [s["shape"] for s in CFG["presets"][name]["shells"]]
-    custom = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS)
+    custom = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS)
     assert custom.n_b0 == 2 and [(s.shape, s.b, s.n_dirs) for s in custom.shells] == [("d12-D24", 1000.0, 30), ("d8-D20", 3000.0, 45)]
     assert not any(s.free_timing for s in custom.shells)
     with pytest.raises(ValueError, match="unknown acquisition"):
-        A._protocol_from_inputs(CFG, "something else", 2, *ROWS)
+        A._protocol_from_inputs(S, CFG, "something else", 2, *ROWS)
     with pytest.raises(ValueError, match="at least one shell"):
-        A._protocol_from_inputs(CFG, A.CUSTOM, 2, *([False] + ROWS[1:7] + [False] + ROWS[8:14] + ROWS[14:]))
+        A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *([False] + ROWS[1:7] + [False] + ROWS[8:14] + ROWS[14:]))
 
 
 def test_full_mode_takes_the_rows_own_timing_and_demo_mode_refuses_the_upload():
-    full = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS, full=True)
+    full = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS, full=True)
     assert all(s.free_timing for s in full.shells)
     assert [(s.delta, s.Delta, s.TE) for s in full.shells] == [(0.010, 0.020, 0.060), (0.008, 0.020, 0.060)]
     with pytest.raises(ValueError, match="full mode"):
-        A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme="x.scheme")
+        A._protocol_from_inputs(S, CFG, A.UPLOADED, 2, *ROWS, scheme="x.scheme")
     with pytest.raises(ValueError, match="upload"):
-        A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme=None, full=True)
+        A._protocol_from_inputs(S, CFG, A.UPLOADED, 2, *ROWS, scheme=None, full=True)
 
 
 def _values(on=True, field_T=3.0, **over):
-    nums = A.catalogue_numbers(field_T)[:-1]
-    v = dict(zip(A.PHYSICS_FIELDS, [on, field_T, next(iter(A.B0_MODES)), 0, 0] + nums + [True, True, True]))
+    nums = S.catalogue_numbers(CFG, field_T)[:-1]
+    v = dict(zip(D.physics_fields(CFG), [on, field_T, next(iter(D.B0_MODES)), 0, 0] + nums + [True, True, True]))
     v.update(over)
     return v
 
 
 def test_the_physics_panel_is_a_physics_in_si_or_none_when_off():
-    nums = A.catalogue_numbers(3.0)
-    assert nums[-1].startswith("catalogue values at 3 T") and A.catalogue_numbers(0.064)[-1].startswith("the catalogue has no cited")
-    ph = A.physics_from(_values(field=False))
-    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == A.POOLS
-    assert A.physics_from(_values(on=False)) is None
-    free = A.physics_from(_values(field_T=7.0, b0_mode=A.FREE_B0, theta=90, phi=90))
+    nums = S.catalogue_numbers(CFG, 3.0)
+    assert nums[-1].startswith("catalogue values at 3 T") and S.catalogue_numbers(CFG, 0.064)[-1].startswith("the catalogue has no cited")
+    ph = S.physics_from(CFG, _values(field=False))
+    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == D.pools(CFG)
+    assert S.physics_from(CFG, _values(on=False)) is None
+    free = S.physics_from(CFG, _values(field_T=7.0, b0_mode=D.FREE_B0, theta=90, phi=90))
     assert abs(free.b0_direction[1] - 1.0) < 1e-12
     with pytest.raises(ValueError, match="15 inputs"):
-        A.physics_values(1, 2, 3)
+        A.physics_values(S, CFG, 1, 2, 3)
 
 
 def test_a_knob_changes_one_thing_of_a():
@@ -62,32 +64,32 @@ def test_a_knob_changes_one_thing_of_a():
     the tissue goes off, the noise changes, every shell is retimed; A's other settings survive; a panel knob on an
     A whose panel is off is refused (B would differ in two things)."""
     v = _values()
-    prot = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS)
-    ks = A.knobs(CFG)
+    prot = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS)
+    ks = S.knobs(CFG)
     assert ks[A.NO_KNOB] is None and len(ks) == 1 + 5 + 2 + 3 + 1 + 3 + len(CFG["shapes"])
     for name, change in ks.items():
         if change is None:
             continue
-        pb, on, snr, vb = A.apply_knob(change, prot, True, 30.0, v)
-        diffs = [k for k in A.PHYSICS_FIELDS if vb[k] != v[k]]
+        pb, on, snr, vb = S.apply_knob(CFG, change, prot, True, 30.0, v)
+        diffs = [k for k in D.physics_fields(CFG) if vb[k] != v[k]]
         kind = change[0]
         if kind == "field":
-            assert vb["field_T"] == change[1] and [vb[k] for k in A.TISSUE_NUMBERS] == A.catalogue_numbers(change[1])[:-1] and pb is prot
+            assert vb["field_T"] == change[1] and [vb[k] for k in D.tissue_numbers(CFG)] == S.catalogue_numbers(CFG, change[1])[:-1] and pb is prot
         elif kind == "b0":
             assert diffs == ["b0_mode"] or (diffs == [] and change[1] == v["b0_mode"])
         elif kind == "tier":
             assert diffs == [change[1]] and vb[change[1]] is False
         elif kind == "bare":
-            assert diffs == ["on"] and A.physics_from(vb) is None
+            assert diffs == ["on"] and S.physics_from(CFG, vb) is None
         elif kind == "snr":
             assert diffs == [] and (on, snr) == ((False, 30.0) if change[1] is None else (True, change[1]))
         elif kind == "shape":
             assert diffs == [] and all(s.shape == change[1] for s in pb.shells) and [s.b for s in pb.shells] == [s.b for s in prot.shells]
         if kind in ("field", "b0", "tier"):
             with pytest.raises(ValueError, match="which is off for A"):
-                A.apply_knob(change, prot, True, 30.0, _values(on=False))
+                S.apply_knob(CFG, change, prot, True, 30.0, _values(on=False))
     with pytest.raises(ValueError, match="unknown knob"):
-        A.apply_knob(("what", 1), prot, True, 30.0, v)
+        S.apply_knob(CFG, ("what", 1), prot, True, 30.0, v)
 
 
 def test_compare_is_symmetric_in_its_pairs_and_zero_for_the_same_run():
@@ -96,20 +98,20 @@ def test_compare_is_symmetric_in_its_pairs_and_zero_for_the_same_run():
     N = M.copy(); N[4, 5] = N[5, 4] = 1; N[2, 3] = N[3, 2] = 0
     a = types.SimpleNamespace(matrix=M, score=dict(pearson_count=0.9, pearson_area=0.8))
     b = types.SimpleNamespace(matrix=N, score=dict(pearson_count=0.85, pearson_area=0.8))
-    c = P.compare(a, b)
+    c = D.compare(a, b)
     assert c["only_a"] == 1 and c["only_b"] == 1 and abs(c["delta_count"] + 0.05) < 1e-12 and c["delta_area"] == 0
-    same = P.compare(a, a)
+    same = D.compare(a, a)
     assert same["only_a"] == 0 and same["pearson_ab"] == 1.0
 
 
 def test_the_gradient_table_names_the_shell_the_scanner_cannot_play():
-    prot = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS)
+    prot = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS)
     table, ok = A.gradient_text(prot, CFG["shapes"], "prisma")
     assert "70 mT/m" in table and "194 mT/m" in table and "cannot play" in table and not ok      # shell 2: b 3000 at δ 8 / Δ 20
     assert A.gradient_text(prot, CFG["shapes"], "connectom")[1] and A.gradient_text(prot, CFG["shapes"], A.NO_SCANNER)[1]
 
 
-class _Demo(P.Source):
+class _Demo(D.Disco):
     """A demo source without replay data: validates as a tiered layout would."""
     mode = "demo"
     tiers = True
@@ -157,7 +159,7 @@ def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS) == 480
     text = A.gpu_seconds_text("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS)
     assert f"reserves {ladder} s" in text and "logged out" in text.split("started by")[1].split(".")[0]
-    assert len(A.OUTPUTS) == 25
+    assert len(A.OUTPUTS) == 30
 
 
 def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():
@@ -170,7 +172,7 @@ def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():
     md = rng.random((4, 4, 2)).astype(np.float16); fa = rng.random((4, 4, 2)).astype(np.float16)
     ex = dict(layers=[("bare diffusion", bare), ("A = bare + field", a), ("B = A with field → 7 T", b)], metrics={k: (md, fa) for k in ("bare diffusion", "A = bare + field", "B = A with field → 7 T")},
               floor=np.full((4, 4, 2), 0.01, np.float32), meas=m, mask=np.ones((4, 4, 2), bool),
-              ingredients=dict(intra_fraction=rng.random((4, 4, 2)), wall_contact_um=rng.random((4, 4, 2)), contact_survival=None, field_rad=None, D_walk=6e-10),
+              ingredients=S.ingredient_layers(dict(intra_fraction=rng.random((4, 4, 2)), wall_contact_um=rng.random((4, 4, 2)), contact_survival=None, field_rad=None, D_walk=6e-10)),
               differences=P.layer_differences([("bare diffusion", bare.astype(np.float32)), ("A", a.astype(np.float32)), ("B", b.astype(np.float32))], m, np.ones((4, 4, 2), bool)),
               snr=None, physics=None)
     for mode in A.EXPLORE_MODES:
@@ -191,19 +193,21 @@ def test_the_run_button_chains_the_devices_texts_into_the_headline_then_the_page
     """run_pipeline: every (text, fraction) of the compute function becomes a headline-only update (the progress bar
     following), the payload goes to present once the device part has ended, and its outputs are the last yield."""
     pytest.importorskip("gradio")
-    monkeypatch.setattr(A, "_load", lambda: dict(error=None, load_seconds=1.0, regions=None, source=type("S", (), {"gt_count": None, "accuracy": None})()))
+    monkeypatch.setattr(A, "_load", lambda: dict(error=None, load_seconds=1.0, regions=None, source=None))
+    monkeypatch.setattr(A, "prepare_runs", lambda *args: dict(runs={"A": args}, ladder=None, seconds=0.5))
     seen = []
-    monkeypatch.setattr(A, "present", lambda payload, *rest: seen.append(payload) or ("drawn",) * len(A.OUTPUTS))
+    monkeypatch.setattr(A, "present", lambda payload, state, prepared: seen.append((payload, prepared)) or ("drawn",) * len(A.OUTPUTS))
 
-    def fake_compute(*args):
+    def fake_compute(prepared, *args):
+        assert prepared["runs"]["A"] == args
         yield ("**A · 1/5 replay** …", 0.1)
         yield ("**A · 2/5 noise** …", 0.3)
         yield dict(results={}, compute_seconds=12.0)
     bars = []
     out = list(A.run_pipeline(fake_compute, "x", 1, progress=lambda f, desc: bars.append((f, desc))))
-    assert [o[1] for o in out[:2]] == ["**A · 1/5 replay** …", "**A · 2/5 noise** …"] and all(len(o) == len(A.OUTPUTS) for o in out[:3])
-    assert "drawing" in out[2][1] and out[3] == ("drawn",) * len(A.OUTPUTS)
-    assert bars == [(0.0, "starting"), (0.1, "A · 1/5 replay"), (0.3, "A · 2/5 noise")] and seen[0]["compute_seconds"] == 12.0
+    assert "preparing" in out[0][1] and [o[1] for o in out[1:3]] == ["**A · 1/5 replay** …", "**A · 2/5 noise** …"] and all(len(o) == len(A.OUTPUTS) for o in out[:4])
+    assert "drawing" in out[3][1] and out[4] == ("drawn",) * len(A.OUTPUTS)
+    assert bars == [(0.0, "starting"), (0.1, "A · 1/5 replay"), (0.3, "A · 2/5 noise")] and seen[0][0]["compute_seconds"] == 12.0 and seen[0][1]["seconds"] == 0.5
 
 
 def test_the_payload_carries_float32_volumes():

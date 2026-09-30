@@ -71,7 +71,7 @@ def test_the_floor_slice_draws_the_positive_voxels():
 
 def test_the_spread_matrices_draw():
     M = np.zeros((16, 16)); M[0, 1] = M[1, 0] = 10
-    sp = P.pair_spread([M, M * 1.2], [dict(pearson_count=0.8), dict(pearson_count=0.82)])
+    sp = P.pair_spread([M, M * 1.2], [dict(pearson_count=0.8), dict(pearson_count=0.82)], key="pearson_count")
     assert V.spread_matrices(sp).size[0] > 100
 
 

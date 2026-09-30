@@ -1,40 +1,49 @@
-"""The live Space through its Gradio API: the DiSCo 364 preset at SNR 30 with the default tissue panel at 3 T, then
-a custom two-shell protocol; prints the headline and timings and, with ``--stream``, every stage update as it
-arrives; downloads the figures and files to ``$LIVE_OUT``.
+"""The live Space through its Gradio API: the configuration's first preset at SNR 30 with the tissue panel's defaults,
+then a custom two-shell protocol on the configuration's first timing class; prints the headline and timings and, with ``--stream``, every stage update as it
+arrives; downloads the figures and files to ``$LIVE_OUT``. ``--config`` is the configuration the Space serves
+(``DISCO_CONFIG``: ``config.toml`` for the DiSCo Spaces, ``brain.toml`` for ``rfick/brain-zero``): the inputs are
+built from its source's panel, presets and knobs, not spelled here.
 
-    python tools/live.py [space] [--stream] [--preset NAME] [--no-ladder] [--knob CHOICE]
+    python tools/live.py [space] [--config brain.toml] [--stream] [--preset NAME] [--no-ladder] [--knob CHOICE]
 """
 import argparse
 import os
 import sys
 import time
 
-from gradio_client import Client
-from huggingface_hub import get_token
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from space import app as A          # noqa: E402  (the page's constants and the catalogue: the inputs are built, not spelled)
-
-
-def inputs(preset, *, knob=A.NO_KNOB, n_keys=1, field=3.0, ladder=True):
-    physics = [True, field, next(iter(A.B0_MODES)), 0, 0] + A.catalogue_numbers(field)[:-1] + [True, True, True]
-    shells = [True, "d12-D24", 1000, 30, 12.0, 24.0, 53.5, True, "d8-D20", 3000, 45, 8.0, 20.0, 53.5,
-              False, "d17-D30", 3000, 90, 17.0, 30.0, 53.5, False, "d17-D30", 6000, 60, 17.0, 30.0, 53.5]
-    return [preset, 2, True, 30, 4, 30.0, 0.5, 0, None, knob, A.NO_SCANNER, n_keys, ladder, *physics, *shells]
-
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("space", nargs="?", default="rfick/disco")
+    ap.add_argument("--config", default=os.environ.get("DISCO_CONFIG", "config.toml"), help="the configuration in space/ the Space serves")
     ap.add_argument("--stream", action="store_true", help="print every stage update as it arrives")
-    ap.add_argument("--preset", action="append", help="an acquisition to run (default: DiSCo 364, then custom shells)")
+    ap.add_argument("--preset", action="append", help="an acquisition to run (default: the first preset, then custom shells)")
     ap.add_argument("--no-ladder", action="store_true", help="skip the explorer's tier ladder (the shortest GPU reservation)")
-    ap.add_argument("--knob", default=A.NO_KNOB, help="B: the same run with this knob changed (a choice of the page's dropdown)")
+    ap.add_argument("--knob", default=None, help="B: the same run with this knob changed (a choice of the page's dropdown)")
     a = ap.parse_args()
+    os.environ["DISCO_CONFIG"] = a.config                     # before the page module reads its configuration
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from gradio_client import Client
+    from huggingface_hub import get_token
+    from space import app as A, pipeline as P, sources
+
+    cfg = P.config()
+    S = sources.source_class(cfg)
+    panel = S.panel(cfg)
+    defaults = {c.name: c.value for row in panel.rows for c in row}
+    tc = S.tracking_controls(cfg)
+    shapes = list(S.shapes_of(cfg))
+    physics = [defaults[name] for name in panel.fields]
+
+    def inputs(preset, *, knob, n_keys=1, ladder=True):
+        shells = [True, shapes[0], 1000, 30, 12.0, 24.0, 53.5, True, shapes[0], 3000, 45, 8.0, 20.0, 53.5,
+                  False, shapes[0], 3000, 90, 17.0, 30.0, 53.5, False, shapes[0], 6000, 60, 17.0, 30.0, 53.5]
+        return [preset, 2, True, 30, tc["density"][2], tc["max_angle"][2], tc["step"][2], 0, None, knob, A.NO_SCANNER, n_keys, ladder, *physics, *shells]
+
     c = Client(a.space, token=get_token(), verbose=False, download_files=os.environ.get("LIVE_OUT", "/tmp/disco-live"), httpx_kwargs={"timeout": 900})
-    for preset in a.preset or ("DiSCo 364", A.CUSTOM):
+    for preset in a.preset or (S.presets(cfg)[0], A.CUSTOM):
         t0 = time.perf_counter()
-        args = inputs(preset, knob=a.knob, ladder=not a.no_ladder)
+        args = inputs(preset, knob=a.knob or A.NO_KNOB, ladder=not a.no_ladder)
         print(f"{preset}: reserves {A.estimated_seconds(*args)} s", flush=True)
         job = c.submit(*args, api_name="/run_pipeline")
         seen = 0

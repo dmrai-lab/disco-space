@@ -1,5 +1,7 @@
 # The DiSCo Space: what is pinned. Every number the app shows comes from pipeline.py on this configuration.
 
+source = "disco"                                 # space/sources/disco.py: the DiSCo phantom (demo: its layout, full: its columnar pack)
+
 [data]
 repo = "SubstrateCommons/disco-replay"          # the public replay dataset
 moments = "disco/moments"                        # the shape-moment layout written by dmipy-sim's write_shape_moments
@@ -109,3 +111,8 @@ max_steps = 500
 pearson_count_min = 0.90
 missed_pairs_max = 0
 reference_max_abs_diff = 1e-3     # the replay of DiSCo 364 against disco/reference/disco_replay_bare.nii.gz
+
+# The reconstruction: DiSCo is single-fibre white matter, so its CSD is the single-tissue Tournier 2007 one on the
+# response white_matter_response_tournier07 estimates from the volume. DISCO_RECONSTRUCTION in the environment overrides.
+[reconstruction]
+method = "tournier07"

@@ -457,14 +457,20 @@ class Layout(Source):
         return Physics.at(float(p["default_field"])) if (p["default_on"] and self.tiers) else None
 
     def warm(self):
-        """DiSCo's own protocol replayed once at the default physics: every class's kernel compiled and its rows on
-        the device at the row counts the default run uses. When the tiles are not kept resident (a pool that drops
-        the device between calls), the padded host arrays are loaded into this process instead, so a forked worker
-        inherits them and pays the transfer alone."""
+        """DiSCo's own protocol replayed once at the default physics (every class it plays compiled at the row
+        counts the default run uses), then one direction on every other class (its tier group's terms contracted
+        and on the device). When the tiles are not kept resident (a pool that drops the device between calls), the
+        padded host arrays are loaded into this process instead, so a forked worker inherits them and pays the
+        transfer alone."""
         if not self.resident:
             self.moments.preload(list(self.shapes))
             return
-        self.replay(measurements(disco_protocol(self.cfg)[0], self.shapes), self.default_physics())
+        physics = self.default_physics()
+        disco = disco_protocol(self.cfg)[0]
+        self.replay(measurements(disco, self.shapes), physics)
+        rest = [name for name in self.shapes if name not in {s.shape for s in disco.shells}]
+        if rest:
+            self.replay(measurements(Protocol(tuple(Shell(name, 1000.0, 1) for name in rest), n_b0=1, name="warm"), self.shapes), physics)
 
     def accuracy(self, res=None):
         m = self.moments.manifest; src = m["source"]

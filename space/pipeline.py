@@ -743,7 +743,9 @@ MSMT_ISSUE = "dmrai-lab/dmipy-fit#39"
 
 def csd_msmt(data, meas, mask, backend="torch"):
     """``(sh, fractions, responses, seconds)``: three-tissue responses estimated from the data (Dhollander 2016,
-    ``three_tissue_response_dhollander16`` with ``mask=``) and multi-shell multi-tissue CSD (Jeurissen 2014,
+    ``three_tissue_response_dhollander16`` with ``mask=``; the white-matter response by Tournier 2007's FA selection,
+    the single-tissue path's, since Tournier 2013's iteration does not converge on a replayed brain in its five
+    iterations and costs 5 s where this costs 0.2 s) and multi-shell multi-tissue CSD (Jeurissen 2014,
     ``solver='csd_msmt_<backend>'``), dmipy-fit's batched solvers of dmipy-fit#39. ``data`` is the signal in M0 units
     (not S0-normalised: the tissues' b = 0 signals are what separates them); ``sh`` the WM FOD ``(X, Y, Z, 45)``,
     ``fractions`` the fitted WM / GM / CSF volume fractions ``(X, Y, Z, 3)``, ``responses`` ``(S0s, models)`` as
@@ -759,7 +761,7 @@ def csd_msmt(data, meas, mask, backend="torch"):
     t0 = time.perf_counter()
     data = np.nan_to_num(np.asarray(data, np.float64), nan=0.0)
     sch = scheme(meas)
-    S0s, models, _ = three_tissue_response_dhollander16(sch, data, mask=mask, backend=backend)
+    S0s, models, _ = three_tissue_response_dhollander16(sch, data, mask=mask, backend=backend, wm_algorithm="tournier07")
     t_resp = time.perf_counter() - t0; t0 = time.perf_counter()
     mc = MultiCompartmentSphericalHarmonicsModel(models=list(models), S0_tissue_responses=list(S0s), sh_order=SH_ORDER)
     try:

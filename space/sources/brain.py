@@ -774,8 +774,10 @@ class Brain(P.Source):
         cosang = np.abs(np.einsum("ij,ij->i", rec[0][:, 0], ref[0][:, 0]))
         both = (rec[1][:, 0] > 0) & (ref[1][:, 0] > 0)
         ang = np.degrees(np.arccos(np.clip(cosang[both], 0, 1)))
+        afd_rec = np.asarray(sh)[wm][:, 0] * (1.0 if fractions is None else fractions[wm][:, 0])   # the WM signal's l = 0 amplitude
+        afd_in = self.asset.fod[wm][:, 0] * self.asset.fractions[wm][:, 0]
         out = dict(peak_angle_median=float(np.median(ang)) if ang.size else float("nan"), peak_angle_p95=float(np.quantile(ang, 0.95)) if ang.size else float("nan"),
-                   afd_pearson=P.pearson(np.asarray(sh)[wm][:, 0], self.asset.fod[wm][:, 0]),
+                   afd_pearson=P.pearson(afd_rec, afd_in),
                    peak_count_agreement=float(np.mean(rec[2] == ref[2])), n_wm=int(wm.sum()),
                    peak_counts_recovered=np.bincount(rec[2], minlength=4)[:4].tolist(), peak_counts_input=np.bincount(ref[2], minlength=4)[:4].tolist())
         if fractions is not None:
@@ -933,7 +935,7 @@ class Brain(P.Source):
         rt = res.extras.get("roundtrip") or {}
         rows = [["reconstruction", res.extras.get("reconstruction", "")],
                 ["principal peak vs the input's, WM voxels: median / 95 % (°)", f"{rt.get('peak_angle_median', float('nan')):.2f} / {rt.get('peak_angle_p95', float('nan')):.2f}"],
-                ["AFD (l = 0 coefficient) Pearson, WM voxels", f"{rt.get('afd_pearson', float('nan')):.4f}"],
+                ["AFD (the WM signal's l = 0 amplitude: the FOD's, times the WM fraction where one is fitted) Pearson, WM voxels", f"{rt.get('afd_pearson', float('nan')):.4f}"],
                 ["peak count agreement (up to 3), WM voxels", f"{100 * rt.get('peak_count_agreement', float('nan')):.1f} % of {rt.get('n_wm', 0):,}"],
                 ["voxels with 0 / 1 / 2 / 3 peaks: recovered", " / ".join(str(x) for x in rt.get("peak_counts_recovered", []))],
                 ["voxels with 0 / 1 / 2 / 3 peaks: input", " / ".join(str(x) for x in rt.get("peak_counts_input", []))]]

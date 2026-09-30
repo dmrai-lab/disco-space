@@ -543,7 +543,11 @@ def build(runner=None):
             "# DiSCo: one Monte-Carlo walk, any acquisition, a connectome\n"
             "The DiSCo phantom's walkers were simulated once (SubstrateCommons/disco-replay). Choose an acquisition; the Space "
             "replays the whole 40³ grid from the stored walk, adds noise, fits constrained spherical deconvolution, tracks from "
-            "the sixteen regions and scores the connectome against the ground truth. The progress bar names each stage.")
+            "the sixteen regions and scores the connectome against the ground truth. The progress bar names each stage."
+            + ("\n\n**Before you press run:** the GPU time of a run is charged to *your* Hugging Face quota, not the Space's: "
+               "2 minutes a day logged out, 5 with a free account, 40 with PRO. The line under the run button says how many "
+               "seconds the configured run reserves and which of those can start it; a request above your quota is refused "
+               "before it starts, so log in to Hugging Face in this browser if you want more than one run a day." if runner is not None else ""))
         result = gr.State(None)
         with gr.Tabs():
             with gr.Tab("1 · acquisition"):
@@ -629,7 +633,11 @@ def build(runner=None):
                             "when a knob is set. **Ingredients**: what each tier multiplies into every walker's term, reduced per voxel. "
                             "**Layers**: A's walk replayed with A's tiers switched on one at a time, ending at A itself, then B; look at a "
                             "layer, its difference to the previous one, or B minus A, in the DWI itself or in the tensor's MD and FA from the "
-                            "b ≤ 1500 shells; divide by the replay floor to see where a difference means something.")
+                            "b ≤ 1500 shells; divide by the replay floor to see where a difference means something. A null result is a "
+                            "result: 7 T against 3 T at the catalogue's tissue moves the median voxel by 0.005 (99 % of voxels under 0.02), under "
+                            "the replay floor of about 0.01: the catalogue gives both seeded pools the same T2 at 7 T (47 ms), so the "
+                            "relaxation tier re-weights nothing between them, the contact tier does not depend on the field, and the sheath "
+                            "field's dephasing, though it grows from 0.10 to 0.24 rad of spread, moves the magnitude by 0.004 in the median voxel.")
                 with gr.Row():
                     ingredient_pool = gr.Image(label="relaxation tier: intra-axonal weight fraction", type="pil")
                     ingredient_contact = gr.Image(label="contact tier: the walkers' wall contact", type="pil")

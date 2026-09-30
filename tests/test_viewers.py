@@ -73,3 +73,9 @@ def test_the_spread_matrices_draw():
     M = np.zeros((16, 16)); M[0, 1] = M[1, 0] = 10
     sp = P.pair_spread([M, M * 1.2], [dict(pearson_count=0.8), dict(pearson_count=0.82)])
     assert V.spread_matrices(sp).size[0] > 100
+
+
+def test_the_map_slice_draws_plain_and_diverging():
+    vol = np.random.default_rng(0).normal(size=(6, 6, 3)); vol[0, 0] = np.nan
+    assert V.map_slice(vol, 1, "t").size[0] > 100 and V.map_slice(vol, 1, "d", symmetric=True).size[0] > 100
+    assert V.map_slice(np.full((6, 6, 3), np.nan), 1, "empty", symmetric=True).size[0] > 100

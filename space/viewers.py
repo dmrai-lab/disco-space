@@ -179,3 +179,21 @@ def timings_rows(seconds, load_seconds):
     """The stage times as table rows, the source's load time (once per process) first."""
     rows = [["source loaded and warmed (once per process)", f"{load_seconds:.1f}"]]
     return rows + [[k, f"{v:.2f}"] for k, v in seconds.items()]
+
+
+def map_slice(vol, z, title, *, cmap="viridis", symmetric=False, vmin=None, vmax=None, unit=""):
+    """Axial slice ``z`` of a scalar map (NaN blank): a diverging scale around zero when ``symmetric`` (the
+    difference maps), else the map's own range unless ``vmin`` / ``vmax`` fix it."""
+    fig, ax = _slice_axes(title)
+    sl = np.asarray(vol[:, :, z], np.float64)
+    finite = sl[np.isfinite(sl)]
+    if symmetric:
+        top = float(np.max(np.abs(finite))) if finite.size else 1.0
+        top = top or 1.0
+        im = ax.imshow(sl.T, origin="lower", cmap="RdBu_r", vmin=-top, vmax=top)
+    else:
+        lo = float(np.min(finite)) if (vmin is None and finite.size) else (vmin or 0.0)
+        hi = float(np.max(finite)) if (vmax is None and finite.size) else (vmax if vmax is not None else 1.0)
+        im = ax.imshow(sl.T, origin="lower", cmap=cmap, vmin=lo, vmax=hi if hi > lo else lo + 1e-9)
+    fig.colorbar(im, ax=ax, fraction=0.046, label=unit)
+    return _image(fig)

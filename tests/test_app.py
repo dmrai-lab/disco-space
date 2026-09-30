@@ -146,10 +146,36 @@ def test_the_runs_are_planned_and_refused_before_any_work():
 
 def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     v = list(_values().values())
-    one = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, *v, *ROWS)
-    two = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, *v, *ROWS)
-    keys = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 8, *v, *ROWS)
-    small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, *v, *ROWS)
-    assert 60 <= small < one < two <= 480 and one < keys <= 480
-    assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, *v, *ROWS) == 480
-    assert len(A.OUTPUTS) == 16
+    one = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, False, *v, *ROWS)
+    two = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, False, *v, *ROWS)
+    keys = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 8, False, *v, *ROWS)
+    ladder = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS)
+    small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, False, *v, *ROWS)
+    assert 60 <= small < one < two <= 480 and one < keys <= 480 and one < ladder <= 480
+    assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS) == 480
+    assert len(A.OUTPUTS) == 25
+
+
+def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():
+    """A two-layer explorer state (bare, A) with B: every mode and quantity returns an image; the table has one row
+    per layer step per shell plus the floor; an empty state draws nothing."""
+    p = P.Protocol((P.Shell("d12-D24", 1000, 12),), n_b0=1)
+    m = P.measurements(p, CFG["shapes"])
+    rng = np.random.default_rng(0)
+    bare = rng.uniform(0.3, 1.0, (4, 4, 2, 13)).astype(np.float16); a = (bare * 0.98).astype(np.float16); b = (bare * 0.97).astype(np.float16)
+    md = rng.random((4, 4, 2)).astype(np.float16); fa = rng.random((4, 4, 2)).astype(np.float16)
+    ex = dict(layers=[("bare diffusion", bare), ("A", a), ("B", b)], metrics={k: (md, fa) for k in ("bare diffusion", "A", "B")},
+              floor=np.full((4, 4, 2), 0.01, np.float32), meas=m, mask=np.ones((4, 4, 2), bool),
+              ingredients=dict(intra_fraction=rng.random((4, 4, 2)), wall_contact_um=rng.random((4, 4, 2)), contact_survival=None, field_hz=None, D_walk=6e-10),
+              differences=P.layer_differences([("bare diffusion", bare.astype(np.float32)), ("A", a.astype(np.float32)), ("B", b.astype(np.float32))], m, np.ones((4, 4, 2), bool)),
+              snr=None, physics=None)
+    for mode in A.EXPLORE_MODES:
+        for metric in A.METRICS:
+            img = A.explore(ex, "A", mode, metric, 1, 5)
+            assert img is not None and img.size[0] > 100, (mode, metric)
+    assert A.explore(ex, "bare diffusion", "minus the previous layer", A.METRICS[0], 0, 0) is not None
+    pool, contact, fld = A.ingredient_views(ex, 1)
+    assert pool is not None and contact is not None and fld is None
+    rows = A.layer_table(ex)
+    assert len(rows) == 2 + 1 and rows[-1][0] == "replay floor"
+    assert A.explore(None, "A", "signal", A.METRICS[0], 0, 0) is None and A.ingredient_views(None, 0) == (None, None, None) and A.layer_table(None) == []

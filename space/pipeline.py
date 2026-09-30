@@ -409,6 +409,19 @@ class Source:
         """Whatever the first run would otherwise pay (nothing for a source that reads per run)."""
         return
 
+    def release(self):
+        """Whatever a run kept on the device that must not survive it (nothing for a source that reads per run)."""
+        return
+
+    def ingredients(self, meas, physics=None):
+        """The per-voxel maps of what each tier multiplies into the sum (None for a source without them)."""
+        return None
+
+    def ladder(self, meas, physics):
+        """The noise-free replays with the tiers switched on one at a time, ``[(label, dwi)]`` from bare diffusion
+        up to (not including) ``physics`` itself; empty for a source that cannot afford them."""
+        return []
+
     def accuracy(self, res=None):
         """Rows ``(what, value)`` saying what this source's replay is an approximation of, and ``res``'s own floor."""
         rows = []
@@ -485,12 +498,74 @@ class Layout(Source):
         for name in np.unique(meas.shape):
             rows = meas.shape == name
             S[..., rows], f = self.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=self.backend,
-                                                 resident=self.resident, tissue=tissue, scanner=scanner, b0_direction=b0)
-            floor = np.fmax(floor, f)
+                                                 resident=True, tissue=tissue, scanner=scanner, b0_direction=b0)
+            floor = np.fmax(floor, f)                    # resident within a run: release() drops the device copies after it
         if self.M0 is None:                              # the bare b = 0 map: the walker weight of every voxel
-            self.M0 = self.moments.image(meas.shape[0], np.zeros(1), np.array([B0_ALONG_Z]), backend=self.backend, resident=self.resident)[0][..., 0]
+            self.M0 = self.moments.image(meas.shape[0], np.zeros(1), np.array([B0_ALONG_Z]), backend=self.backend, resident=True)[0][..., 0]
         dwi, factor = s0_normalised(S, meas.b0, self.M0)
         return dwi, floor, factor, time.perf_counter() - t0
+
+    def release(self):
+        if not self.resident:
+            self.moments.release()
+
+    def group_of(self, shape):
+        """The tier group (its gate) a class belongs to: ``(g, group)``."""
+        for g, grp in self.moments.manifest["tiers"]["groups"].items():
+            if shape in grp["shapes"]:
+                return g, grp
+        raise KeyError(f"no tier group holds the class {shape!r}")
+
+    def voxel_mean(self, x, w=None):
+        """The walker-weighted mean of a per-row quantity ``x`` (``(n_tiles, tile)``, the layout's row order) in
+        every grid voxel: one reduction over the tiles (NaN where the layout has no rows)."""
+        tiles = np.asarray(self.moments._column("tiles")); w = np.asarray(self.moments._column("w"), np.float64) if w is None else w
+        x = np.asarray(x, np.float64)[:len(tiles)]
+        n_seg = 2 * self.moments.n_vox
+        num = np.bincount(tiles, (w * x).sum(1), minlength=n_seg).reshape(-1, 2).sum(1)
+        den = np.bincount(tiles, w.sum(1), minlength=n_seg).reshape(-1, 2).sum(1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(den > 0, num / den, np.nan).reshape(tuple(self.moments.grid.shape))
+
+    def ingredients(self, meas, physics=None):
+        """What each tier multiplies into the sum, per voxel, for the run's first class: ``intra_fraction`` (the
+        walker weight in the intra-axonal pool over the voxel's), ``wall_contact_um`` (the walkers' boundary local
+        time under the class's gate, a length: the contact tier's survival is exp(-rho l / D)), ``contact_survival``
+        (that factor at the run's rho, None without the contact tier), ``field_hz`` (the spread over the voxel's
+        walkers of the dephasing frequency the sheath's field gives at the run's field and direction, None without
+        the field tier), and ``D_walk`` (m^2/s)."""
+        if not self.tiers:
+            return None
+        from dmipy_sim.acquisition.scanners import GAMMA
+        t = self.moments.manifest["tiers"]; g, grp = self.group_of(str(meas.shape[0]))
+        pools = {q["name"]: q["id"] for q in t["substrate"]["pools"]}
+        pool = np.asarray(self.moments._column("pool"))
+        w = np.asarray(self.moments._column("w"), np.float64)
+        out = dict(D_walk=float(t["D_walk"]), intra_fraction=self.voxel_mean(pool == pools["intra"], w),
+                   wall_contact_um=None, contact_survival=None, field_hz=None)
+        if grp.get("contact"):
+            c = np.asarray(self.moments._column(f"contact_{g}"), np.float64)
+            out["wall_contact_um"] = self.voxel_mean(c, w) * 1e6
+            if physics and physics.contact:
+                out["contact_survival"] = self.voxel_mean(np.exp(-physics.rho * c / out["D_walk"]), w)
+        if grp.get("field") and physics and physics.field:
+            iso, aniso = self.moments._field_terms(g, physics.b0_direction)
+            f = GAMMA * physics.field_T * (physics.chi_iso * iso + physics.chi_aniso * aniso) / (2 * np.pi)   # Hz per walker
+            mean = self.voxel_mean(f, w); sq = self.voxel_mean(f * f, w)
+            out["field_hz"] = np.sqrt(np.maximum(sq - mean * mean, 0.0))
+        return out
+
+    def ladder(self, meas, physics):
+        if physics is None or physics.bare:
+            return []
+        steps = [("bare diffusion", None)]
+        on = []
+        for tier in ("relaxation", "contact", "field"):
+            if getattr(physics, tier):
+                on.append(tier)
+                if len(on) < sum(getattr(physics, q) for q in ("relaxation", "contact", "field")):
+                    steps.append(("+ " + " + ".join(on), replace(physics, **{q: q in on for q in ("relaxation", "contact", "field")})))
+        return [(label, self.replay(meas, ph)[0]) for label, ph in steps]
 
     def default_physics(self):
         """The tissue panel's default (``[physics]``), or None when it starts off or the layout has no tiers."""
@@ -750,6 +825,42 @@ def pair_spread(matrices, scores):
                 pairs_always=int((M[:, PAIRS[0], PAIRS[1]] > 0).all(0).sum()))
 
 
+def dti(dwi, meas, mask, *, b_max=1500.0):
+    """``(md, fa)`` grids from a log-linear tensor fit on the rows with b <= ``b_max`` s/mm^2 (the b = 0 rows
+    included): mean diffusivity in um^2/ms and fractional anisotropy, NaN outside ``mask``."""
+    rows = meas.bvals <= b_max
+    if rows.sum() < 7 or meas.b0[rows].sum() < 1 or (~meas.b0[rows]).sum() < 6:
+        raise ValueError("a tensor fit needs a b = 0 row and six or more directions at b <= b_max")
+    g = meas.dirs[rows]; b = meas.bvals[rows] / 1e3                    # ms/um^2, so D comes out in um^2/ms
+    X = np.column_stack([np.ones(rows.sum()), -b * g[:, 0] ** 2, -b * g[:, 1] ** 2, -b * g[:, 2] ** 2,
+                         -2 * b * g[:, 0] * g[:, 1], -2 * b * g[:, 0] * g[:, 2], -2 * b * g[:, 1] * g[:, 2]])
+    S = np.clip(np.nan_to_num(dwi[mask][:, rows], nan=1e-6), 1e-6, None)
+    beta = np.linalg.pinv(X) @ np.log(S).T                              # (7, n_vox)
+    D = np.empty((beta.shape[1], 3, 3))
+    D[:, 0, 0] = beta[1]; D[:, 1, 1] = beta[2]; D[:, 2, 2] = beta[3]
+    D[:, 0, 1] = D[:, 1, 0] = beta[4]; D[:, 0, 2] = D[:, 2, 0] = beta[5]; D[:, 1, 2] = D[:, 2, 1] = beta[6]
+    ev = np.linalg.eigvalsh(D)
+    md = ev.mean(1)
+    fa = np.sqrt(1.5 * ((ev - md[:, None]) ** 2).sum(1) / np.maximum((ev ** 2).sum(1), 1e-30))
+    MD = np.full(mask.shape, np.nan); FA = np.full(mask.shape, np.nan)
+    MD[mask] = md; FA[mask] = fa
+    return MD, FA
+
+
+def layer_differences(layers, meas, mask):
+    """Between consecutive layers ``[(label, dwi)]``, per shell: the median and 99th percentile of |dS| over the
+    voxels of ``mask``; rows ``(from, to, b, median, p99)``."""
+    rows = []
+    shells = np.unique(np.round(meas.bvals[~meas.b0]))
+    for (la, a), (lb, b) in zip(layers[:-1], layers[1:]):
+        d = np.abs(b - a)[mask]
+        for sh in shells:
+            cols = np.round(meas.bvals) == sh
+            v = d[:, cols][np.isfinite(d[:, cols])]
+            rows.append((la, lb, float(sh), float(np.median(v)) if v.size else float("nan"), float(np.quantile(v, 0.99)) if v.size else float("nan")))
+    return rows
+
+
 def floor_stats(res):
     """The run's split-half floor over the voxels with signal: ``median``, ``p99``, ``max`` and the voxel count."""
     f = res.floor[np.isfinite(res.dwi[..., 0])]
@@ -809,8 +920,8 @@ def sample_tractogram(tg, n, *, seed=0):
 class Result:
     """One run: the protocol and its rows, the DWI the CSD saw (noisy when ``snr`` is set), the replay floor per
     voxel, the voxel's b = 0 signal over M0 (what the physics took, the b = 0 SNR is ``snr`` times it), the FOD SH
-    field, the tractogram and its seeds, the connectome and its score, the stage times, and the physics (None for
-    bare diffusion)."""
+    field, the tractogram and its seeds, the connectome and its score, the stage times, the physics (None for bare
+    diffusion), and ``clean``, the replay before the noise."""
     protocol: Protocol
     meas: Measurements
     dwi: np.ndarray
@@ -822,6 +933,7 @@ class Result:
     matrix: np.ndarray
     score: dict
     seconds: dict = field(default_factory=dict)
+    clean: Optional[np.ndarray] = None
     snr: Optional[float] = None
     physics: Optional[Physics] = None
 
@@ -845,7 +957,7 @@ def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0,
     yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=source.backend)
     yield at("track"); t0 = time.perf_counter(); fld, seeds = tracking_inputs(sh, source, tracking.density); tg, _ = track(fld, seeds, tracking, source.backend); t_track = time.perf_counter() - t0
     yield at("score"); t0 = time.perf_counter(); M = connectome(tg, source); s = score(M, source); t_score = time.perf_counter() - t0
-    yield Result(protocol, meas, noisy, floor, s0_factor, sh, tg, seeds, M, s, snr=snr, physics=physics,
+    yield Result(protocol, meas, noisy, floor, s0_factor, sh, tg, seeds, M, s, snr=snr, physics=physics, clean=dwi,
                  seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
                               total=t_replay + t_noise + t_csd + t_track + t_score))
 

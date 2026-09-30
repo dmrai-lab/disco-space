@@ -292,3 +292,39 @@ def test_the_layout_at_the_pinned_revision_holds_the_configs_classes_and_tiers()
                 assert abs(v - t[k]) < 1e-9, (name, k, v, t[k])
     if CFG["physics"]["default_on"]:
         assert m.get("tiers"), "the tissue panel starts on but the layout has no tiers"
+
+
+def test_the_tensor_fit_recovers_a_synthetic_tensor_and_refuses_too_few_rows():
+    """A voxel with D = diag(1.7, 0.3, 0.3) um^2/ms at b = 0 and 1000 over 30 directions: MD 0.767, FA 0.799; a voxel
+    outside the mask is NaN; fewer than six directions below b_max refuse."""
+    p = P.Protocol((P.Shell("d12-D24", 1000, 30), P.Shell("d8-D20", 3000, 12)), n_b0=1)
+    m = P.measurements(p, CFG["shapes"])
+    D = np.diag([1.7e-3, 0.3e-3, 0.3e-3])
+    S = np.exp(-m.bvals * np.einsum("ni,ij,nj->n", m.dirs, D, m.dirs))
+    dwi = np.tile(S, (2, 2, 1, 1)); mask = np.ones((2, 2, 1), bool); mask[0, 0, 0] = False
+    md, fa = P.dti(dwi, m, mask)
+    assert np.isnan(md[0, 0, 0]) and abs(md[1, 1, 0] - 0.7667) < 1e-3 and abs(fa[1, 1, 0] - 0.7990) < 1e-3
+    with pytest.raises(ValueError, match="six or more"):
+        P.dti(dwi, m, mask, b_max=500)
+
+
+def test_layer_differences_are_per_shell_between_consecutive_layers():
+    p = P.Protocol((P.Shell("d12-D24", 1000, 6), P.Shell("d8-D20", 3000, 6)), n_b0=1)
+    m = P.measurements(p, CFG["shapes"])
+    a = np.ones((2, 1, 1, 13)); b = a.copy(); b[..., 1:7] += 0.01; b[..., 7:] += 0.05; c = b.copy(); c[..., 7:] -= 0.02
+    rows = P.layer_differences([("bare", a), ("+ relaxation", b), ("A", c)], m, np.ones((2, 1, 1), bool))
+    assert [(r[0], r[1], r[2]) for r in rows] == [("bare", "+ relaxation", 1000.0), ("bare", "+ relaxation", 3000.0), ("+ relaxation", "A", 1000.0), ("+ relaxation", "A", 3000.0)]
+    np.testing.assert_allclose([r[3] for r in rows], [0.01, 0.05, 0.0, 0.02], atol=1e-12)
+
+
+def test_a_voxel_mean_is_the_weighted_mean_over_the_voxels_tiles():
+    """voxel_mean on a stand-in layout: two voxels, both halves, tiles of two lanes; the NaN voxel has no tiles."""
+    class _M:
+        n_vox = 3; grid = type("G", (), {"shape": (3, 1, 1)})()
+        cols = {"tiles": np.array([0, 1, 2, 2]), "w": np.array([[1.0, 1.0], [2.0, 0.0], [1.0, 1.0], [1.0, 1.0]])}
+        def _column(self, name):
+            return self.cols[name]
+    lay = P.Layout.__new__(P.Layout); lay.moments = _M()
+    x = np.array([[1.0, 3.0], [5.0, 100.0], [2.0, 2.0], [4.0, 4.0]])
+    out = P.Layout.voxel_mean(lay, x)
+    np.testing.assert_allclose(out.ravel(), [(1 + 3 + 10) / 4, 3.0, np.nan])

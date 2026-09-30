@@ -32,6 +32,13 @@ susceptibility, each tier switchable on its own; the defaults are dmipy-sim's ci
 nearest field. A stimulated-echo pulse timing (δ 7.6 / TM 38.3 ms) is the twin of DiSCo's b = 3091 class: the same
 diffusion time with the magnetisation stored along z, so the field acts only during the two δ.
 
+**The Replay DWI Explorer** (the third tab) shows what the replay made before the noise and the tractography: the
+ingredient of each tier per voxel (the intra-axonal weight fraction; the walkers' wall contact, a boundary local
+time of 0–58 µm on DiSCo with a contact survival of 0.89–1 at ρ = 1.16 µm/s; the spread of the sheath field's
+dephasing phase at the echo, 0.10 rad in strand voxels at 3 T and 0.24 rad at 7 T), then the same walk replayed
+noise-free with the tiers switched on one at a time, A and B, and any layer's signal, its difference to the
+previous layer or B minus A, in the DWI or in the tensor's MD and FA, divided by the replay floor when asked.
+
 **Two modes, one image.** The hosted Spaces run in *demo* mode: the acquisition's pulse timing is one of a few
 stored classes (the shape-moment layout, `disco/moments/` of the dataset, one pass over the pack per class), so a
 run takes seconds and the b-values, directions, SNR, tissue and scanner stay free. The same image beside the

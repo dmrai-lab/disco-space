@@ -530,29 +530,31 @@ class Layout(Source):
     def ingredients(self, meas, physics=None):
         """What each tier multiplies into the sum, per voxel, for the run's first class: ``intra_fraction`` (the
         walker weight in the intra-axonal pool over the voxel's), ``wall_contact_um`` (the walkers' boundary local
-        time under the class's gate, a length: the contact tier's survival is exp(-rho l / D)), ``contact_survival``
-        (that factor at the run's rho, None without the contact tier), ``field_hz`` (the spread over the voxel's
-        walkers of the dephasing frequency the sheath's field gives at the run's field and direction, None without
-        the field tier), and ``D_walk`` (m^2/s)."""
+        time l under the class's gate, a length; the layout stores it signed as the exponent's term, -l, so the
+        contact tier's weight is exp(rho c / D) = exp(-rho l / D)), ``contact_survival`` (that factor at the run's
+        rho, None without the contact tier), ``field_rad`` (the spread over the voxel's walkers of the dephasing phase
+        the sheath's field gives them by the echo at the run's field and direction, the exact per-walker phase the
+        kernel applies, in radians; None without the field tier), and ``D_walk`` (m^2/s)."""
         if not self.tiers:
             return None
-        from dmipy_sim.acquisition.scanners import GAMMA
         t = self.moments.manifest["tiers"]; g, grp = self.group_of(str(meas.shape[0]))
         pools = {q["name"]: q["id"] for q in t["substrate"]["pools"]}
         pool = np.asarray(self.moments._column("pool"))
         w = np.asarray(self.moments._column("w"), np.float64)
         out = dict(D_walk=float(t["D_walk"]), intra_fraction=self.voxel_mean(pool == pools["intra"], w),
-                   wall_contact_um=None, contact_survival=None, field_hz=None)
+                   wall_contact_um=None, contact_survival=None, field_rad=None)
         if grp.get("contact"):
-            c = np.asarray(self.moments._column(f"contact_{g}"), np.float64)
-            out["wall_contact_um"] = self.voxel_mean(c, w) * 1e6
+            c = np.asarray(self.moments._column(f"contact_{g}"), np.float64)          # the signed term: -l, l >= 0
+            out["wall_contact_um"] = -self.voxel_mean(c, w) * 1e6
             if physics and physics.contact:
-                out["contact_survival"] = self.voxel_mean(np.exp(-physics.rho * c / out["D_walk"]), w)
+                out["contact_survival"] = self.voxel_mean(np.exp(physics.rho * c / out["D_walk"]), w)
         if grp.get("field") and physics and physics.field:
             iso, aniso = self.moments._field_terms(g, physics.b0_direction)
-            f = GAMMA * physics.field_T * (physics.chi_iso * iso + physics.chi_aniso * aniso) / (2 * np.pi)   # Hz per walker
-            mean = self.voxel_mean(f, w); sq = self.voxel_mean(f * f, w)
-            out["field_hz"] = np.sqrt(np.maximum(sq - mean * mean, 0.0))
+            tissue, scanner = tissue_and_scanner(physics, self.unseeded)
+            _, _, a_iso, a_aniso, _ = self.moments.terms(str(meas.shape[0]), tissue, scanner)
+            phase = a_iso * iso + a_aniso * aniso                                    # radians per walker, as the kernel
+            mean = self.voxel_mean(phase, w); sq = self.voxel_mean(phase * phase, w)
+            out["field_rad"] = np.sqrt(np.maximum(sq - mean * mean, 0.0))
         return out
 
     def ladder(self, meas, physics):

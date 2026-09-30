@@ -166,7 +166,7 @@ def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():
     md = rng.random((4, 4, 2)).astype(np.float16); fa = rng.random((4, 4, 2)).astype(np.float16)
     ex = dict(layers=[("bare diffusion", bare), ("A", a), ("B", b)], metrics={k: (md, fa) for k in ("bare diffusion", "A", "B")},
               floor=np.full((4, 4, 2), 0.01, np.float32), meas=m, mask=np.ones((4, 4, 2), bool),
-              ingredients=dict(intra_fraction=rng.random((4, 4, 2)), wall_contact_um=rng.random((4, 4, 2)), contact_survival=None, field_hz=None, D_walk=6e-10),
+              ingredients=dict(intra_fraction=rng.random((4, 4, 2)), wall_contact_um=rng.random((4, 4, 2)), contact_survival=None, field_rad=None, D_walk=6e-10),
               differences=P.layer_differences([("bare diffusion", bare.astype(np.float32)), ("A", a.astype(np.float32)), ("B", b.astype(np.float32))], m, np.ones((4, 4, 2), bool)),
               snr=None, physics=None)
     for mode in A.EXPLORE_MODES:

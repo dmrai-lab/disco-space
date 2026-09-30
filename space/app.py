@@ -313,7 +313,7 @@ def ingredient_views(ex, z):
         contact = V.map_slice(ing["wall_contact_um"], z, f"walkers' wall contact ℓ (boundary local time, µm), z = {z}", cmap="magma", unit="µm")
     else:
         contact = None
-    fld = V.map_slice(ing["field_hz"], z, f"spread of the sheath field's dephasing frequency over the voxel's walkers (Hz), z = {z}", cmap="inferno", unit="Hz") if ing.get("field_hz") is not None else None
+    fld = V.map_slice(ing["field_rad"], z, f"spread over the voxel's walkers of the sheath field's dephasing phase at the echo (rad), z = {z}", cmap="inferno", unit="rad") if ing.get("field_rad") is not None else None
     return pool, contact, fld
 
 
@@ -553,7 +553,7 @@ def build(runner=None):
                 with gr.Row():
                     ingredient_pool = gr.Image(label="relaxation tier: intra-axonal weight fraction", type="pil")
                     ingredient_contact = gr.Image(label="contact tier: the walkers' wall contact", type="pil")
-                    ingredient_field = gr.Image(label="field tier: dephasing frequency spread", type="pil")
+                    ingredient_field = gr.Image(label="field tier: dephasing phase spread at the echo", type="pil")
                 with gr.Row():
                     layer_choice = gr.Dropdown(["A"], value="A", label="layer")
                     mode = gr.Radio(list(EXPLORE_MODES), value=EXPLORE_MODES[0], label="show")

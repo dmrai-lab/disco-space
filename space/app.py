@@ -27,9 +27,10 @@ MAX_SHELLS = 4
 CUSTOM = "custom shells"
 UPLOADED = "uploaded scheme"
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
-PHYSICS_FIELDS = ("on", "field_T", "b0_mode", "theta", "phi", "T2_intra", "T2_extra", "T2_myelin", "T1_intra", "T1_extra", "T1_myelin",
+POOLS = tuple(P.config()["physics"]["pools"])           # the seeded pools the panel offers T2 and T1 for
+PHYSICS_FIELDS = ("on", "field_T", "b0_mode", "theta", "phi", *[f"T2_{q}" for q in POOLS], *[f"T1_{q}" for q in POOLS],
                   "rho", "chi_iso", "chi_aniso", "relaxation", "contact", "field")     # the panel's inputs, in the run signature's order
-TISSUE_NUMBERS = PHYSICS_FIELDS[5:14]                    # the nine the catalogue fills in: ms, ms, µm/s, ppm on the page
+TISSUE_NUMBERS = PHYSICS_FIELDS[5:5 + 2 * len(POOLS) + 3]   # the ones the catalogue fills in: ms, ms, µm/s, ppm on the page
 B0_MODES = {"along z (the strands' frame)": P.B0_ALONG_Z, "transverse (x): 90° from z, as in a biplanar magnet like the Swoop": P.B0_TRANSVERSE}
 FREE_B0 = "free (polar and azimuth angles below)"
 NO_KNOB = "none: run A only"
@@ -104,7 +105,7 @@ def physics_from(values):
         return None
     u = B0_MODES[values["b0_mode"]] if values["b0_mode"] in B0_MODES else P.b0_direction(values["theta"], values["phi"])
     return P.Physics(field_T=float(values["field_T"]), b0_direction=u,
-                     T2={q: float(values[f"T2_{q}"]) * 1e-3 for q in P.POOLS}, T1={q: float(values[f"T1_{q}"]) * 1e-3 for q in P.POOLS},
+                     T2={q: float(values[f"T2_{q}"]) * 1e-3 for q in POOLS}, T1={q: float(values[f"T1_{q}"]) * 1e-3 for q in POOLS},
                      rho=float(values["rho"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
                      relaxation=bool(values["relaxation"]), contact=bool(values["contact"]), field=bool(values["field"]))
 
@@ -113,10 +114,10 @@ def catalogue_numbers(field_T):
     """The catalogue's white matter at ``field_T`` in the page's units (ms, µm/s, ppm), in :data:`TISSUE_NUMBERS`
     order, plus the note that says which cited field it came from: what the reset button and the field presets
     fill in."""
-    c = P.catalogue(float(field_T))
+    c = P.catalogue(float(field_T), POOLS)
     note = (f"catalogue values at {c['catalogue_field']:g} T" if abs(c["catalogue_field"] - float(field_T)) < 1e-9
             else f"the catalogue has no cited relaxation at {float(field_T):g} T: nearest is {c['catalogue_field']:g} T, edit as you see fit")
-    return ([c["T2"][q] * 1e3 for q in P.POOLS] + [c["T1"][q] * 1e3 for q in P.POOLS]
+    return ([c["T2"][q] * 1e3 for q in POOLS] + [c["T1"][q] * 1e3 for q in POOLS]
             + [c["rho"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
 
 
@@ -147,7 +148,7 @@ def apply_knob(change, protocol, snr_on, snr, values):
     if kind in ("field", "b0", "tier") and not v["on"]:
         raise ValueError(f"the knob {kind!r} changes the tissue panel, which is off for A: switch it on, or choose another knob")
     if kind == "field":
-        v["field_T"] = value; v.update(zip(TISSUE_NUMBERS, catalogue_numbers(value)[:len(TISSUE_NUMBERS)]))
+        v["field_T"] = value; v.update(zip(TISSUE_NUMBERS, catalogue_numbers(value)))
     elif kind == "b0":
         v["b0_mode"] = value
     elif kind == "tier":
@@ -401,17 +402,21 @@ def build(runner=None):
                                 tier_relax = gr.Checkbox(value=True, label="relaxation (T2, T1)")
                                 tier_contact = gr.Checkbox(value=True, label="contact (surface relaxivity ρ)")
                                 tier_field = gr.Checkbox(value=True, label="field (myelin susceptibility)")
+                            n = len(POOLS)
                             with gr.Row():
-                                T2i = gr.Number(value=c0[0], label="T2 intra (ms)"); T2e = gr.Number(value=c0[1], label="T2 extra (ms)"); T2m = gr.Number(value=c0[2], label="T2 myelin (ms)")
+                                T2s = [gr.Number(value=c0[k], label=f"T2 {q} (ms)") for k, q in enumerate(POOLS)]
                             with gr.Row():
-                                T1i = gr.Number(value=c0[3], label="T1 intra (ms)"); T1e = gr.Number(value=c0[4], label="T1 extra (ms)"); T1m = gr.Number(value=c0[5], label="T1 myelin (ms)")
+                                T1s = [gr.Number(value=c0[n + k], label=f"T1 {q} (ms)") for k, q in enumerate(POOLS)]
                             with gr.Row():
-                                rho = gr.Number(value=c0[6], label="ρ (µm/s)"); chi_iso = gr.Number(value=c0[7], label="χ_iso myelin (ppm)"); chi_aniso = gr.Number(value=c0[8], label="Δχ_a myelin (ppm)")
+                                rho = gr.Number(value=c0[2 * n], label="ρ (µm/s)"); chi_iso = gr.Number(value=c0[2 * n + 1], label="χ_iso of the sheath, the field source (ppm)")
+                                chi_aniso = gr.Number(value=c0[2 * n + 2], label="Δχ_a of the sheath (ppm)")
                             with gr.Row():
-                                catalogue_note = gr.Markdown(c0[9])
+                                catalogue_note = gr.Markdown(c0[2 * n + 3])
                                 reset = gr.Button("reset to the catalogue at this field", size="sm")
-                        physics_inputs = [physics_on, field_T, b0_mode, theta, phi, T2i, T2e, T2m, T1i, T1e, T1m, rho, chi_iso, chi_aniso,
-                                          tier_relax, tier_contact, tier_field]
+                            gr.Markdown("The pack's walkers live in the intra- and extra-axonal pools (its spec names a myelin pool nobody was seeded "
+                                        "in). On this phantom the field's **direction** and the **stimulated echo** move the signal most; 3 T against "
+                                        "7 T on a PGSE is small (the 180° refocuses the static dephasing), and at 7 T the catalogue's two T2 coincide.")
+                        physics_inputs = [physics_on, field_T, b0_mode, theta, phi, *T2s, *T1s, rho, chi_iso, chi_aniso, tier_relax, tier_contact, tier_field]
                         assert len(physics_inputs) == len(PHYSICS_FIELDS)
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
@@ -430,7 +435,7 @@ def build(runner=None):
             with gr.Tab("2 · ground truth") as gt_tab:
                 strands_view = gr.Plot(label="the strands")
                 gt_matrix = gr.Image(label="the ground-truth matrices", type="pil")
-            with gr.Tab("3 · results"):
+            with gr.Tab("3 · DiSCo results"):
                 with gr.Row():
                     with gr.Column(scale=1):
                         dwi_view = gr.Image(label="DWI slice", type="pil")
@@ -461,7 +466,7 @@ def build(runner=None):
                         volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(*args, progress=progress)
-        tissue_numbers = [T2i, T2e, T2m, T1i, T1e, T1m, rho, chi_iso, chi_aniso, catalogue_note]
+        tissue_numbers = [*T2s, *T1s, rho, chi_iso, chi_aniso, catalogue_note]
         field_preset.change(lambda name: [field_presets[name]] + catalogue_numbers(field_presets[name]), inputs=field_preset,
                             outputs=[field_T] + tissue_numbers, show_progress="hidden")
         reset.click(catalogue_numbers, inputs=field_T, outputs=tissue_numbers, show_progress="hidden")

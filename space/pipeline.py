@@ -258,15 +258,15 @@ def write_volumes(res, out_dir, *, prefix="disco"):
 
 # ---- the physics: tissue and scanner --------------------------------------------------------------------------------
 CATALOGUE_FIELDS = (1.5, 3.0, 7.0)                       # where dmipy-sim's white-matter catalogue has cited relaxation
-POOLS = ("intra", "extra", "myelin")                     # the DiSCo pack's pools, as its tissue mapping names them
+CATALOGUE_POOLS = ("intra", "extra", "myelin")           # the pools the catalogue has T2 and T1 for
 B0_ALONG_Z = (0.0, 0.0, 1.0)
 B0_TRANSVERSE = (1.0, 0.0, 0.0)
 
 
-def catalogue(field_T):
+def catalogue(field_T, pools=CATALOGUE_POOLS):
     """dmipy-sim's canonical white matter at the catalogue field nearest ``field_T`` (in log distance): ``T2`` and
-    ``T1`` per pool (s), ``rho`` (m/s), ``chi_iso`` and ``chi_aniso`` (SI), and ``catalogue_field``, the field the
-    numbers were cited at (the page says so when it is not the chosen one)."""
+    ``T1`` per pool of ``pools`` (s), ``rho`` (m/s), the sheath's ``chi_iso`` and ``chi_aniso`` (SI), and
+    ``catalogue_field``, the field the numbers were cited at (the page says so when it is not the chosen one)."""
     import warnings
     from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
     if not float(field_T) > 0:
@@ -275,7 +275,10 @@ def catalogue(field_T):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         w = canonical_white_matter(field_T=near)
-    return dict(catalogue_field=near, T2={q: float(w[f"T2_{q}"]) for q in POOLS}, T1={q: float(w[f"T1_{q}"]) for q in POOLS},
+    unknown = [q for q in pools if q not in CATALOGUE_POOLS]
+    if unknown:
+        raise ValueError(f"the catalogue has no relaxation for the pools {unknown}; it knows {CATALOGUE_POOLS}")
+    return dict(catalogue_field=near, T2={q: float(w[f"T2_{q}"]) for q in pools}, T1={q: float(w[f"T1_{q}"]) for q in pools},
                 rho=float(w["rho2"]), chi_iso=float(w["chi_iso_myelin"]), chi_aniso=float(w["delta_chi_a"]))
 
 
@@ -288,10 +291,10 @@ def b0_direction(theta_deg, phi_deg):
 @dataclass(frozen=True)
 class Physics:
     """The tissue and the scanner a replay is evaluated at: the field (T) and its direction in the substrate frame,
-    T2 and T1 per pool (s), the walls' surface relaxivity ``rho`` (m/s), myelin's ``chi_iso`` and ``chi_aniso``
-    (SI); ``relaxation`` / ``contact`` / ``field`` switch the three tiers, so a tier is a knob the page can turn off
-    one at a time. :meth:`tissue` is the :class:`dmipy_sim.spec.tissue.Tissue` for the replay (None when every tier
-    is off: bare diffusion)."""
+    T2 and T1 per seeded pool (s), the walls' surface relaxivity ``rho`` (m/s), the sheath's ``chi_iso`` and
+    ``chi_aniso`` (SI, the field source); ``relaxation`` / ``contact`` / ``field`` switch the three tiers, so a tier
+    is a knob the page can turn off one at a time. :meth:`tissue` is the :class:`dmipy_sim.spec.tissue.Tissue` for
+    the replay (None when every tier is off: bare diffusion)."""
     field_T: float
     T2: dict
     T1: dict
@@ -306,9 +309,11 @@ class Physics:
     def __post_init__(self):
         if not (0 < self.field_T < 30):
             raise ValueError(f"the field is in tesla, got {self.field_T}")
+        if not self.T2 or set(self.T1) != set(self.T2):
+            raise ValueError(f"T2 and T1 are seconds over the same pools, got {self.T2} and {self.T1}")
         for what, m in (("T2", self.T2), ("T1", self.T1)):
-            if set(m) != set(POOLS) or any(not (0 < float(v) < 100) for v in m.values()):
-                raise ValueError(f"{what} is seconds per pool {POOLS}, got {m}")
+            if any(not (0 < float(v) < 100) for v in m.values()):
+                raise ValueError(f"{what} is seconds per pool, got {m}")
         if self.rho < 0:
             raise ValueError("the surface relaxivity is non-negative")
         u = np.asarray(self.b0_direction, np.float64)
@@ -316,9 +321,9 @@ class Physics:
             raise ValueError("b0_direction is a unit vector")
 
     @classmethod
-    def at(cls, field_T, *, b0_direction=B0_ALONG_Z, **overrides):
-        """The catalogue's white matter at ``field_T`` with ``overrides`` (any field of the class)."""
-        c = catalogue(field_T); c.pop("catalogue_field")
+    def at(cls, field_T, *, pools=("intra", "extra"), b0_direction=B0_ALONG_Z, **overrides):
+        """The catalogue's white matter at ``field_T`` over ``pools`` with ``overrides`` (any field of the class)."""
+        c = catalogue(field_T, pools); c.pop("catalogue_field")
         return cls(field_T=float(field_T), b0_direction=tuple(float(x) for x in b0_direction), **{**c, **overrides})
 
     @property
@@ -329,11 +334,19 @@ class Physics:
     def along_z(self):
         return bool(np.allclose(self.b0_direction, B0_ALONG_Z))
 
-    def tissue(self):
+    @property
+    def pools(self):
+        return tuple(self.T2)
+
+    def tissue(self, unseeded=()):
+        """The Tissue for the replay; ``unseeded`` names the substrate's pools no walker was seeded in, which the
+        library's mapping still wants a value for: they take the first seeded pool's (nothing reads it)."""
         from dmipy_sim.spec.tissue import Tissue
         if self.bare:
             return None
-        return Tissue(T2=dict(self.T2) if self.relaxation else None, T1=dict(self.T1) if self.relaxation else None,
+        first = self.pools[0]
+        T2 = {**self.T2, **{q: self.T2[first] for q in unseeded}}; T1 = {**self.T1, **{q: self.T1[first] for q in unseeded}}
+        return Tissue(T2=T2 if self.relaxation else None, T1=T1 if self.relaxation else None,
                       rho=self.rho if self.contact else None, chi_iso=self.chi_iso if self.field else None,
                       chi_aniso=self.chi_aniso if self.field else 0.0)
 
@@ -345,10 +358,11 @@ class Physics:
         return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {'+'.join(tiers)}"
 
 
-def tissue_and_scanner(physics):
-    """``(tissue, scanner)`` for a replay at ``physics``: ``(None, None)`` for bare diffusion."""
-    tissue = physics.tissue() if physics else None
-    return tissue, (physics.field_T if tissue is not None else None)
+def tissue_and_scanner(physics, unseeded=()):
+    """``(tissue, scanner)`` for a replay at ``physics``: ``(None, None)`` for bare diffusion; the scanner's field
+    goes with the field tier only (relaxation at a field is already in the tissue's T2 and T1)."""
+    tissue = physics.tissue(unseeded) if physics else None
+    return tissue, (physics.field_T if tissue is not None and physics.field else None)
 
 
 # ---- the sources: what replays the walk -------------------------------------------------------------------------------
@@ -359,10 +373,13 @@ class Source:
     validates a run, replays measurements, plans a replay and reports its accuracy."""
     mode = ""
 
+    unseeded = ()                                    # the substrate's pools no walker was seeded in
+
     def __init__(self, cfg):
         import nibabel as nib
         self.cfg = cfg
         self.shapes = cfg["shapes"]
+        self.pools = tuple(cfg["physics"]["pools"])
         self.backend = backend(cfg)
         self.mask = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_mask.nii.gz")).dataobj) > 0
         self.rois = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_ROIs.nii.gz")).dataobj).astype(np.int32)
@@ -430,19 +447,28 @@ class Layout(Source):
                 if v is not None and abs(float(v) - float(t[k])) > 1e-9:
                     raise ValueError(f"class {name}: the layout's {k} is {v} s, the config's {t[k]} s")
         self.tiers = bool(self.moments.manifest.get("tiers"))
+        if self.tiers:                                   # the pools with walkers are the spec's first n_pools ids
+            t = self.moments.manifest["tiers"]
+            spec_pools = sorted(t["substrate"]["pools"], key=lambda q: q["id"]) if t.get("substrate") else []
+            seeded = tuple(q["name"] for q in spec_pools[:int(t["pools"])])
+            if set(seeded) != set(self.pools):
+                raise ValueError(f"the layout's seeded pools are {seeded}, the config's [physics] pools {self.pools}")
+            self.unseeded = tuple(q["name"] for q in spec_pools[int(t["pools"]):])
         self.check_grid(self.moments.grid.shape, "the layout")
 
     def validate(self, protocol, physics):
         meas = measurements(protocol, self.shapes)
         if physics and not physics.bare and not self.tiers:
             raise ValueError("this layout holds bare diffusion only: switch the tissue panel off")
+        if physics and set(physics.pools) != set(self.pools):
+            raise ValueError(f"the tissue names the pools {physics.pools}; this layout's are {self.pools}")
         return meas
 
     def replay(self, meas, physics=None):
         t0 = time.perf_counter()
         S = np.full(self.mask.shape + (len(meas.bvals),), np.nan)
         floor = np.zeros(self.mask.shape)
-        tissue, scanner = tissue_and_scanner(physics)
+        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
         b0 = physics.b0_direction if physics else B0_ALONG_Z
         for name in np.unique(meas.shape):
             rows = meas.shape == name
@@ -454,7 +480,7 @@ class Layout(Source):
     def default_physics(self):
         """The tissue panel's default (``[physics]``), or None when it starts off or the layout has no tiers."""
         p = self.cfg["physics"]
-        return Physics.at(float(p["default_field"])) if (p["default_on"] and self.tiers) else None
+        return Physics.at(float(p["default_field"]), pools=self.pools) if (p["default_on"] and self.tiers) else None
 
     def warm(self):
         """DiSCo's own protocol replayed once at the default physics (every class it plays compiled at the row
@@ -536,7 +562,7 @@ class Columns(Source):
     def plan(self, meas, physics=None):
         """What the replay will read (the pack's plan: bands, modes, tiers, rows, bytes) and ``estimated_seconds``
         at the source's read rate."""
-        tissue, scanner = tissue_and_scanner(physics)
+        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
         plan = self.pack.plan(self.sequence(meas), tissue=tissue, scanner=scanner, tol=BAND_TOL)
         plan["estimated_seconds"] = plan["bytes"] / self.RATE[self.remote]
         return plan
@@ -544,7 +570,7 @@ class Columns(Source):
     def replay(self, meas, physics=None, *, progress=None):
         from dmipy_sim.replay.study import Study, Protocol as SProtocol, Acquisition
         t0 = time.perf_counter()
-        tissue, scanner = tissue_and_scanner(physics)
+        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
         study = Study(SProtocol([Acquisition(self.sequence(meas), name="run")]), tissues=[tissue], scanners=[scanner])
         S, floor, plan = self.pack.image_study(study, tol=BAND_TOL, chunk_rows=1_000_000, progress=progress)
         self.last_plan = plan

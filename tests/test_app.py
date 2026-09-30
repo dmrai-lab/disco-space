@@ -39,7 +39,7 @@ def test_full_mode_takes_the_rows_own_timing_and_demo_mode_refuses_the_upload():
 
 
 def _values(on=True, field_T=3.0, **over):
-    nums = A.catalogue_numbers(field_T)[:9]
+    nums = A.catalogue_numbers(field_T)[:-1]
     v = dict(zip(A.PHYSICS_FIELDS, [on, field_T, next(iter(A.B0_MODES)), 0, 0] + nums + [True, True, True]))
     v.update(over)
     return v
@@ -49,11 +49,11 @@ def test_the_physics_panel_is_a_physics_in_si_or_none_when_off():
     nums = A.catalogue_numbers(3.0)
     assert nums[-1].startswith("catalogue values at 3 T") and A.catalogue_numbers(0.064)[-1].startswith("the catalogue has no cited")
     ph = A.physics_from(_values(field=False))
-    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[6] * 1e-6 and not ph.field and ph.relaxation
+    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == A.POOLS
     assert A.physics_from(_values(on=False)) is None
     free = A.physics_from(_values(field_T=7.0, b0_mode=A.FREE_B0, theta=90, phi=90))
     assert abs(free.b0_direction[1] - 1.0) < 1e-12
-    with pytest.raises(ValueError, match="17 inputs"):
+    with pytest.raises(ValueError, match="15 inputs"):
         A.physics_values(1, 2, 3)
 
 
@@ -72,7 +72,7 @@ def test_a_knob_changes_one_thing_of_a():
         diffs = [k for k in A.PHYSICS_FIELDS if vb[k] != v[k]]
         kind = change[0]
         if kind == "field":
-            assert vb["field_T"] == change[1] and [vb[k] for k in A.TISSUE_NUMBERS] == A.catalogue_numbers(change[1])[:9] and pb is prot
+            assert vb["field_T"] == change[1] and [vb[k] for k in A.TISSUE_NUMBERS] == A.catalogue_numbers(change[1])[:-1] and pb is prot
         elif kind == "b0":
             assert diffs == ["b0_mode"] or (diffs == [] and change[1] == v["b0_mode"])
         elif kind == "tier":
@@ -117,6 +117,8 @@ class _Demo(P.Source):
     def validate(self, protocol, physics):
         if physics and not physics.bare and not self.tiers:
             raise ValueError("bare only")
+        if physics and set(physics.pools) != set(self.pools):
+            raise ValueError("pools")
         return P.measurements(protocol, self.shapes)
 
 

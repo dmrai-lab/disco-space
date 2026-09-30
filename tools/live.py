@@ -17,7 +17,7 @@ from space import app as A          # noqa: E402  (the page's constants and the 
 
 
 def inputs(preset, *, knob=A.NO_KNOB, n_keys=1, field=3.0):
-    physics = [True, field, next(iter(A.B0_MODES)), 0, 0] + A.catalogue_numbers(field)[:9] + [True, True, True]
+    physics = [True, field, next(iter(A.B0_MODES)), 0, 0] + A.catalogue_numbers(field)[:-1] + [True, True, True]
     shells = [True, "d12-D24", 1000, 30, 12.0, 24.0, 53.5, True, "d8-D20", 3000, 45, 8.0, 20.0, 53.5,
               False, "d17-D30", 3000, 90, 17.0, 30.0, 53.5, False, "d17-D30", 6000, 60, 17.0, 30.0, 53.5]
     return [preset, 2, True, 30, 4, 30.0, 0.5, 0, None, knob, A.NO_SCANNER, n_keys, *physics, *shells]

@@ -315,8 +315,8 @@ def run_checks(out_dir):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dwi-dir", required=True)
-    ap.add_argument("--parcellation-dir", required=True)
+    ap.add_argument("--dwi-dir", required=False, default=None)
+    ap.add_argument("--parcellation-dir", required=False, default=None)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--subject", default="MASiVar sub-cIs1 ses-s1Ax1 run-1xx")
     ap.add_argument("--source-doi", default="10.18112/openneuro.ds003416.v2.0.2")
@@ -333,6 +333,8 @@ def main():
     if a.checks_only:
         run_checks(a.out_dir)
         return
+    if not a.dwi_dir or not a.parcellation_dir:
+        ap.error("--dwi-dir and --parcellation-dir are required unless --checks-only")
 
     import nibabel as nib
 

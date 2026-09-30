@@ -525,6 +525,23 @@ def score(M, layout):
                 false_pairs=int(((M[iu] > 0) & (gt[iu] == 0)).sum()), missed_pairs=int(((M[iu] == 0) & (gt[iu] > 0)).sum()))
 
 
+def retime(protocol, shape):
+    """``protocol`` with every shell on the timing class ``shape`` (b-values, directions and counts kept): the A/B
+    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another."""
+    return Protocol(tuple(Shell(shape, s.b, s.n_dirs) for s in protocol.shells), n_b0=protocol.n_b0,
+                    directions=protocol.directions, bvals=protocol.bvals, name=f"{protocol.name} on {shape}")
+
+
+def compare(a, b):
+    """A against B over the 120 region pairs: the Pearson between the two streamline-count matrices, the pairs
+    connected in one only, and B's score minus A's."""
+    iu = np.triu_indices(N_REGIONS, 1)
+    ma, mb = a.matrix[iu], b.matrix[iu]
+    return dict(pearson_ab=float(np.corrcoef(ma, mb)[0, 1]) if ma.std() > 0 and mb.std() > 0 else float("nan"),
+                only_a=int(((ma > 0) & (mb == 0)).sum()), only_b=int(((mb > 0) & (ma == 0)).sum()),
+                delta_count=b.score["pearson_count"] - a.score["pearson_count"], delta_area=b.score["pearson_area"] - a.score["pearson_area"])
+
+
 @dataclass
 class Result:
     protocol: Protocol

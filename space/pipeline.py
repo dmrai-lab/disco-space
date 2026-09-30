@@ -541,6 +541,50 @@ def score(M, layout):
                 false_pairs=int(((M[iu] > 0) & (gt[iu] == 0)).sum()), missed_pairs=int(((M[iu] == 0) & (gt[iu] > 0)).sum()))
 
 
+def gradient_needed(b, delta, Delta):
+    """The square-pulse PGSE amplitude (T/m) that gives ``b`` (s/mm^2) at ``delta`` / ``Delta`` (s):
+    b = γ² G² δ² (Δ − δ/3)."""
+    from dmipy_sim.acquisition.scanners import GAMMA
+    return float(np.sqrt(b * 1e6 / (GAMMA ** 2 * delta ** 2 * (Delta - delta / 3.0))))
+
+
+def scanner_classes():
+    """The catalogue's scanner classes with their gradient limit and field: ``{name: (G_max T/m, field_T or None)}``."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.acquisition import scanner_constants as scc
+    out = {}
+    for c in scc.SCANNER_CONSTANTS["classes"]:
+        L = ScannerLimits.of(c)
+        out[c] = (float(L.G_max), L.field_T)
+    return out
+
+
+def playable(protocol, shapes, scanner=None):
+    """Per shell, the gradient it needs and whether ``scanner`` (a catalogue class, or None for no limit) can play
+    it: rows of ``(shell, b, timing, G_needed T/m, G_max T/m or None, ok)``. A stimulated-echo class needs the same
+    amplitude as its PGSE twin (the same δ and diffusion time)."""
+    G_max = scanner_classes()[scanner][0] if scanner else None
+    rows = []
+    for s in protocol.shells:
+        t = dict(delta=s.delta, Delta=s.Delta) if s.free_timing else shapes[s.shape]
+        G = gradient_needed(s.b, float(t["delta"]), float(t["Delta"]))
+        rows.append((s.shape, s.b, f"δ {float(t['delta']) * 1e3:g} / Δ {float(t['Delta']) * 1e3:g} ms", G, G_max, G_max is None or G <= G_max))
+    return rows
+
+
+def sample_tractogram(tg, n, *, seed=0):
+    """A :class:`dmipy_tract.Tractogram` of ``n`` streamlines drawn without replacement from ``tg`` (all of them
+    when it has fewer), in their original order: what the page keeps and draws, while the full tractogram goes to
+    the .tck file (disco-space#4 iteration 6)."""
+    from dmipy_tract.tractogram import Tractogram
+    if len(tg) <= n:
+        return tg
+    pick = np.sort(np.random.default_rng(seed).choice(len(tg), n, replace=False))
+    counts = np.diff(tg.offsets)[pick]
+    points = np.concatenate([tg.points[tg.offsets[i]:tg.offsets[i + 1]] for i in pick])
+    return Tractogram(points, np.concatenate([[0], np.cumsum(counts)]), tg.seed_index[pick], tg.stop_reason[pick])
+
+
 def retime(protocol, shape):
     """``protocol`` with every shell on the timing class ``shape`` (b-values, directions and counts kept): the A/B
     knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another."""

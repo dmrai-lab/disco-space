@@ -95,16 +95,16 @@ def _regions(rois):
                         marker=dict(size=5, color=[REGION_COLOURS[c[0] - 1] for c in cs]), name="regions", showlegend=False)
 
 
-def tractogram3d(tg, rois, shape, *, n=1500, seed=0):
+def tractogram3d(tg, rois, shape, *, n=1500, seed=0, total=None):
     """A random sample of ``n`` streamlines in 3-D, coloured by dominant axis (x red, y green, z blue), the region
-    centroids labelled."""
+    centroids labelled; ``total`` is the run's streamline count when ``tg`` is already a sample."""
     import plotly.graph_objects as go
     rng = np.random.default_rng(seed)
     pick = rng.choice(len(tg), min(n, len(tg)), replace=False)
     paths = [np.asarray(tg[i]) for i in pick if len(tg[i]) > 1]
     fig = go.Figure(data=_lines3d(_by_dominant_axis(paths), ("#d62728", "#2ca02c", "#1f77b4"), name="streamlines") + [_regions(rois)])
     fig.update_layout(scene=_scene(shape), margin=dict(l=0, r=0, t=30, b=0), height=560,
-                      title=dict(text=f"{len(paths):,} of {len(tg):,} streamlines (drag to rotate)", font=dict(size=13)))
+                      title=dict(text=f"{len(paths):,} of {total or len(tg):,} streamlines (drag to rotate)", font=dict(size=13)))
     return fig
 
 

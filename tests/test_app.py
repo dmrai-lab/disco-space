@@ -89,3 +89,10 @@ def test_compare_is_symmetric_in_its_pairs_and_zero_for_the_same_run():
     assert c["only_a"] == 1 and c["only_b"] == 1 and abs(c["delta_count"] + 0.05) < 1e-12 and c["delta_area"] == 0
     same = P.compare(a, a)
     assert same["only_a"] == 0 and same["pearson_ab"] == 1.0
+
+
+def test_the_gradient_table_names_the_shell_the_scanner_cannot_play():
+    prot = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS)
+    table, ok = A.gradient_text(prot, CFG["shapes"], "prisma")
+    assert "70 mT/m" in table and "194 mT/m" in table and "cannot play" in table and not ok      # shell 2: b 3000 at δ 8 / Δ 20
+    assert A.gradient_text(prot, CFG["shapes"], "connectom")[1] and A.gradient_text(prot, CFG["shapes"], A.NO_SCANNER)[1]

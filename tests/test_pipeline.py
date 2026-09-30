@@ -174,3 +174,32 @@ def test_the_physics_is_the_catalogue_at_the_nearest_field_with_the_tiers_as_swi
         P.Physics.at(3.0, b0_direction=(0, 0, 2))
     for name, preset in P.B0_PRESETS.items():
         np.testing.assert_allclose(np.linalg.norm(preset), 1.0)
+
+
+def test_a_tractogram_sample_keeps_whole_streamlines_in_order():
+    from dmipy_tract.tractogram import Tractogram
+    rng = np.random.default_rng(1)
+    counts = rng.integers(2, 6, size=50)
+    tg = Tractogram(rng.normal(size=(counts.sum(), 3)), np.concatenate([[0], np.cumsum(counts)]), np.arange(50), np.zeros((50, 2), np.int8))
+    s = P.sample_tractogram(tg, 10, seed=0)
+    assert len(s) == 10 and np.all(np.diff(s.seed_index) > 0)
+    for k, i in enumerate(s.seed_index):
+        np.testing.assert_array_equal(s[k], tg[int(i)])
+    assert P.sample_tractogram(tg, 100) is tg
+
+
+def test_the_gradient_a_shell_needs_and_the_scanners_that_can_play_it():
+    """b = 1000 at δ 12 / Δ 24 ms needs 70 mT/m (γ² G² δ² (Δ − δ/3)); the Prisma (80 mT/m) plays it, the low-field
+    class (23 mT/m) does not; DiSCo's b = 13183 shell needs the Connectom class; None means no limit."""
+    G = P.gradient_needed(1000, 0.012, 0.024)
+    assert 0.069 < G < 0.071
+    classes = P.scanner_classes()
+    assert classes["prisma"] == (0.08, 3.0) and classes["low_field"][0] < 0.03
+    p = P.Protocol((P.Shell("d12-D24", 1000, 30),), n_b0=1)
+    assert P.playable(p, CFG["shapes"], "prisma")[0][-1] and not P.playable(p, CFG["shapes"], "low_field")[0][-1]
+    assert P.playable(p, CFG["shapes"], None)[0][4] is None and P.playable(p, CFG["shapes"], None)[0][-1]
+    disco, _ = P.disco_protocol(CFG)
+    rows = P.playable(disco, CFG["shapes"], "connectom")
+    assert all(r[-1] for r in rows) and not all(r[-1] for r in P.playable(disco, CFG["shapes"], "prisma"))
+    free = P.Protocol((P.Shell("mine", 1000, 30, delta=0.012, Delta=0.024, TE=0.06),), n_b0=1)
+    assert abs(P.playable(free, CFG["shapes"], None)[0][3] - G) < 1e-12

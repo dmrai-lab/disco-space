@@ -24,6 +24,7 @@ PER_SHELL = 7                                            # on, timing class, b, 
 N_PHYSICS = 17                                           # on, field, B0 preset, theta, phi, 3 T2, 3 T1, rho, chi_iso, chi_aniso, 3 tiers
 FREE_B0 = "free (polar and azimuth angles below)"
 NO_KNOB = "none: run A only"
+SAMPLE = 10_000                                          # streamlines kept in the page's state and in the sample .tck
 STAGE_TEXT = {"replay": "replaying the grid from the stored walk", "noise": "adding Rician noise", "csd": "fitting CSD (order 8)",
               "track": "tracking from the sixteen regions", "score": "scoring the connectome"}
 _state = {"layout": None, "error": None}
@@ -146,7 +147,8 @@ def _result_state(res, layout, state):
     peaks, amp = P.peaks(res.sh)
     return dict(dwi=res.dwi.astype(np.float32), floor=res.floor.astype(np.float32), meas=res.meas, peaks=peaks.astype(np.float32), peak_amp=amp.astype(np.float32),
                 matrix=res.matrix, score=res.score, seconds=res.seconds, load_seconds=state.get("load_seconds", float("nan")),
-                tractogram=res.tractogram, rois=layout.rois, shape=layout.mask.shape, name=res.protocol.name)
+                tractogram=P.sample_tractogram(res.tractogram, SAMPLE), n_streamlines=len(res.tractogram),
+                rois=layout.rois, shape=layout.mask.shape, name=res.protocol.name)
 
 
 def _one_run(tag, layout, cfg, protocol, snr_on, snr, tracking, physics, t0, progress, keep, n_out):
@@ -164,8 +166,9 @@ def _one_run(tag, layout, cfg, protocol, snr_on, snr, tracking, physics, t0, pro
         yield (keep, text) + (keep,) * (n_out - 1)
     out = tempfile.mkdtemp(); stem = f"disco_{tag}_{protocol.name.replace(' ', '_')}"
     tck = os.path.join(out, f"{stem}.tck"); res.tractogram.to_tck(tck)
+    sample = os.path.join(out, f"{stem}_sample{SAMPLE // 1000}k.tck"); P.sample_tractogram(res.tractogram, SAMPLE).to_tck(sample)
     vols = P.write_volumes(res, out, prefix=stem)
-    yield res, dict(tck=tck, volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]])
+    yield res, dict(tck=[tck, sample], volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]])
 
 
 def _score_text(tag, res, layout):
@@ -176,7 +179,19 @@ def _score_text(tag, res, layout):
             f"replay floor median {np.nanmedian(res.floor[layout.mask]):.4f})")
 
 
-def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, *rest, progress=None):
+NO_SCANNER = "none: any gradient amplitude"
+
+
+def gradient_text(protocol, shapes, scanner):
+    """The per-shell gradient table as Markdown, and whether every shell is playable on ``scanner``."""
+    rows = P.playable(protocol, shapes, scanner if scanner != NO_SCANNER else None)
+    lines = ["| shell | b (s/mm²) | timing | needs | limit |", "|---|---|---|---|---|"]
+    for name, b, timing, G, G_max, ok in rows:
+        lines.append(f"| {name} | {b:g} | {timing} | {G * 1e3:.0f} mT/m | " + ("any" if G_max is None else f"{G_max * 1e3:.0f} mT/m {'✓' if ok else '✗ cannot play'}") + " |")
+    return "\n".join(lines), all(r[-1] for r in rows)
+
+
+def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, *rest, progress=None):
     """The run button, a generator: while a stage runs it yields the stage's name into the headline (the other
     outputs untouched), and last the results: A, and B when ``knob`` changes one thing (the same tracker key, so
     the difference is the knob's). A generator reaches the page from inside any worker, where a progress object
@@ -201,6 +216,10 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
         if change is not None:
             pb, on_b, snr_b, ph_b = apply_knob(cfg, change, protocol, snr_on, snr, physics_inputs)
             runs.append(("B", pb, on_b, snr_b, _physics_from_inputs(cfg, *ph_b)))
+        for tag, prot, *_ in runs:                           # the scanner's gradient limit: shown, and refused when exceeded
+            table, ok = gradient_text(prot, cfg["shapes"], scanner)
+            if not ok:
+                raise ValueError(f"{scanner} cannot play run {tag}'s shells (square pulses):\n\n{table}")
         if full:                                             # the plan before any byte moves: what it reads, how long
             plan = layout.plan(P.measurements(protocol, cfg["shapes"]))
             yield (keep, f"**full replay: {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
@@ -230,10 +249,10 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
     m0 = int(np.flatnonzero(~ra["meas"].b0)[0]) if (~ra["meas"].b0).any() else 0
     timings = [[f"{tag} · {r}", t] for tag in rs for r, t in V.timings_rows(rs[tag]["seconds"], rs[tag]["load_seconds"])] if rb else V.timings_rows(ra["seconds"], ra["load_seconds"])
     yield (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=True),
-           V.tractogram3d(ra["tractogram"], ra["rois"], ra["shape"]), V.matrices(ra["matrix"], ra["score"], layout.gt_count),
-           timings, [f["tck"] for f in files.values()], [v for f in files.values() for v in f["volumes"]],
+           V.tractogram3d(ra["tractogram"], ra["rois"], ra["shape"], total=ra["n_streamlines"]), V.matrices(ra["matrix"], ra["score"], layout.gt_count),
+           timings, [t for f in files.values() for t in f["tck"]], [v for f in files.values() for v in f["volumes"]],
            _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, protocol.n_meas - 1),
-           V.tractogram3d(rb["tractogram"], rb["rois"], rb["shape"]) if rb else None,
+           V.tractogram3d(rb["tractogram"], rb["rois"], rb["shape"], total=rb["n_streamlines"]) if rb else None,
            V.matrices(rb["matrix"], rb["score"], layout.gt_count) if rb else None,
            gr.update(visible=rb is not None),
            V.floor_slice(ra["floor"], z0, label="A: "), accuracy_rows(layout, results["A"]))
@@ -249,7 +268,9 @@ def accuracy_rows(layout, res):
         sh = getattr(layout, "moments", None) and layout.moments.manifest["shapes"].get(name, {})
         if sh:
             enc = sh.get("encoding", {})
-            rows.append([f"class {name}", f"δ {enc.get('delta')} / Δ {enc.get('Delta')} / TE {enc.get('TE')} s, built at {sh.get('amplitude_built')} T/m, pathway {sh.get('pathway')}"])
+            first = lambda v: (v[0] if isinstance(v, list) and v else v)
+            rows.append([f"class {name}", f"δ {first(enc.get('delta'))} / Δ {first(enc.get('Delta'))} / TE {first(enc.get('TE'))} s, "
+                                          f"built at {float(sh.get('amplitude_built') or 0) * 1e3:.0f} mT/m, pathway amplitude {sh.get('pathway') or 1}"])
     return rows
 
 
@@ -352,6 +373,9 @@ def build(runner=None):
                         step_mm = gr.Slider(0.25, 1.0, value=cfg["tracking"]["step_mm"], step=0.05, label="step (voxels)")
                         key = gr.Number(value=0, precision=0, label="random key")
                         knob = gr.Dropdown(list(knobs(cfg)), value=NO_KNOB, label="B: the same run with one knob changed")
+                        scanner = gr.Dropdown([NO_SCANNER] + [f"{c}" for c in P.scanner_classes()], value=NO_SCANNER,
+                                              label="scanner gradient limit (the catalogue's classes): a shell it cannot play refuses the run")
+                        gradients = gr.Markdown()
                         go = gr.Button("replay → CSD → track → score", variant="primary")
                         headline = gr.Markdown()
             with gr.Tab("2 · ground truth") as gt_tab:
@@ -383,7 +407,7 @@ def build(runner=None):
                 with gr.Row():
                     timings = gr.Dataframe(headers=["stage", "seconds"], label="timings", interactive=False)
                     with gr.Column():
-                        tck = gr.File(label="tractograms (.tck, MRtrix)", file_count="multiple")
+                        tck = gr.File(label="tractograms (.tck, MRtrix): every streamline, and a 10k sample", file_count="multiple")
                         volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(*args, progress=progress)
@@ -392,7 +416,16 @@ def build(runner=None):
         field_preset.change(lambda name: [field_presets[name]] + catalogue_numbers(field_presets[name]), inputs=field_preset,
                             outputs=[field_T] + tissue_numbers, show_progress="hidden")
         reset.click(catalogue_numbers, inputs=field_T, outputs=tissue_numbers, show_progress="hidden")
-        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, *physics_inputs, *shell_inputs],
+        def show_gradients(preset_, n_b0_, scanner_, *shells_):
+            try:
+                prot = _protocol_from_inputs(cfg, preset_, n_b0_, *shells_, full=full)
+            except (ValueError, KeyError) as e:
+                return f"({e})"
+            table, ok = gradient_text(prot, cfg["shapes"], scanner_)
+            return table
+        for ctl in (preset, scanner, *shell_inputs):
+            ctl.change(show_gradients, inputs=[preset, n_b0, scanner, *shell_inputs], outputs=gradients, show_progress="hidden")
+        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, *physics_inputs, *shell_inputs],
                  outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider, tract_view_b, mats_b, b_row, floor_view, accuracy], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay, which):

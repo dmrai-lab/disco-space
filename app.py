@@ -28,7 +28,7 @@ def gpu_runner(fn):
         torch.use_deterministic_algorithms(True)
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        return fn(*args, progress=progress)
+        yield from fn(*args, progress=progress)                # a generator: the stage names reach the page
     return run
 
 

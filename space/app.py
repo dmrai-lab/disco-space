@@ -75,10 +75,14 @@ def _result_state(res, layout, state):
 
 def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs,
                  progress=None):
-    """The run button: ``progress(fraction, desc=)`` is Gradio's progress bar (a no-op when None)."""
+    """The run button, a generator: while a stage runs it yields the stage's name into the headline (the other
+    outputs untouched), and last the results. A generator reaches the page from inside any worker, where a progress
+    object does not."""
     import gradio as gr
-    progress = progress or (lambda *a, **k: None)
-    progress(0.0, desc="loading the layout" if _state["layout"] is None else "starting")
+    keep = gr.update()
+    n_out = 9
+    if progress:
+        progress(0.0, desc="starting")
     state = _load()
     if state["error"]:
         raise gr.Error(f"the layout did not load: {state['error']}")
@@ -88,15 +92,21 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bv
     except (ValueError, KeyError) as e:
         raise gr.Error(str(e))
     tracking = P.Tracking(density=int(density), step_mm=float(step_mm), max_angle=float(max_angle), key=int(key))
-
-    def at(stage, k, n):
-        progress((k + 0.5) / (n + 1), desc=f"{k + 1}/{n} {STAGE_TEXT[stage]}")
-    res = P.run(layout, protocol, snr=(float(snr) if snr_on else None), tracking=tracking, progress=at)
-    progress(0.92, desc="writing the downloads")
+    t0 = time.perf_counter()
+    res = None
+    for item in P.run_stages(layout, protocol, snr=(float(snr) if snr_on else None), tracking=tracking):
+        if isinstance(item, P.Result):
+            res = item
+            break
+        stage, k, n = item
+        text = f"**{k + 1}/{n} {STAGE_TEXT[stage]}** … ({protocol.n_meas} measurements, {time.perf_counter() - t0:.0f} s so far)"
+        if progress:
+            progress((k + 0.5) / (n + 1), desc=f"{k + 1}/{n} {STAGE_TEXT[stage]}")
+        yield (keep, text) + (keep,) * (n_out - 1)
+    yield (keep, f"**writing the downloads and drawing** … ({time.perf_counter() - t0:.0f} s so far)") + (keep,) * (n_out - 1)
     out = tempfile.mkdtemp(); stem = f"disco_{protocol.name.replace(' ', '_')}"
     tck = os.path.join(out, f"{stem}.tck"); res.tractogram.to_tck(tck)
     vols = P.write_volumes(res, out, prefix=stem)
-    progress(0.97, desc="drawing")
     rs = _result_state(res, layout, state)
     s = res.score
     headline = (f"**Pearson vs strand count {s['pearson_count']:.3f}, vs cross-sectional area {s['pearson_area']:.3f}** "
@@ -104,10 +114,10 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bv
                 f"replay floor median {np.nanmedian(res.floor[layout.mask]):.4f}). Results are in the third tab.")
     z0 = rs["dwi"].shape[2] // 2
     m0 = int(np.flatnonzero(~rs["meas"].b0)[0]) if (~rs["meas"].b0).any() else 0
-    return (rs, headline, V.dwi_slice(rs["dwi"], rs["meas"], z0, m0, peaks=rs["peaks"], peak_amp=rs["peak_amp"], overlay=True),
-            V.tractogram3d(rs["tractogram"], rs["rois"], rs["shape"]), V.matrices(rs["matrix"], rs["score"], layout.gt_count),
-            V.timings_rows(rs["seconds"], rs["load_seconds"]), tck, [vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]],
-            _slider_update(z0, rs["dwi"].shape[2] - 1), _slider_update(m0, protocol.n_meas - 1))
+    yield (rs, headline, V.dwi_slice(rs["dwi"], rs["meas"], z0, m0, peaks=rs["peaks"], peak_amp=rs["peak_amp"], overlay=True),
+           V.tractogram3d(rs["tractogram"], rs["rois"], rs["shape"]), V.matrices(rs["matrix"], rs["score"], layout.gt_count),
+           V.timings_rows(rs["seconds"], rs["load_seconds"]), tck, [vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]],
+           _slider_update(z0, rs["dwi"].shape[2] - 1), _slider_update(m0, protocol.n_meas - 1))
 
 
 def _slider_update(value, maximum):
@@ -154,15 +164,17 @@ def build(runner=None):
                         for k in range(MAX_SHELLS):
                             with gr.Row():
                                 on = gr.Checkbox(value=(k == 0), label=f"shell {k + 1}")
-                                shape = gr.Dropdown(shape_names, value=shape_names[0], label="timing class")
+                                shape = gr.Dropdown(shape_names, value=shape_names[0], label="pulse timing δ / Δ")
                                 b = gr.Number(value=[1000, 2000, 3000, 6000][k], label="b (s/mm²)")
                                 n = gr.Slider(6, 128, value=[30, 60, 90, 60][k], step=1, label="directions")
                             shell_inputs += [on, shape, b, n]
-                        gr.Markdown("Timing classes: " + "; ".join(f"`{n}` = {labels[n]}" for n in shape_names))
+                        gr.Markdown("A shell's **pulse timing** (δ, Δ; TE 53.5 ms, square pulses) is one of the stored classes, because the "
+                                    "replay layout holds each walker's response to that pulse shape; the b-value, the directions and their "
+                                    "number, the SNR and the tracker are free. Stored: " + "; ".join(f"`{n}` = {labels[n]}" for n in shape_names))
                         with gr.Row():
                             bvals_file = gr.File(label="uploaded table: bvals (s/mm²)", file_count="single", type="filepath")
                             bvecs_file = gr.File(label="uploaded table: bvecs", file_count="single", type="filepath")
-                            table_shape = gr.Dropdown(shape_names, value=shape_names[0], label="its timing class (every row)")
+                            table_shape = gr.Dropdown(shape_names, value=shape_names[0], label="its pulse timing (every row)")
                     with gr.Column(scale=1):
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
@@ -193,7 +205,7 @@ def build(runner=None):
                         tck = gr.File(label="tractogram (.tck, MRtrix)")
                         volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
         def run_with_progress(*args, progress=gr.Progress()):
-            return run_pipeline(*args, progress=progress)
+            yield from run_pipeline(*args, progress=progress)
         # a runner (the ZeroGPU entry) owns the call and its progress object: Gradio hands it the inputs only
         go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
                  outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1,

@@ -365,22 +365,31 @@ class Result:
 STAGES = ("replay", "noise", "csd", "track", "score")
 
 
-def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progress=None):
-    """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
-    each of the ``STAGES`` begins (``k`` of ``n``), so a caller can say where the run is."""
+def run_stages(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0):
+    """The pipeline as a generator: before each of the ``STAGES`` it yields ``(stage, k, n)`` (so a page can show
+    where the run is, from inside any worker), and last the :class:`Result`."""
     t_run = time.perf_counter()
 
     def at(stage):
         print(f"[pipeline] {stage} at +{time.perf_counter() - t_run:.1f} s", flush=True)      # the server log shows where a run is
-        if progress:
-            progress(stage, STAGES.index(stage), len(STAGES))
+        return stage, STAGES.index(stage), len(STAGES)
     meas = measurements(protocol, layout.shapes)
-    at("replay"); dwi, floor, t_replay = replay(layout, meas)
-    at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=layout.backend); t_noise = time.perf_counter() - t0
+    yield at("replay"); dwi, floor, t_replay = replay(layout, meas)
+    yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=layout.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
-    at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=layout.backend)
-    at("track"); tg, seeds, t_track = track(sh, layout, tracking)
-    at("score"); t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
-    return Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr,
-                  seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
-                               total=t_replay + t_noise + t_csd + t_track + t_score))
+    yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=layout.backend)
+    yield at("track"); tg, seeds, t_track = track(sh, layout, tracking)
+    yield at("score"); t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
+    yield Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr,
+                 seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
+                              total=t_replay + t_noise + t_csd + t_track + t_score))
+
+
+def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progress=None):
+    """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
+    each stage begins."""
+    for item in run_stages(layout, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed):
+        if isinstance(item, Result):
+            return item
+        if progress:
+            progress(*item)

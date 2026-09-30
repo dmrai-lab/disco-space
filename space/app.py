@@ -20,6 +20,7 @@ import threading
 import time
 
 import numpy as np
+from dataclasses import replace
 
 from . import pipeline as P
 from . import viewers as V
@@ -381,8 +382,14 @@ def compute(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_
             spread = P.pair_spread(mats, scores)
     finally:
         source.release()
-    yield dict(results=results, ladder=ladder, ingredients=ingredients, spread=spread, knob=knob, seconds=seconds,
-               compute_seconds=time.perf_counter() - t0, handed_off_at=time.time())
+    yield dict(results={tag: _light(r) for tag, r in results.items()}, ladder=[(label, vol.astype(np.float32)) for label, vol in ladder],
+               ingredients=ingredients, spread=spread, knob=knob, seconds=seconds, compute_seconds=time.perf_counter() - t0, handed_off_at=time.time())
+
+
+def _light(res):
+    """``res`` with its DWI volumes in float32 for the handoff: what the page keeps, draws, fits and writes is float32
+    or narrower, so the payload carries half the bytes and the compute's own arithmetic is untouched."""
+    return replace(res, dwi=res.dwi.astype(np.float32), clean=None if res.clean is None else res.clean.astype(np.float32))
 
 
 def present(payload, load_seconds, regions, gt_count, accuracy):

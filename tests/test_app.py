@@ -204,3 +204,15 @@ def test_the_run_button_chains_the_devices_texts_into_the_headline_then_the_page
     assert [o[1] for o in out[:2]] == ["**A · 1/5 replay** …", "**A · 2/5 noise** …"] and all(len(o) == len(A.OUTPUTS) for o in out[:3])
     assert "drawing" in out[2][1] and out[3] == ("drawn",) * len(A.OUTPUTS)
     assert bars == [(0.0, "starting"), (0.1, "A · 1/5 replay"), (0.3, "A · 2/5 noise")] and seen[0]["compute_seconds"] == 12.0
+
+
+def test_the_payload_carries_float32_volumes():
+    """_light: the DWI and the clean replay cross the fork as float32, everything else of the result as it was."""
+    p = P.Protocol((P.Shell("d12-D24", 1000, 6),), n_b0=1)
+    m = P.measurements(p, CFG["shapes"])
+    dwi = np.random.default_rng(0).random((2, 2, 2, 7)); floor = np.zeros((2, 2, 2))
+    res = P.Result(p, m, dwi, floor, np.ones((2, 2, 2)), np.zeros((2, 2, 2, 45)), None, None, np.zeros((16, 16)), {}, clean=dwi * 0.5, snr=30.0)
+    light = A._light(res)
+    assert light.dwi.dtype == np.float32 and light.clean.dtype == np.float32 and res.dwi.dtype == np.float64
+    np.testing.assert_allclose(light.dwi, dwi, rtol=1e-6); assert light.snr == 30.0 and light.meas is m
+    assert A._light(P.Result(p, m, dwi, floor, None, None, None, None, None, {})).clean is None

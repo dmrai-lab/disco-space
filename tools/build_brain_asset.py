@@ -1,9 +1,10 @@
 """The brain Space's asset (disco-space#8 step 4): a MASiVar scan's multi-shell DWI, reconstructed by dmipy-fit
 *alone* (three-tissue responses, Dhollander 2016; multi-shell multi-tissue CSD, Jeurissen 2014, ``CsdCvxpyOptimizer``)
 into a WM FOD field and WM/GM/CSF fractions, plus the parcellation of ``build_parcellation.py``, written to an asset
-directory another agent's Space code reads. MRtrix and dipy are used only where dmipy-fit's own tissue-response
-estimator uses them internally (a DTI fit and a median-Otsu mask, not the FOD); the FOD itself is dmipy-fit's
-``MultiCompartmentSphericalHarmonicsModel`` end to end.
+directory the Space's ``Brain`` source reads. The FOD and the fractions are dmipy-fit's
+``MultiCompartmentSphericalHarmonicsModel`` end to end; MRtrix appears nowhere. dipy is used by this offline tool for
+what is not reconstruction: the median-Otsu brain mask and the peak count of the sanity check (and inside dmipy-fit's
+own tissue-response estimator until dmipy-fit#39 replaces it). Nothing here runs in the Space.
 
     OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python tools/build_brain_asset.py --dwi-dir DIR --parcellation-dir PARC_DIR \\
         --out-dir OUT [--n-test-voxels 200] [--solver csd_cvxpy]

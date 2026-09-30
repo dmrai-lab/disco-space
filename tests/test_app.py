@@ -151,11 +151,12 @@ def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     keys = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 8, False, *v, *ROWS)
     ladder = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS)
     small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, False, *v, *ROWS)
-    assert 60 <= small < one < two <= 480 and one < keys <= 480 and one < ladder <= 480
-    assert one <= 120 < ladder <= 300          # DiSCo alone fits a logged-out visitor's quota; with the ladder a free account's
+    assert 30 <= small < one < two <= 480 and one < keys <= 480 and one < ladder <= 480
+    both = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, True, *v, *ROWS)
+    assert one < ladder < both <= 120          # DiSCo alone, with the ladder, and A + B + ladder all fit a logged-out visitor's quota
     assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS) == 480
     text = A.gpu_seconds_text("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS)
-    assert f"reserves {ladder} s" in text and "free account" in text and "logged out" not in text.split("started by")[1].split(".")[0]
+    assert f"reserves {ladder} s" in text and "logged out" in text.split("started by")[1].split(".")[0]
     assert len(A.OUTPUTS) == 25
 
 

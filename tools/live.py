@@ -2,7 +2,7 @@
 a custom two-shell protocol; prints the headline and timings and, with ``--stream``, every stage update as it
 arrives; downloads the figures and files to ``$LIVE_OUT``.
 
-    python tools/live.py [space] [--stream] [--preset NAME] [--no-ladder]
+    python tools/live.py [space] [--stream] [--preset NAME] [--no-ladder] [--knob CHOICE]
 """
 import argparse
 import os
@@ -29,11 +29,12 @@ def main():
     ap.add_argument("--stream", action="store_true", help="print every stage update as it arrives")
     ap.add_argument("--preset", action="append", help="an acquisition to run (default: DiSCo 364, then custom shells)")
     ap.add_argument("--no-ladder", action="store_true", help="skip the explorer's tier ladder (the shortest GPU reservation)")
+    ap.add_argument("--knob", default=A.NO_KNOB, help="B: the same run with this knob changed (a choice of the page's dropdown)")
     a = ap.parse_args()
     c = Client(a.space, token=get_token(), verbose=False, download_files=os.environ.get("LIVE_OUT", "/tmp/disco-live"), httpx_kwargs={"timeout": 900})
     for preset in a.preset or ("DiSCo 364", A.CUSTOM):
         t0 = time.perf_counter()
-        args = inputs(preset, ladder=not a.no_ladder)
+        args = inputs(preset, knob=a.knob, ladder=not a.no_ladder)
         print(f"{preset}: reserves {A.estimated_seconds(*args)} s", flush=True)
         job = c.submit(*args, api_name="/run_pipeline")
         seen = 0

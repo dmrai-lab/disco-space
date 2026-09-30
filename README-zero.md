@@ -21,9 +21,21 @@ call. Source and pins: https://github.com/dmrai-lab/disco-space (`requirements-z
 
 ## GPU quota per visitor
 
-Every run reserves the GPU for the seconds the page shows under the run button (measured on the pool: 30 s fixed plus
-0.19 s per measurement per run, times 1.2). ZeroGPU charges that reservation against the *visitor's* daily quota, not
-the Space's: 2 minutes logged out, 5 with a free Hugging Face account, 40 with PRO. A single request above the visitor's
-quota is refused before it starts with "The requested GPU duration (N s) is larger than the maximum allowed", so a
-DiSCo 364 run alone fits a logged-out visitor, DiSCo with the explorer's ladder or a B run needs a free account, and A + B
-+ ladder (about 4 min) needs PRO. Log in to Hugging Face in the same browser to use your own quota.
+Every run reserves the GPU for the seconds the page shows under the run button. ZeroGPU charges that reservation
+against the *visitor's* daily quota, not the Space's: 2 minutes logged out, 5 with a free Hugging Face account, 40
+with PRO; a single request above the visitor's quota is refused before it starts ("The requested GPU duration (N s)
+is larger than the maximum allowed"), and a run that outlives its reservation is killed. Only the device part of a
+run (`space.app.compute`: the replays, the noise, the CSD, the tracking, the scoring, the explorer's maps) holds the
+GPU; the page writes the files and draws in its own process after the device is released (disco-space#7).
+
+Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, commit 67de79d):
+
+| run | device held | handoff | client wall | reserved |
+|---|---|---|---|---|
+| DiSCo 364 | 31 s | 2 s | 93 s | 51 s |
+| DiSCo 364 + the explorer's ladder | 63 s | 4 s | 115 s | 91 s |
+
+Before the split the device was held 77 s and 100 s for the same runs (the files, the states, the figures and a
+15 s host pass for the ingredient maps were inside the window). The reservation is 16 s + 0.065 s per measurement
++ 0.084 s per measurement for the ladder + (8 s + 0.028 s per measurement) for B + 10 s per extra tracker key,
+times 1.3. DiSCo 364 alone, with the ladder, and A + B + ladder all fit a logged-out visitor's 2 minutes.

@@ -108,6 +108,56 @@ def test_save_checks_sample_is_reproducible(tmp_path):
     np.testing.assert_array_equal(out["voxel_index"], out2["voxel_index"])
 
 
+def test_fraction_sanity():
+    fractions = np.zeros((2, 2, 1, 3), dtype=np.float32)
+    fractions[0, 0, 0] = [0.7, 0.2, 0.1]     # sum 1.0, WM > 0.5
+    fractions[0, 1, 0] = [0.3, 0.3, 0.3]     # sum 0.9, WM not > 0.5
+    fractions[1, 0, 0] = [0.9, 0.05, 0.05]   # sum 1.0, WM > 0.5
+    mask = np.zeros((2, 2, 1), dtype=bool)
+    mask[0, 0, 0] = mask[0, 1, 0] = mask[1, 0, 0] = True   # (1, 1, 0) left out of the mask on purpose
+
+    out = BA.fraction_sanity(fractions, mask)
+    assert out["n_mask"] == 3
+    assert out["n_wm_gt_half"] == 2
+    assert out["sum_median"] == pytest.approx(1.0)
+
+
+def _pure_direction_sh(sh_order, direction):
+    """The real-SH coefficients of a single delta-like lobe along ``direction`` (dipy's own ``sf_to_sh`` on a
+    one-hot signal at a fine sphere, so the test does not depend on dmipy-fit's basis machinery)."""
+    from dipy.data import get_sphere
+    from dipy.reconst.shm import sf_to_sh
+    sphere = get_sphere(name="repulsion724")
+    cos_angle = sphere.vertices @ np.asarray(direction) / np.linalg.norm(direction)
+    sf = np.clip(cos_angle, 0, None) ** 16   # a sharp lobe peaked at `direction`
+    return sf_to_sh(sf, sphere, sh_order_max=sh_order, basis_type="tournier07")
+
+
+def test_fod_peak_counts_single_vs_crossing():
+    sh_order = 8
+    single = _pure_direction_sh(sh_order, (0, 0, 1))
+    crossing = _pure_direction_sh(sh_order, (1, 0, 0)) + _pure_direction_sh(sh_order, (0, 1, 0))
+    sh = np.stack([single, crossing]).reshape(1, 2, 1, -1).astype(np.float32)
+    wm_mask = np.ones((1, 2, 1), dtype=bool)
+
+    counts = BA.fod_peak_counts(sh, wm_mask, sh_order=sh_order)
+    assert sum(counts.values()) == 2
+    assert counts.get(1, 0) >= 1   # the single lobe
+    assert counts.get(2, 0) >= 1   # the two well-separated lobes
+
+
+def test_save_mean_b0_fod_png_writes_a_file(tmp_path):
+    shape = (4, 4, 2)
+    mean_b0_volume = np.random.default_rng(0).random(shape).astype(np.float32)
+    sh = np.zeros(shape + (45,), dtype=np.float32)
+    sh[..., 0] = 1.0   # an isotropic (but non-zero) FOD everywhere: a valid, if uninteresting, principal direction
+    wm_mask = np.ones(shape, dtype=bool)
+    out_path = os.path.join(tmp_path, "slice.png")
+
+    BA.save_mean_b0_fod_png(out_path, mean_b0_volume, sh, wm_mask, z=0)
+    assert os.path.exists(out_path) and os.path.getsize(out_path) > 0
+
+
 def _single_tensor_attenuation(bvals_s_mm2, bvecs, eigenvalues_mm2_s, axis):
     """A closed-form single-tensor signal attenuation ``exp(-b g^T D g)``, no dmipy-sim/jax needed: ``D`` has its
     principal eigenvector along ``axis`` (unit vector) with ``eigenvalues_mm2_s = (lambda_par, lambda_perp)``."""

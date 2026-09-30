@@ -218,6 +218,101 @@ def save_checks_sample(out_dir, data, bvals, sh, fractions, mask, n_sample=2000,
               sh_coeff=sh[pos].astype(np.float32), fractions=fractions[pos].astype(np.float32), seed=seed)
 
 
+def fraction_sanity(fractions, mask):
+    """The fraction-sum sanity numbers to report: the median and 99th percentile of ``wm + gm + csf`` in-mask (it
+    is not constrained to 1 by the unity constraint being off for ``S0_tissue_responses``-scaled fits -- see
+    ``MultiCompartmentSphericalHarmonicsModel.fit``'s ``unity_constraint='kernel_dependent'`` default), and the
+    count of voxels with WM fraction > 0.5."""
+    s = fractions[mask].sum(axis=-1).astype(np.float64)
+    return {
+        "sum_median": float(np.median(s)),
+        "sum_p99": float(np.percentile(s, 99)),
+        "n_wm_gt_half": int(np.sum(fractions[..., 0][mask] > 0.5)),
+        "n_mask": int(mask.sum()),
+    }
+
+
+def fod_peak_counts(sh, wm_mask, sh_order=SH_ORDER, relative_peak_threshold=0.5, min_separation_angle=25):
+    """The number of FOD peaks per WM voxel (dipy's standard ``peak_directions`` on a fixed discrete sphere, the
+    tournier07 SH basis evaluated at its vertices): ``{n_peaks: count}``, the single-vs-crossing distribution."""
+    from collections import Counter
+    from dipy.data import get_sphere
+    from dipy.direction.peaks import peak_directions
+    from dmipy_tract import sh_matrix
+
+    sphere = get_sphere(name="repulsion724")
+    basis = sh_matrix(sh_order, sphere.vertices)
+    coef = np.nan_to_num(np.asarray(sh, np.float64))[wm_mask]
+    amplitudes = coef @ basis.T
+    counts = Counter()
+    for odf in amplitudes:
+        odf = np.clip(odf, 0, None)
+        if not np.any(odf > 0):
+            counts[0] += 1
+            continue
+        _, vals, _ = peak_directions(odf, sphere, relative_peak_threshold=relative_peak_threshold,
+                                      min_separation_angle=min_separation_angle)
+        counts[len(vals)] += 1
+    return dict(counts)
+
+
+def save_mean_b0_fod_png(out_path, mean_b0_volume, sh, wm_mask, z=None, sh_order=SH_ORDER, step=2):
+    """A PNG of one axial slice of the mean b = 0 image with the WM FOD's principal direction overlaid as a short
+    line segment per voxel (every ``step``-th voxel, to keep the plot legible); Matplotlib's ``Agg`` backend, no
+    display needed."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from dmipy_tract import hemisphere, sh_matrix
+
+    z = mean_b0_volume.shape[2] // 2 if z is None else z
+    dirs = hemisphere(362)
+    basis = sh_matrix(sh_order, dirs)
+    coef = np.nan_to_num(np.asarray(sh, np.float64)).reshape(-1, sh.shape[-1])
+    amp = coef @ basis.T
+    k = np.argmax(amp, axis=1)
+    peak = np.take_along_axis(amp, k[:, None], axis=1)[:, 0]
+    principal = np.where(peak[:, None] > 0, dirs[k], 0.0).reshape(sh.shape[:-1] + (3,))
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(mean_b0_volume[:, :, z].T, cmap="gray", origin="lower")
+    xs, ys, us, vs = [], [], [], []
+    for x in range(0, mean_b0_volume.shape[0], step):
+        for y in range(0, mean_b0_volume.shape[1], step):
+            if not wm_mask[x, y, z]:
+                continue
+            d = principal[x, y, z]
+            if np.linalg.norm(d) < 1e-6:
+                continue
+            xs.append(x); ys.append(y); us.append(d[0]); vs.append(d[1])
+    ax.quiver(xs, ys, us, vs, angles="xy", scale_units="xy", scale=1.2, headaxislength=0, headlength=0,
+              width=0.003, color="red")
+    ax.set_title(f"mean b=0, axial z={z}, WM FOD principal direction")
+    ax.set_xticks([]); ax.set_yticks([])
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+
+
+def run_checks(out_dir):
+    """Loads a finished asset directory's arrays and writes ``checks/sanity_summary.json`` and
+    ``checks/mean_b0_fod_slice.png`` (the peak-count / fraction-sum / WM-volume numbers this issue asks to report,
+    decoupled from the -- long -- fit itself, so a completed fit's checks can be (re)computed on their own)."""
+    fractions = np.load(os.path.join(out_dir, "fractions.npy")).astype(np.float32)
+    mask = np.load(os.path.join(out_dir, "mask.npy"))
+    sh = np.load(os.path.join(out_dir, "fod_wm.npy"))
+    mean_b0_volume = np.load(os.path.join(out_dir, "mean_b0.npy"))
+    wm_mask = mask & (fractions[..., 0] > 0.5)
+
+    summary = {"fractions": fraction_sanity(fractions, mask), "fod_peak_counts_in_wm": fod_peak_counts(sh, wm_mask)}
+    os.makedirs(os.path.join(out_dir, "checks"), exist_ok=True)
+    with open(os.path.join(out_dir, "checks", "sanity_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    save_mean_b0_fod_png(os.path.join(out_dir, "checks", "mean_b0_fod_slice.png"), mean_b0_volume, sh, wm_mask)
+    print(json.dumps(summary, indent=2))
+    return summary
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dwi-dir", required=True)
@@ -230,7 +325,14 @@ def main():
                      help="fit only this many random masked voxels (a dry run; nothing written under --out-dir "
                           "except the printed timing)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--checks-only", action="store_true",
+                     help="skip everything above and just (re)compute checks/sanity_summary.json + the FOD PNG "
+                          "from an --out-dir a previous run already wrote")
     a = ap.parse_args()
+
+    if a.checks_only:
+        run_checks(a.out_dir)
+        return
 
     import nibabel as nib
 
@@ -287,6 +389,7 @@ def main():
         json.dump(manifest, f, indent=2)
 
     save_checks_sample(a.out_dir, data, bvals, sh, fractions, mask, seed=a.seed)
+    run_checks(a.out_dir)
     print(f"asset written to {a.out_dir}")
 
 

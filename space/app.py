@@ -418,11 +418,16 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
            gr.update(choices=labels, value=name_a), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1))
 
 
+GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # ZeroGPU's daily quota per visitor tier, seconds
+
+
 def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
-    """A run's wall time from its inputs (the same positional inputs as :func:`run_pipeline`), for a GPU pool that
-    reserves the device for a stated duration: 30 s of fixed cost plus 0.12 s per measurement per run (the ladder's
-    three noise-free replays count as one more run), plus 10 s per extra tracker key, doubled for safety, within 60
-    and 480 s."""
+    """The GPU seconds a run reserves on the shared pool, from its inputs (the same positional inputs as
+    :func:`run_pipeline`): measured on the pool at DiSCo 364 with every tier, one run 84-107 s wall and A + B +
+    the ladder 240 s, so 30 s fixed plus 0.19 s per measurement per run (the ladder's noise-free replays count as one
+    run), plus 10 s per extra tracker key, times 1.2, within 60 and 480 s. The pool refuses a request above the
+    visitor's daily quota (:data:`GPU_TIERS`) and kills a run that outlives its reservation, so the number is the
+    measured cost with a small margin, not a generous one."""
     try:
         cfg = P.config()
         protocol = _protocol_from_inputs(cfg, preset, n_b0, *rest[len(PHYSICS_FIELDS):], scheme=scheme_file, full=P.mode(cfg) == "full")
@@ -430,7 +435,19 @@ def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
     except Exception:
         return 480
     runs = (1 if knob == NO_KNOB else 2) + (1 if ladder_on else 0)
-    return int(min(480, max(60, 2 * (30 + 0.12 * n_meas * runs + 10 * (int(n_keys) - 1)))))
+    return int(min(480, max(60, 1.2 * (30 + 0.19 * n_meas * runs + 10 * (int(n_keys) - 1)))))
+
+
+def gpu_seconds_text(*args):
+    """The readout under the run button on the pool: the seconds this run reserves against the tiers' quotas, and
+    which tiers can run it (a request above a visitor's daily quota is refused by the pool before it starts)."""
+    secs = estimated_seconds(*args)
+    fits = [name for name, cap in GPU_TIERS if secs <= cap]
+    who = ("a visitor " + ", ".join(fits)) if fits else "no tier: split the run (drop B, the ladder or the extra keys)"
+    caps = ", ".join(f"{name} {cap // 60} min" for name, cap in GPU_TIERS)
+    return (f"**This run reserves {secs} s of GPU.** ZeroGPU grants each visitor a daily quota ({caps}) and refuses a "
+            f"single request above it (\"larger than the maximum allowed\"): this run can be started by {who}. "
+            f"Log in to Hugging Face in this browser to use your own quota.")
 
 
 def _slider_update(value, maximum):
@@ -549,8 +566,9 @@ def build(runner=None):
                                               label="scanner gradient limit (the catalogue's classes): a shell it cannot play refuses the run")
                         gradients = gr.Markdown()
                         n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
-                        ladder_on = gr.Checkbox(value=not full, visible=not full, label="Replay DWI Explorer: replay A's tier ladder too (bare, +relaxation, +contact; noise-free)")
+                        ladder_on = gr.Checkbox(value=not full, visible=not full, label="Replay DWI Explorer: replay A's tier ladder too (bare, +relaxation, +contact; noise-free; about one more run of GPU time)")
                         go = gr.Button("replay → CSD → track → score", variant="primary")
+                        gpu_text = gr.Markdown(visible=runner is not None)
                         headline = gr.Markdown()
             with gr.Tab("2 · ground truth") as gt_tab:
                 strands_view = gr.Plot(label="the strands")
@@ -628,9 +646,12 @@ def build(runner=None):
         for ctl in (layer_choice, mode, metric, ez_slider, em_slider):
             ctl.change(redraw_explorer, inputs=[result, layer_choice, mode, metric, ez_slider, em_slider],
                        outputs=[explore_view, metric_view, ingredient_pool, ingredient_contact, ingredient_field], show_progress="hidden")
+        run_inputs = [preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *physics_inputs, *shell_inputs]
+        if runner is not None:                                   # the pool: what the run reserves, live as the inputs change
+            gr.on([c.change for c in run_inputs] + [demo.load], gpu_seconds_text, inputs=run_inputs, outputs=gpu_text, show_progress="hidden")
         # a runner (the ZeroGPU entry) owns the call and its progress object: Gradio hands it the inputs only
         go.click(run_with_progress if runner is None else runner(run_pipeline),
-                 inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *physics_inputs, *shell_inputs],
+                 inputs=run_inputs,
                  outputs=[outputs[name] for name in OUTPUTS], concurrency_limit=1, api_name="run_pipeline")   # the endpoint tools/live.py drives
         for ctl in (z_slider, m_slider, overlay, which):
             ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view], show_progress="hidden")

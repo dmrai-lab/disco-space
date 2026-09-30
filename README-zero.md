@@ -28,15 +28,20 @@ is larger than the maximum allowed"), and a run that outlives its reservation is
 run (`space.app.compute`: the replays, the noise, the CSD, the tracking, the scoring, the explorer's maps) holds the
 GPU; the page writes the files and draws in its own process after the device is released (disco-space#7).
 
-Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, commit 67de79d):
+Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, dmipy-sim 7e1bff8 with #522 and #523):
 
 | run | device held | handoff | client wall | reserved |
 |---|---|---|---|---|
-| DiSCo 364 | 31 s | 2 s | 93 s | 51 s |
-| DiSCo 364 + the explorer's ladder | 63 s | 4 s | 115 s | 91 s |
-| DiSCo 364, A + B (SNR → 10) + ladder | 79 s | 5 s | 174 s | 114 s |
+| DiSCo 364 | 23 s | 2 s | 85 s | 42 s |
+| DiSCo 364 + the explorer's ladder | 53 s | 2 s | 108 s | 87 s |
+| DiSCo 364, A + B (B0 transverse), no ladder | 42 s | 3 s | 130 s | 67 s |
+| DiSCo 364, A + B (SNR → 10) + ladder | 79 s* | 5 s* | 174 s* | 113 s |
 
-Before the split the device was held 77 s and 100 s for the same runs (the files, the states, the figures and a
-15 s host pass for the ingredient maps were inside the window). The reservation is 16 s + 0.065 s per measurement
-+ 0.084 s per measurement for the ladder + (8 s + 0.028 s per measurement) for B + 10 s per extra tracker key,
-times 1.3. DiSCo 364 alone, with the ladder, and A + B + ladder all fit a logged-out visitor's 2 minutes.
+\* measured before #522/#523 (the device held 79 s against 114 s reserved then).
+
+Before the split the device was held 77 s and 100 s for the first two runs (the files, the states, the figures and
+a 15 s host pass for the ingredient maps were inside the window), and every run at a field direction the host had
+not preloaded contracted the 8 GB field channels on the host inside the window (8 s; the default direction too,
+through a key mismatch, dmipy-sim#523). The reservation is 16 s + 0.045 s per measurement + 0.096 s per measurement
+for the ladder + (8 s + 0.032 s per measurement) for B + 10 s per extra tracker key, times 1.3. DiSCo 364 alone,
+with the ladder, and A + B + ladder all fit a logged-out visitor's 2 minutes.

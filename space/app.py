@@ -472,19 +472,19 @@ GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # Zer
 
 def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
     """The GPU seconds a run reserves on the shared pool, from its inputs (the same positional inputs as
-    :func:`run_pipeline`). Measured on the pool at DiSCo 364 with every tier after the compute/page split (#7): the
-    worker's start and the payload's handoff 8 s, noise to scoring 8 s, the first replay 0.065 s per measurement
-    (the tiles uploaded inside the call), each further replay on the resident tiles 0.028 s per measurement (the
-    ladder is three, B one plus its 8 s of stages), 10 s per extra tracker key; times 1.3, within 30 and 480 s. The
-    pool refuses a request above the visitor's daily quota (:data:`GPU_TIERS`) and kills a run that outlives its
-    reservation, so this is the measured cost with its margin, not a generous one."""
+    :func:`run_pipeline`). Measured on the pool at DiSCo 364 with every tier (#7, dmipy-sim#522/#523): the worker's
+    start and the payload's handoff 8 s, noise to scoring 8 s, the first replay 0.045 s per measurement (the tiles
+    uploaded inside the call), each further replay on the resident tiles 0.032 s per measurement (the ladder is
+    three, B one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; times 1.3,
+    within 30 and 480 s. The pool refuses a request above the visitor's daily quota (:data:`GPU_TIERS`) and kills a
+    run that outlives its reservation, so this is the measured cost with its margin, not a generous one."""
     try:
         cfg = P.config()
         protocol = _protocol_from_inputs(cfg, preset, n_b0, *rest[len(PHYSICS_FIELDS):], scheme=scheme_file, full=P.mode(cfg) == "full")
         n = protocol.n_meas
     except Exception:
         return 480
-    secs = 16 + 0.065 * n + (3 * 0.028 * n if ladder_on else 0) + ((8 + 0.028 * n) if knob != NO_KNOB else 0) + 10 * (int(n_keys) - 1)
+    secs = 16 + 0.045 * n + (3 * 0.032 * n if ladder_on else 0) + ((8 + 0.032 * n) if knob != NO_KNOB else 0) + 10 * (int(n_keys) - 1)
     return int(min(480, max(30, 1.3 * secs)))
 
 

@@ -1,16 +1,19 @@
-"""The DiSCo Space's page, three tabs over :mod:`space.pipeline`.
+"""The Spaces' page, four tabs over :mod:`space.pipeline` and the configured source (:mod:`space.sources`).
 
-The acquisition tab: a preset, DiSCo's own table or custom shells (on a stored pulse timing in demo mode; at their
-own δ / Δ / TE, or from an uploaded Camino scheme, in full mode); the tissue-and-scanner panel (the field and its
-direction, T2 and T1 per pool, the surface relaxivity, myelin's susceptibility, each tier switchable); the noise;
-the tracker; a scanner whose gradient limit refuses a shell it cannot play; B, the same run with one knob changed;
-N tracker keys for the tractogram's own spread; the run button, whose progress names the stage it is in. The ground
-truth tab: the strands in 3-D and the two matrices. The Replay DWI Explorer: the ingredient maps of the tiers, the
-noise-free layers (the tier ladder, A, B) and their differences in the DWI or in MD / FA, per shell. The DiSCo
-results tab: a DWI slice with the FODs' principal directions and the replay floor beside it, the tractograms and
-connectomes of A and B, the spread over keys, the accuracy table, the timings, the downloads.
+The acquisition tab: a preset (the source's), custom shells (on a stored pulse timing; at their own δ / Δ / TE, or
+from an uploaded Camino scheme, in DiSCo's full mode); the source's tissue-and-scanner panel; the noise; the
+tracker; a scanner whose gradient limit refuses a shell it cannot play; B, the same run with one knob changed; N
+tracker keys for the tractogram's own spread; the run button, whose progress names the stage it is in. The truth
+tab: the source's input and ground truth. The Replay DWI Explorer: the ingredient maps of the tiers, the noise-free
+layers (the tier ladder, A, B) and their differences in the DWI or in MD / FA, per shell, and the estimated against
+the true responses where the source has them. The results tab: a DWI slice with the FODs' principal directions,
+the tractograms and connectomes of A and B against the source's truth, the spread over keys, the accuracy and round
+trip tables, the timings, the downloads.
 
-Nothing scientific lives here: every number comes from the pipeline, every figure from :mod:`space.viewers`."""
+The page is built from the source's class (:meth:`space.pipeline.Source.describe`, ``presets``, ``panel``,
+``knobs``, ``estimated_seconds``) before any data loads; a run is :func:`prepare_runs` on the host (the source's
+share that needs no device), :func:`compute` on the device, :func:`present` back on the host. Nothing scientific
+lives here: every number comes from the pipeline or the source, every figure from :mod:`space.viewers`."""
 from __future__ import annotations
 
 import os
@@ -23,27 +26,20 @@ import numpy as np
 from dataclasses import replace
 
 from . import pipeline as P
+from . import sources
 from . import viewers as V
 
 MAX_SHELLS = 4
 CUSTOM = "custom shells"
 UPLOADED = "uploaded scheme"
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
-POOLS = tuple(P.config()["physics"]["pools"])           # the seeded pools the panel offers T2 and T1 for
-PHYSICS_FIELDS = ("on", "field_T", "b0_mode", "theta", "phi", *[f"T2_{q}" for q in POOLS], *[f"T1_{q}" for q in POOLS],
-                  "rho", "chi_iso", "chi_aniso", "relaxation", "contact", "field")     # the panel's inputs, in the run signature's order
-TISSUE_NUMBERS = PHYSICS_FIELDS[5:5 + 2 * len(POOLS) + 3]   # the ones the catalogue fills in: ms, ms, µm/s, ppm on the page
-B0_MODES = {"along z (the strands' frame)": P.B0_ALONG_Z, "transverse (x): 90° from z, as in a biplanar magnet like the Swoop": P.B0_TRANSVERSE}
-FREE_B0 = "free (polar and azimuth angles below)"
-NO_KNOB = "none: run A only"
+NO_KNOB = P.NO_KNOB
 NO_SCANNER = "none: any gradient amplitude"
 SAMPLE = 10_000                                          # streamlines kept in the page's state and in the sample .tck
-STAGE_TEXT = {"replay": "replaying the grid from the stored walk", "noise": "adding Rician noise", "csd": "fitting CSD (order 8)",
-              "track": "tracking from the sixteen regions", "score": "scoring the connectome"}
 OUTPUTS = ("result", "headline", "dwi_view", "tract_view", "mats", "timings", "tck", "volumes", "z_slider", "m_slider",
            "tract_view_b", "mats_b", "b_row", "floor_view", "accuracy", "spread_view",
            "explore_view", "metric_view", "ingredient_pool", "ingredient_contact", "ingredient_field", "layer_table", "layer_choice",
-           "ez_slider", "em_slider")                                                     # the run button's outputs, in order
+           "ez_slider", "em_slider", "truth_view", "fractions_view", "lobar_view", "roundtrip", "response_view")   # the run button's outputs, in order
 EXPLORE_MODES = ("signal", "minus the previous layer", "B − A", "(B − A) ÷ floor")
 METRICS = ("DWI", "MD (µm²/ms)", "FA")
 _state = {"source": None, "error": None}
@@ -52,19 +48,15 @@ _RUNS = tempfile.mkdtemp(prefix="disco-runs-")          # one directory per run 
 
 
 def _load():
-    """The source and the ground truth, loaded once per process (a failed load is retried on the next call)."""
+    """The source, loaded once per process (a failed load is retried on the next call)."""
     with _lock:
         if _state["source"] is None:
             try:
                 t0 = time.perf_counter()
                 cfg = P.config()
-                src = P.source(cfg)
+                src = sources.source(cfg)
                 src.warm()
-                from dmipy_sim.io.strands import read_tck, read_diameters
-                strands = read_tck(os.path.join(P.DATA_DIR, "DiSCo_Strands_Trajectories.tck"), coordinate_unit_m=P.VOXEL_M)
-                _state["strands_vox"] = [s / P.VOXEL_M for s in strands]
-                _state["diameters_m"] = read_diameters(os.path.join(P.DATA_DIR, "DiSCo_Strands_Diameters.txt"), diameter_unit_m=1e-3)
-                _state["regions"] = V.region_markers(src.rois)
+                _state["regions"] = V.region_markers(src.regions)
                 _state["gt_views"] = None
                 _state["source"] = src; _state["cfg"] = cfg; _state["load_seconds"] = time.perf_counter() - t0; _state["error"] = None
             except Exception as e:                       # shown on the page instead of a dead Space; the next call tries again
@@ -72,19 +64,17 @@ def _load():
         return _state
 
 
-def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=None, full=False):
-    """The acquisition the page asks for: DiSCo's own table, a config preset, the shell rows (in full mode each with
+def _protocol_from_inputs(S, cfg, preset, n_b0, *shell_inputs, scheme=None, full=False):
+    """The acquisition the page asks for: a preset of the source class ``S``, the shell rows (in full mode each with
     its own delta / Delta / TE in ms, else on a stored timing class), or in full mode an uploaded Camino scheme."""
-    if preset == "DiSCo 364":
-        return P.disco_protocol(cfg)[0]
     if preset == UPLOADED:
         if not full:
             raise ValueError("a scheme upload needs full mode (DISCO_MODE=full with the columnar pack)")
         if not scheme:
             raise ValueError("upload a Camino .scheme file")
         return P.protocol_from_scheme(scheme)
-    if preset in cfg["presets"]:
-        return P.preset_protocol(cfg, preset)
+    if preset in S.presets(cfg):
+        return S.protocol(cfg, preset)
     if preset != CUSTOM:
         raise ValueError(f"unknown acquisition {preset!r}")
     shells = []
@@ -97,77 +87,12 @@ def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=None, full=Fa
     return P.Protocol(tuple(shells), n_b0=int(n_b0), name=CUSTOM)
 
 
-def physics_values(*values):
-    """The panel's inputs as a dict by :data:`PHYSICS_FIELDS`."""
-    if len(values) != len(PHYSICS_FIELDS):
-        raise ValueError(f"the physics panel has {len(PHYSICS_FIELDS)} inputs, got {len(values)}")
-    return dict(zip(PHYSICS_FIELDS, values))
-
-
-def physics_from(values):
-    """The panel (a dict by :data:`PHYSICS_FIELDS`, page units: ms, µm/s, ppm) as a :class:`space.pipeline.Physics`
-    in SI, or None when the panel is off."""
-    if not values["on"]:
-        return None
-    u = B0_MODES[values["b0_mode"]] if values["b0_mode"] in B0_MODES else P.b0_direction(values["theta"], values["phi"])
-    return P.Physics(field_T=float(values["field_T"]), b0_direction=u,
-                     T2={q: float(values[f"T2_{q}"]) * 1e-3 for q in POOLS}, T1={q: float(values[f"T1_{q}"]) * 1e-3 for q in POOLS},
-                     rho=float(values["rho"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
-                     relaxation=bool(values["relaxation"]), contact=bool(values["contact"]), field=bool(values["field"]))
-
-
-def catalogue_numbers(field_T):
-    """The catalogue's white matter at ``field_T`` in the page's units (ms, µm/s, ppm), in :data:`TISSUE_NUMBERS`
-    order, plus the note that says which cited field it came from: what the reset button and the field presets
-    fill in."""
-    c = P.catalogue(float(field_T), POOLS)
-    note = (f"catalogue values at {c['catalogue_field']:g} T" if abs(c["catalogue_field"] - float(field_T)) < 1e-9
-            else f"the catalogue has no cited relaxation at {float(field_T):g} T: nearest is {c['catalogue_field']:g} T, edit as you see fit")
-    return ([c["T2"][q] * 1e3 for q in POOLS] + [c["T1"][q] * 1e3 for q in POOLS]
-            + [c["rho"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
-
-
-def knobs(cfg):
-    """The one-knob changes B can make to A: the field (with the catalogue's tissue at it), the field's direction,
-    a tier off, the tissue off, the noise, or every shell's pulse timing; ``{label: (kind, value)}``."""
-    out = {NO_KNOB: None}
-    for f in cfg["physics"]["fields"]:
-        out[f"field → {float(f):g} T (catalogue tissue at that field)"] = ("field", float(f))
-    for label in B0_MODES:
-        out[f"B0 direction → {label}"] = ("b0", label)
-    for tier in ("relaxation", "contact", "field"):
-        out[f"{tier} tier → off"] = ("tier", tier)
-    out["tissue → off (bare diffusion)"] = ("bare", None)
-    for v in (10, 100):
-        out[f"SNR → {v}"] = ("snr", float(v))
-    out["noise → off"] = ("snr", None)
-    for name, sh in cfg["shapes"].items():
-        out[f"every shell's pulse timing → {name} ({sh['label']})"] = ("shape", name)
-    return out
-
-
-def apply_knob(change, protocol, snr_on, snr, values):
-    """B's settings: A's with ``change`` (a value of :func:`knobs`) applied; ``(protocol, snr_on, snr, values)``.
-    A knob that changes the tissue panel needs A's panel on, so that B differs from A in that one thing."""
-    kind, value = change
-    v = dict(values)
-    if kind in ("field", "b0", "tier") and not v["on"]:
-        raise ValueError(f"the knob {kind!r} changes the tissue panel, which is off for A: switch it on, or choose another knob")
-    if kind == "field":
-        v["field_T"] = value; v.update(zip(TISSUE_NUMBERS, catalogue_numbers(value)))
-    elif kind == "b0":
-        v["b0_mode"] = value
-    elif kind == "tier":
-        v[value] = False
-    elif kind == "bare":
-        v["on"] = False
-    elif kind == "snr":
-        snr_on = value is not None; snr = value if value is not None else snr
-    elif kind == "shape":
-        protocol = P.retime(protocol, value)
-    else:
-        raise ValueError(f"unknown knob {kind!r}")
-    return protocol, snr_on, snr, v
+def physics_values(S, cfg, *values):
+    """The panel's inputs as a dict by the source class ``S``'s :attr:`~space.pipeline.Panel.fields`."""
+    fields = S.panel(cfg).fields
+    if len(values) != len(fields):
+        raise ValueError(f"the physics panel has {len(fields)} inputs, got {len(values)}")
+    return dict(zip(fields, values))
 
 
 def gradient_text(protocol, shapes, scanner):
@@ -184,29 +109,60 @@ def plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner
     """The runs the button asks for, validated before any work: ``[(tag, protocol, snr_on, snr, physics)]`` for A
     and, with a knob, B; refused with the reason when the scanner cannot play a shell or the source cannot do the
     run."""
+    S = type(source)
     full = source.mode == "full"
-    protocol = _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=scheme_file, full=full)
-    runs = [("A", protocol, snr_on, snr, physics_from(values))]
-    if knob not in knobs(cfg):
+    protocol = _protocol_from_inputs(S, cfg, preset, n_b0, *shell_inputs, scheme=scheme_file, full=full)
+    runs = [("A", protocol, snr_on, snr, S.physics_from(cfg, values))]
+    knobs = S.knobs(cfg)
+    if knob not in knobs:
         raise ValueError(f"unknown knob {knob!r}")
-    change = knobs(cfg)[knob]
+    change = knobs[knob]
     if change is not None:
-        pb, on_b, snr_b, vb = apply_knob(change, protocol, snr_on, snr, values)
-        runs.append(("B", pb, on_b, snr_b, physics_from(vb)))
+        pb, on_b, snr_b, vb = S.apply_knob(cfg, change, protocol, snr_on, snr, values)
+        runs.append(("B", pb, on_b, snr_b, S.physics_from(cfg, vb)))
     for tag, prot, _, _, physics in runs:
-        table, ok = gradient_text(prot, cfg["shapes"], scanner)
+        table, ok = gradient_text(prot, source.shapes, scanner)
         if not ok:
             raise ValueError(f"{scanner} cannot play run {tag}'s shells (square pulses):\n\n{table}")
         source.validate(prot, physics)
     return runs
 
 
+def _split(S, cfg, rest):
+    """The run signature's tail: the physics panel's values (a dict) and the shell rows."""
+    n = len(S.panel(cfg).fields)
+    return physics_values(S, cfg, *rest[:n]), rest[n:]
+
+
+def prepare_runs(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
+    """The host's share of the runs the inputs ask for, before the device is held: the source's
+    :meth:`~space.pipeline.Source.prepare` for A, B and A's ladder rungs (``{"runs": {tag: ...}, "ladder": [...] or
+    None, "seconds": s}``; every entry None for a source without one)."""
+    state = _load()
+    if state["error"]:
+        raise ValueError(f"the source did not load: {state['error']}")
+    source, cfg = state["source"], state["cfg"]
+    values, shell_inputs = _split(type(source), cfg, rest)
+    runs = plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner, values, shell_inputs)
+    t0 = time.perf_counter()
+    out = dict(runs={}, ladder=None)
+    for tag, prot, _, _, physics in runs:
+        out["runs"][tag] = source.prepare(P.measurements(prot, source.shapes), physics)
+    if ladder_on:
+        meas_a = P.measurements(runs[0][1], source.shapes)
+        out["ladder"] = [source.prepare(meas_a, ph) for _, ph in source.ladder_steps(runs[0][4])]
+    out["seconds"] = time.perf_counter() - t0
+    return out
+
+
 def _result_state(res, sample, load_seconds):
     """What the results tab needs, kept per session: float32 volumes, the peaks, the streamline sample, the numbers."""
     pk, amp = P.peaks(res.sh)
+    fr = res.extras.get("fractions")
     return dict(dwi=res.dwi.astype(np.float32), floor=res.floor.astype(np.float32), floor_median=P.floor_stats(res)["median"], meas=res.meas,
                 peaks=pk.astype(np.float32), peak_amp=amp.astype(np.float32), matrix=res.matrix, score=res.score, seconds=res.seconds,
-                load_seconds=load_seconds, tractogram=sample, n_streamlines=len(res.tractogram), shape=res.dwi.shape[:3], name=res.protocol.name)
+                load_seconds=load_seconds, tractogram=sample, n_streamlines=len(res.tractogram), shape=res.dwi.shape[:3], name=res.protocol.name,
+                extras=dict(fractions=None if fr is None else fr.astype(np.float16)))
 
 
 def _layer_labels(physics, knob):
@@ -217,9 +173,9 @@ def _layer_labels(physics, knob):
     return a, f"B = A with {knob}"
 
 
-def _explorer_state(results, ladder, ingredients, knob):
+def _explorer_state(results, ladder, ingredients, knob, source):
     """What the Replay DWI Explorer keeps per session: the noise-free layers (the ladder, then A, then B) as float16
-    volumes with their tensor maps, the replay floor, the ingredient maps, the per-shell layer differences."""
+    volumes with their tensor maps, the replay floor, the ingredient images' layers, the per-shell layer differences."""
     ra = results["A"]; mask = np.isfinite(ra.clean[..., 0])
     name_a, name_b = _layer_labels(ra.physics, knob)
     layers = list(ladder) + [(name_a, ra.clean)] + ([(name_b, results["B"].clean)] if "B" in results else [])
@@ -231,7 +187,7 @@ def _explorer_state(results, ladder, ingredients, knob):
             md = fa = None
         metrics[label] = (None if md is None else md.astype(np.float16), None if fa is None else fa.astype(np.float16))
     return dict(layers=[(label, vol.astype(np.float16)) for label, vol in layers], metrics=metrics, floor=ra.floor.astype(np.float32),
-                meas=ra.meas, mask=mask, ingredients=ingredients, differences=P.layer_differences(layers, ra.meas, mask),
+                meas=ra.meas, mask=mask, ingredients=source.ingredient_layers(ingredients), differences=P.layer_differences(layers, ra.meas, mask),
                 snr=ra.snr, physics=ra.physics)
 
 
@@ -241,37 +197,28 @@ def _status(text):
     return (keep, text) + (keep,) * (len(OUTPUTS) - 2)
 
 
-def _one_run(tag, source, protocol, snr_on, snr, tracking, physics, t0):
+def _one_run(tag, source, protocol, snr_on, snr, tracking, physics, prepared, t0):
     """One pipeline run as a generator of ``(text, fraction)`` stage updates, then the :class:`Result` last: ``tag``
     is A or B in the stage text."""
-    for item in P.run_stages(source, protocol, snr=(float(snr) if snr_on else None), tracking=tracking, physics=physics):
+    texts = source.describe(source.cfg)["stages"]
+    for item in P.run_stages(source, protocol, snr=(float(snr) if snr_on else None), tracking=tracking, physics=physics, prepared=prepared):
         if isinstance(item, P.Result):
             yield item
             return
         stage, k, n = item
-        yield (f"**{tag} · {k + 1}/{n} {STAGE_TEXT[stage]}** … ({protocol.n_meas} measurements, {time.perf_counter() - t0:.0f} s so far)", (k + 0.5) / (n + 1))
+        yield (f"**{tag} · {k + 1}/{n} {texts[stage]}** … ({protocol.n_meas} measurements, {time.perf_counter() - t0:.0f} s so far)", (k + 0.5) / (n + 1))
 
 
-def _write_files(tag, res):
+def _write_files(tag, res, source):
     """The run's files under its tag (the previous run's under the same tag replaced): the full tractogram and a
-    sample as .tck, the DWI and FOD volumes; ``(sample, {"tck": [...], "volumes": [...]})``."""
+    sample as .tck, the DWI and FOD volumes, the source's own files; ``(sample, {"tck": [...], "volumes": [...]})``."""
     out = os.path.join(_RUNS, tag); shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
-    stem = f"disco_{tag}_{res.protocol.name.replace(' ', '_')}"
+    stem = f"{source.describe(source.cfg)['files']}_{tag}_{res.protocol.name.replace(' ', '_')}"
     tck = os.path.join(out, f"{stem}.tck"); res.tractogram.to_tck(tck)
     sample = P.sample_tractogram(res.tractogram, SAMPLE)
     sample_path = os.path.join(out, f"{stem}_sample{SAMPLE // 1000}k.tck"); sample.to_tck(sample_path)
-    vols = P.write_volumes(res, out, prefix=stem)
-    return sample, dict(tck=[tck, sample_path], volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]])
-
-
-def _score_text(tag, res):
-    s = res.score; physics = res.physics
-    snr = P.b0_snr(res)
-    noise = "" if snr is None else f", SNR {res.snr:g} at M0 = {snr['median']:.1f} at b = 0 in the median voxel"
-    return (f"**{tag}: Pearson vs strand count {s['pearson_count']:.3f}, vs area {s['pearson_area']:.3f}** "
-            f"({res.protocol.n_meas} measurements, {physics.label() if physics else 'bare diffusion'}"
-            f"{noise}, {len(res.tractogram):,} streamlines, {res.seconds['total']:.1f} s; "
-            f"replay floor median {P.floor_stats(res)['median']:.4f})")
+    vols = P.write_volumes(res, out, prefix=stem, affine=source.affine)
+    return sample, dict(tck=[tck, sample_path], volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]] + source.extra_files(res, out, stem))
 
 
 def explore(ex, layer, mode, metric, z, m):
@@ -309,58 +256,50 @@ def explore(ex, layer, mode, metric, z, m):
     d = field(b_label) - field(a_label)
     if mode == "B − A":
         return V.map_slice(d, z, f"B − A, {metric} at measurement {m}" if k == 0 else f"B − A, {metric}", symmetric=True)
+    if not np.any(ex["floor"] > 0):
+        return V.map_slice(d, z, "this source has no per-voxel replay floor: B − A, " + (f"{metric} at measurement {m}" if k == 0 else metric), symmetric=True)
     return V.map_slice(d / np.where(ex["floor"] > 0, ex["floor"], np.nan), z, f"(B − A) ÷ replay floor, {metric}" + (f" at measurement {m}" if k == 0 else ""), symmetric=True)
 
 
 def ingredient_views(ex, z):
-    """The three ingredient maps of the run's first class at slice ``z``: the intra-axonal weight fraction, the
-    walkers' wall contact (and the contact tier's survival at the run's rho), the field's dephasing spread."""
-    ing = ex and ex.get("ingredients")
-    if not ing:
-        return None, None, None
+    """The explorer's three ingredient images at slice ``z``, from the source's layers of the run's ingredients."""
+    layers = (ex or {}).get("ingredients") or [None, None, None]
     z = int(z)
-    pool = V.map_slice(ing["intra_fraction"], z, f"intra-axonal weight fraction (relaxation tier re-weights it), z = {z}", vmin=0, vmax=1)
-    if ing.get("contact_survival") is not None:
-        contact = V.map_slice(ing["contact_survival"], z, f"contact survival exp(−ρ ℓ / D) at the run's ρ (ℓ the walkers' wall contact), z = {z}", cmap="magma", vmax=1)
-    elif ing.get("wall_contact_um") is not None:
-        contact = V.map_slice(ing["wall_contact_um"], z, f"walkers' wall contact ℓ (boundary local time, µm), z = {z}", cmap="magma", unit="µm")
-    else:
-        contact = None
-    fld = V.map_slice(ing["field_rad"], z, f"spread over the voxel's walkers of the sheath field's dephasing phase at the echo (rad), z = {z}", cmap="inferno", unit="rad") if ing.get("field_rad") is not None else None
-    return pool, contact, fld
+    return tuple(None if item is None or item[1] is None else V.map_slice(item[1], z, f"{item[0]}, z = {z}", **item[2]) for item in layers)
 
 
 def layer_table(ex):
     rows = [[a, b, f"{sh:g}", f"{med:.4f}", f"{p99:.4f}"] for a, b, sh, med, p99 in ex["differences"]] if ex else []
-    if ex:
+    if ex and np.any(ex["floor"] > 0):
         f = ex["floor"][ex["mask"]]
         rows.append(["replay floor", "", "", f"{np.median(f):.4f}", f"{np.quantile(f, 0.99):.4f}"])
     return rows
 
 
-def compute(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
+def compute(prepared, preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
     """Everything a run needs the device for, a generator: ``(text, fraction)`` stage updates while it works, then
     the payload last, a dict of plain data (:class:`P.Result` per tag, the explorer's ladder and ingredient maps, the
-    tracker-key spread, the seconds of each step, the clock at the handoff). ``rest`` is the physics panel then the
-    shell rows. On a shared GPU pool this runs in the forked worker and its yields cross to the page's process;
-    nothing here draws or writes a file, so the device is held for the compute alone."""
+    tracker-key spread, the seconds of each step, the clock at the handoff). ``prepared`` is :func:`prepare_runs`'s,
+    ``rest`` the physics panel then the shell rows. On a shared GPU pool this runs in the forked worker and its yields
+    cross to the page's process; nothing here draws or writes a file, so the device is held for the compute alone."""
     state = _load()
     if state["error"]:
         raise ValueError(f"the source did not load: {state['error']}")
     source, cfg = state["source"], state["cfg"]
-    values = physics_values(*rest[:len(PHYSICS_FIELDS)]); shell_inputs = rest[len(PHYSICS_FIELDS):]
+    S = type(source)
+    values, shell_inputs = _split(S, cfg, rest)
     runs = plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner, values, shell_inputs)
     for tag, prot, _, _, physics in runs:                # full mode: what each run reads, before any byte moves
-        plan = source.plan(P.measurements(prot, cfg["shapes"]), physics)
+        plan = source.plan(P.measurements(prot, source.shapes), physics)
         if plan:
             yield (f"**{tag}: full replay of {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
                    f"{plan['estimated_seconds'] / 60:.0f} min** (bands {plan['K']}, field modes {plan['modes']})", 0.0)
-    tracking = P.Tracking(density=int(density), step_mm=float(step_mm), max_angle=float(max_angle), key=int(key))
+    tracking = S.tracking(cfg, density=density, max_angle=max_angle, step=step_mm, key=key)
     t0 = time.perf_counter()
     results = {}; seconds = {}
     try:
         for tag, prot, on, s_, ph in runs:
-            for item in _one_run(tag, source, prot, on, s_, tracking, ph, t0):
+            for item in _one_run(tag, source, prot, on, s_, tracking, ph, prepared["runs"][tag], t0):
                 if isinstance(item, P.Result):
                     results[tag] = item
                 else:
@@ -369,9 +308,9 @@ def compute(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_
         ladder = []
         if ladder_on and physics_a is not None and not physics_a.bare:
             yield (f"**Replay DWI Explorer · the tier ladder of A, noise-free** … ({time.perf_counter() - t0:.0f} s so far)", 0.8)
-            t = time.perf_counter(); ladder = source.ladder(meas_a, physics_a); seconds["explorer · ladder"] = time.perf_counter() - t
+            t = time.perf_counter(); ladder = source.ladder(meas_a, physics_a, prepared["ladder"]); seconds["explorer · ladder"] = time.perf_counter() - t
         yield (f"**Replay DWI Explorer · the ingredient maps** … ({time.perf_counter() - t0:.0f} s so far)", 0.85)
-        t = time.perf_counter(); ingredients = source.ingredients(meas_a, physics_a); seconds["explorer · ingredients"] = time.perf_counter() - t
+        t = time.perf_counter(); ingredients = source.ingredients(meas_a, physics_a, prepared["runs"]["A"]); seconds["explorer · ingredients"] = time.perf_counter() - t
         spread = None
         if int(n_keys) > 1:                                 # A's tracking repeated over further keys: the tractogram's own spread
             keys = [int(key) + 1 + i for i in range(int(n_keys) - 1)]
@@ -379,7 +318,7 @@ def compute(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_
             for i, (k, M, sc, secs) in enumerate(P.repeat_tracking(results["A"], source, tracking, keys)):
                 mats.append(M); scores.append(sc)
                 yield (f"**A · tracking again with key {k} ({i + 2}/{int(n_keys)})** … ({time.perf_counter() - t0:.0f} s so far)", 0.9)
-            spread = P.pair_spread(mats, scores)
+            spread = P.pair_spread(mats, scores, key=source.score_key())
     finally:
         source.release()
     yield dict(results={tag: _light(r) for tag, r in results.items()}, ladder=[(label, vol.astype(np.float32)) for label, vol in ladder],
@@ -392,59 +331,67 @@ def _light(res):
     return replace(res, dwi=res.dwi.astype(np.float32), clean=None if res.clean is None else res.clean.astype(np.float32))
 
 
-def present(payload, load_seconds, regions, gt_count, accuracy):
-    """The page's outputs (:data:`OUTPUTS`, in order) from a compute payload: the files, the per-session states, the
-    headline and the figures. Runs where the page runs, never on the device."""
+def present(payload, state, prepared=None):
+    """The page's outputs (:data:`OUTPUTS`, in order) from a compute payload and the host's ``prepared`` share: the
+    files, the per-session states, the headline and the figures. Runs where the page runs, never on the device."""
     import gradio as gr
     received = time.time()
+    source = state["source"]; load_seconds = state["load_seconds"]; regions = state["regions"]
     results = payload["results"]; ladder = payload["ladder"]; ingredients = payload["ingredients"]; spread = payload["spread"]; knob = payload["knob"]
-    post = dict(payload["seconds"])
+    post = {}
+    if prepared is not None and prepared.get("seconds"):
+        post["host · the source's share before the GPU (the packs' responses)"] = prepared["seconds"]
+    post.update(payload["seconds"])
     t = time.perf_counter()
     samples = {}; files = {}
     for tag, r in results.items():
-        samples[tag], files[tag] = _write_files(tag, r)
+        samples[tag], files[tag] = _write_files(tag, r, source)
     post["page · files"] = time.perf_counter() - t; t = time.perf_counter()
     rs = {tag: _result_state(r, samples[tag], load_seconds) for tag, r in results.items()}
-    ex = _explorer_state(results, ladder, ingredients, knob)
+    ex = _explorer_state(results, ladder, ingredients, knob, source)
     post["page · states"] = time.perf_counter() - t; t = time.perf_counter()
     labels = [l for l, _ in ex["layers"]]; name_a = labels[-2] if "B" in results else labels[-1]
     ra = rs["A"]; rb = rs.get("B")
-    headline = _score_text("A", results["A"])
+    headline = source.score_text("A", results["A"])
     if rb:
-        c = P.compare(results["A"], results["B"])
-        headline += ("<br>" + _score_text("B", results["B"])
-                     + f"<br>**A vs B: connectome Pearson {c['pearson_ab']:.3f}**, {c['only_a']} pairs in A only, {c['only_b']} in B only, "
-                       f"B − A {c['delta_count']:+.3f} vs count, {c['delta_area']:+.3f} vs area; B = A with {knob}.")
+        headline += "<br>" + source.score_text("B", results["B"]) + "<br>" + source.compare_text(source.compare(results["A"], results["B"]), knob)
     if spread:
-        headline += (f"<br>**A over {spread['n']} tracker keys: Pearson vs count {spread['pearson_mean']:.3f} ± {spread['pearson_std']:.3f}**, "
+        headline += (f"<br>**A over {spread['n']} tracker keys: {spread['key']} {spread['pearson_mean']:.3f} ± {spread['pearson_std']:.3f}**, "
                      f"median pair count CV {spread['cv_median']:.2f}, {spread['pairs_always']} pairs in every run, {spread['pairs_any']} in any.")
-    headline += " The Replay DWI Explorer is the third tab, the DiSCo results the fourth."
+    d = source.describe(source.cfg)
+    headline += " The Replay DWI Explorer is the third tab, the results the fourth."
     z0 = ra["dwi"].shape[2] // 2
     m0 = int(np.flatnonzero(~ra["meas"].b0)[0]) if (~ra["meas"].b0).any() else 0
     timings = [[f"{tag} · {r}", t_] for tag in rs for r, t_ in V.timings_rows(rs[tag]["seconds"], rs[tag]["load_seconds"])] if rb else V.timings_rows(ra["seconds"], ra["load_seconds"])
     timings += [["device held (compute)", f"{payload['compute_seconds']:.2f}"], ["handoff to the page", f"{received - payload['handed_off_at']:.2f}"]]
     timings += [[k, f"{v:.2f}"] for k, v in post.items()]
     rs["explorer"] = ex                                  # the page state: A, B and the explorer's layers
+    box = V.grid_box(ra["shape"], source.affine) if d["views"]["truth"] else ra["shape"]
+    pa = prepared["runs"]["A"] if prepared is not None else None
     out = (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=True, label="A: "),
-           V.tractogram3d(ra["tractogram"], regions, ra["shape"], total=ra["n_streamlines"]), V.matrices(ra["matrix"], ra["score"], gt_count),
+           V.tractogram3d(ra["tractogram"], regions, box, total=ra["n_streamlines"]),
+           source.matrices(results["A"].matrix, results["A"].score, results["A"].reference),
            timings, [t_ for f in files.values() for t_ in f["tck"]], [v for f in files.values() for v in f["volumes"]],
            _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1),
-           V.tractogram3d(rb["tractogram"], regions, rb["shape"], total=rb["n_streamlines"]) if rb else None,
-           V.matrices(rb["matrix"], rb["score"], gt_count) if rb else None,
+           V.tractogram3d(rb["tractogram"], regions, box, total=rb["n_streamlines"]) if rb else None,
+           source.matrices(results["B"].matrix, results["B"].score, results["B"].reference) if rb else None,
            gr.update(visible=rb is not None),
-           V.floor_slice(ra["floor"], z0, ra["floor_median"], label="A: "), accuracy(results["A"]),
+           V.floor_slice(ra["floor"], z0, ra["floor_median"], label="A: ") if d["views"]["floor"] else None, source.accuracy(results["A"]),
            V.spread_matrices(spread) if spread else None,
            explore(ex, name_a, "minus the previous layer" if len(labels) > 1 else "signal", METRICS[0], z0, m0),
            explore(ex, name_a, "signal", METRICS[2], z0, m0), *ingredient_views(ex, z0), layer_table(ex),
-           gr.update(choices=labels, value=name_a), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1))
+           gr.update(choices=labels, value=name_a), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1),
+           source.truth_view(ra["dwi"], ra["meas"], z0, m0), source.fractions_view(ra["extras"], z0),
+           source.lobar(results["A"].matrix, results["A"].score, results["A"].reference), source.roundtrip_rows(results["A"]),
+           source.response_view(pa, results["A"].extras))
     timings.append(["page · figures", f"{time.perf_counter() - t:.2f}"])
     return out
 
 
 def run_pipeline(compute_fn, *args, progress=None):
-    """The run button, a generator: the stage texts of ``compute_fn`` (:func:`compute`, or it wrapped for a GPU
-    pool) into the headline as they arrive (the other outputs untouched, the progress bar following), then the
-    page's outputs from its payload (:func:`present`)."""
+    """The run button, a generator: the host's share of the runs (:func:`prepare_runs`), then the stage texts of
+    ``compute_fn`` (:func:`compute`, or it wrapped for a GPU pool) into the headline as they arrive (the other outputs
+    untouched, the progress bar following), then the page's outputs from its payload (:func:`present`)."""
     import gradio as gr
     state = _load()
     if state["error"]:
@@ -453,7 +400,9 @@ def run_pipeline(compute_fn, *args, progress=None):
         progress(0.0, desc="starting")
     payload = None
     try:
-        for item in compute_fn(*args):
+        yield _status("**preparing the run on the host** (the packs' responses, before the GPU is held) …")
+        prepared = prepare_runs(*args)
+        for item in compute_fn(prepared, *args):
             if isinstance(item, dict):
                 payload = item
             else:
@@ -464,7 +413,7 @@ def run_pipeline(compute_fn, *args, progress=None):
     except (ValueError, KeyError) as e:
         raise gr.Error(str(e))
     yield _status(f"**drawing** … (device held {payload['compute_seconds']:.0f} s)")
-    yield present(payload, state["load_seconds"], state["regions"], state["source"].gt_count, state["source"].accuracy)
+    yield present(payload, state, prepared)
 
 
 GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # ZeroGPU's daily quota per visitor tier, seconds
@@ -472,20 +421,18 @@ GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # Zer
 
 def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
     """The GPU seconds a run reserves on the shared pool, from its inputs (the same positional inputs as
-    :func:`run_pipeline`). Measured on the pool at DiSCo 364 with every tier (#7, dmipy-sim#522/#523): the worker's
-    start and the payload's handoff 8 s, noise to scoring 8 s, the first replay 0.045 s per measurement (the tiles
-    uploaded inside the call), each further replay on the resident tiles 0.032 s per measurement (the ladder is
-    three, B one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; times 1.3,
-    within 30 and 480 s. The pool refuses a request above the visitor's daily quota (:data:`GPU_TIERS`) and kills a
-    run that outlives its reservation, so this is the measured cost with its margin, not a generous one."""
+    :func:`run_pipeline`): the configured source's measured cost model
+    (:meth:`~space.pipeline.Source.estimated_seconds`). The pool refuses a request above the visitor's daily quota
+    (:data:`GPU_TIERS`) and kills a run that outlives its reservation, so this is the measured cost with its margin,
+    not a generous one; 480 when the inputs make no protocol."""
     try:
         cfg = P.config()
-        protocol = _protocol_from_inputs(cfg, preset, n_b0, *rest[len(PHYSICS_FIELDS):], scheme=scheme_file, full=P.mode(cfg) == "full")
-        n = protocol.n_meas
+        S = sources.source_class(cfg)
+        n = len(S.panel(cfg).fields)
+        protocol = _protocol_from_inputs(S, cfg, preset, n_b0, *rest[n:], scheme=scheme_file, full=S.mode == "full")
     except Exception:
         return 480
-    secs = 16 + 0.045 * n + (3 * 0.032 * n if ladder_on else 0) + ((8 + 0.032 * n) if knob != NO_KNOB else 0) + 10 * (int(n_keys) - 1)
-    return int(min(480, max(30, 1.3 * secs)))
+    return S.estimated_seconds(cfg, protocol, density=density, knob=knob, n_keys=n_keys, ladder=ladder_on)
 
 
 def gpu_seconds_text(*args):
@@ -512,48 +459,65 @@ def redraw_explorer(rs, layer, mode, metric, z, m):
 
 def redraw_slice(rs, z, m, overlay, which):
     if not rs or which not in rs:
-        return None, None
-    r = rs[which]
+        return None, None, None, None
+    r = rs[which]; source = _load()["source"]
+    views = source.describe(source.cfg)["views"]
     return (V.dwi_slice(r["dwi"], r["meas"], int(z), int(m), peaks=r["peaks"], peak_amp=r["peak_amp"], overlay=bool(overlay), label=f"{which}: "),
-            V.floor_slice(r["floor"], int(z), r["floor_median"], label=f"{which}: "))
+            V.floor_slice(r["floor"], int(z), r["floor_median"], label=f"{which}: ") if views["floor"] else None,
+            source.truth_view(r["dwi"], r["meas"], int(z), int(m)), source.fractions_view(r["extras"], int(z)))
 
 
 def ground_truth_views():
-    """The strands figure and the ground-truth matrices, drawn once per process."""
+    """The truth tab's views, drawn once per process."""
     state = _load()
     if state["error"]:
         return None, None
     if state["gt_views"] is None:
-        src = state["source"]
-        state["gt_views"] = (V.strands3d(state["strands_vox"], state["diameters_m"], state["regions"], src.mask.shape),
-                             V.ground_truth_matrix(src.gt_count, src.gt_area, P.connected_pairs(src.gt_count)))
+        state["gt_views"] = state["source"].truth_views()
     return state["gt_views"]
 
 
-def build(runner=None):
-    """The Blocks. ``runner`` wraps :func:`compute` for the run button (the ZeroGPU entry passes ``spaces.GPU(...)``):
-    the device part of a run; the page draws from its payload in this process."""
+def _widget(c):
+    """The Gradio component of a panel :class:`~space.pipeline.Control` (an input kind)."""
     import gradio as gr
-    cfg = P.config()
-    full = P.mode(cfg) == "full"
-    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM] + ([UPLOADED] if full else [])
-    shape_names = list(shapes); labels = {n: shapes[n]["label"] for n in shape_names}
-    with gr.Blocks(title="DiSCo replay to tractogram", delete_cache=(3600, 3600)) as demo:
+    common = dict(label=c.label, visible=c.visible, interactive=c.interactive)
+    if c.kind == "checkbox":
+        return gr.Checkbox(value=bool(c.value), **common)
+    if c.kind == "number":
+        return gr.Number(value=c.value, **common)
+    if c.kind == "slider":
+        return gr.Slider(c.minimum, c.maximum, value=c.value, step=c.step, **common)
+    if c.kind == "dropdown":
+        return gr.Dropdown(list(c.choices), value=c.value, **common)
+    raise ValueError(f"unknown control kind {c.kind!r}")
+
+
+def build(runner=None, cfg=None):
+    """The Blocks of the configured source (``cfg``, else :func:`space.pipeline.config`). ``runner`` wraps
+    :func:`compute` for the run button (the ZeroGPU entry passes ``spaces.GPU(...)``): the device part of a run; the
+    page prepares on the host before it and draws from its payload after it, in this process."""
+    import gradio as gr
+    cfg = cfg or P.config()
+    S = sources.source_class(cfg)
+    d = S.describe(cfg)
+    full = S.mode == "full"
+    shapes = S.shapes_of(cfg); presets = S.presets(cfg) + [CUSTOM] + ([UPLOADED] if full else [])
+    shape_names = [n for n in shapes]
+    panel = S.panel(cfg); tc = S.tracking_controls(cfg)
+    with gr.Blocks(title=d["title"], delete_cache=(3600, 3600)) as demo:
         gr.Markdown(
-            "# DiSCo: one Monte-Carlo walk, any acquisition, a connectome\n"
-            "The DiSCo phantom's walkers were simulated once (SubstrateCommons/disco-replay). Choose an acquisition; the Space "
-            "replays the whole 40³ grid from the stored walk, adds noise, fits constrained spherical deconvolution, tracks from "
-            "the sixteen regions and scores the connectome against the ground truth. The progress bar names each stage."
+            d["heading"]
             + ("\n\n**Before you press run:** the GPU time of a run is charged to *your* Hugging Face quota, not the Space's: "
                "2 minutes a day logged out, 5 with a free account, 40 with PRO. The line under the run button says how many "
                "seconds the configured run reserves and which of those can start it; a request above your quota is refused "
-               "before it starts, so log in to Hugging Face in this browser if you want more than one run a day." if runner is not None else ""))
+               "before it starts, so log in to Hugging Face in this browser if you want more than one run a day." if runner is not None else "")
+            + "\n\n**Fixed here:** " + "; ".join(d["fixed"]) + ".")
         result = gr.State(None)
         with gr.Tabs():
-            with gr.Tab("1 · acquisition"):
+            with gr.Tab("1 · acquisition, tissue and scanner"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        preset = gr.Dropdown(presets, value="DiSCo 364", label="acquisition")
+                        preset = gr.Dropdown(presets, value=presets[0], label="acquisition")
                         n_b0 = gr.Slider(1, 10, value=1, step=1, label="b = 0 measurements (custom shells)")
                         shell_inputs = []
                         for k in range(MAX_SHELLS):
@@ -566,82 +530,53 @@ def build(runner=None):
                                 Delta = gr.Number(value=16.7, label="Δ (ms)", visible=full)
                                 TE = gr.Number(value=53.5, label="TE (ms)", visible=full)
                             shell_inputs += [on, shape, b, n, delta, Delta, TE]
-                        if full:
-                            gr.Markdown("**Full mode**: the columnar replay pack is read for every run, so a shell's δ / Δ / TE are free "
-                                        "(one TE and one pulse kind per run, square pulses, the field along z) and a Camino `.scheme` file "
-                                        "can be uploaded; a run takes minutes, the plan shown first says how many.")
-                        else:
-                            gr.Markdown("**Demo mode**: a shell's **pulse timing** (δ, Δ; TE 53.5 ms, square pulses) is one of the stored classes, "
-                                        "because the layout holds each walker's response to that pulse shape; the b-value, the directions and their "
-                                        "number, the tissue, the field, the SNR and the tracker are free. Stored: " + "; ".join(f"`{n}` = {labels[n]}" for n in shape_names)
-                                        + ". The same image beside the columnar pack (`DISCO_MODE=full`) replays any timing, in minutes.")
+                        gr.Markdown(d["acquisition"])
                         scheme_file = gr.File(label="uploaded scheme: Camino STEJSKALTANNER (.scheme)", file_count="single", type="filepath", visible=full)
                     with gr.Column(scale=1):
-                        phys = cfg["physics"]; f0 = float(phys["default_field"]); c0 = catalogue_numbers(f0)
-                        field_presets = {f"{f:g} T": float(f) for f in phys["fields"]}
+                        field_presets = {f"{f:g} T": float(f) for f in panel.field_presets}
+                        widgets = {}; catalogue_note = reset = field_preset = None
                         with gr.Accordion("tissue and scanner: the physics tiers", open=True):
-                            physics_on = gr.Checkbox(value=bool(phys["default_on"]), label="evaluate the walk in tissue at a field (off: bare diffusion)")
-                            with gr.Row():
-                                field_preset = gr.Dropdown(list(field_presets), value=f"{f0:g} T", label="field preset")
-                                field_T = gr.Slider(0.05, 12.0, value=f0, step=0.001, label="B0 (T)")
-                            with gr.Row():
-                                b0_mode = gr.Dropdown(list(B0_MODES) + [FREE_B0], value=list(B0_MODES)[0], label="B0 direction")
-                                theta = gr.Slider(0, 180, value=0, step=1, label="polar angle from z (°)")
-                                phi = gr.Slider(0, 360, value=0, step=1, label="azimuth from x (°)")
-                            with gr.Row():
-                                tier_relax = gr.Checkbox(value=True, label="relaxation (T2, T1)")
-                                tier_contact = gr.Checkbox(value=True, label="contact (surface relaxivity ρ)")
-                                tier_field = gr.Checkbox(value=True, label="field (myelin susceptibility)")
-                            n = len(POOLS)
-                            with gr.Row():
-                                T2s = [gr.Number(value=c0[k], label=f"T2 {q} (ms)") for k, q in enumerate(POOLS)]
-                            with gr.Row():
-                                T1s = [gr.Number(value=c0[n + k], label=f"T1 {q} (ms)") for k, q in enumerate(POOLS)]
-                            with gr.Row():
-                                rho = gr.Number(value=c0[2 * n], label="ρ (µm/s)"); chi_iso = gr.Number(value=c0[2 * n + 1], label="χ_iso of the sheath, the field source (ppm)")
-                                chi_aniso = gr.Number(value=c0[2 * n + 2], label="Δχ_a of the sheath (ppm)")
-                            with gr.Row():
-                                catalogue_note = gr.Markdown(c0[2 * n + 3])
-                                reset = gr.Button("reset to the catalogue at this field", size="sm")
-                            gr.Markdown("The pack's walkers live in the intra- and extra-axonal pools (its spec names a myelin pool nobody was seeded "
-                                        "in). On this phantom the field's **direction** and the **stimulated echo** move the signal most; 3 T against "
-                                        "7 T on a PGSE is small (the 180° refocuses the static dephasing), and at 7 T the catalogue's two T2 coincide.")
-                        physics_inputs = [physics_on, field_T, b0_mode, theta, phi, *T2s, *T1s, rho, chi_iso, chi_aniso, tier_relax, tier_contact, tier_field]
-                        assert len(physics_inputs) == len(PHYSICS_FIELDS)
+                            for row in panel.rows:
+                                with gr.Row():
+                                    for c in row:
+                                        if c.kind == "field_preset":
+                                            field_preset = gr.Dropdown(list(c.choices), value=c.value, label=c.label)
+                                        elif c.kind == "catalogue_note":
+                                            catalogue_note = gr.Markdown(c.value)
+                                        elif c.kind == "reset":
+                                            reset = gr.Button(c.label, size="sm")
+                                        elif c.kind == "markdown":
+                                            gr.Markdown(c.value)
+                                        else:
+                                            widgets[c.name] = _widget(c)
+                            gr.Markdown(d["tissue"])
+                        physics_inputs = [widgets[name] for name in panel.fields]
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
                             snr = gr.Slider(5, 100, value=30, step=1, label="SNR at M0 (a full water voxel before relaxation; each voxel's b = 0 SNR follows its tissue)")
-                        density = gr.Slider(1, 4, value=cfg["tracking"]["density"], step=1, label="seeds per region voxel (density³)")
-                        max_angle = gr.Slider(10, 60, value=cfg["tracking"]["max_angle"], step=1, label="max angle (°)")
-                        step_mm = gr.Slider(0.25, 1.0, value=cfg["tracking"]["step_mm"], step=0.05, label="step (voxels; the grid is the mm frame)")
+                        density = gr.Slider(tc["density"][0], tc["density"][1], value=tc["density"][2], step=tc["density"][3], label=tc["density"][4])
+                        max_angle = gr.Slider(tc["max_angle"][0], tc["max_angle"][1], value=tc["max_angle"][2], step=tc["max_angle"][3], label=tc["max_angle"][4])
+                        step_mm = gr.Slider(tc["step"][0], tc["step"][1], value=tc["step"][2], step=tc["step"][3], label=tc["step"][4])
                         key = gr.Number(value=0, precision=0, label="random key")
-                        knob = gr.Dropdown(list(knobs(cfg)), value=NO_KNOB, label="B: the same run with one knob changed")
+                        knob = gr.Dropdown(list(S.knobs(cfg)), value=NO_KNOB, label="B: the same run with one knob changed")
                         scanner = gr.Dropdown([NO_SCANNER] + list(P.scanner_classes()), value=NO_SCANNER,
                                               label="scanner gradient limit (the catalogue's classes): a shell it cannot play refuses the run")
                         gradients = gr.Markdown()
                         n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
-                        ladder_on = gr.Checkbox(value=not full, visible=not full, label="Replay DWI Explorer: replay A's tier ladder too (bare, +relaxation, +contact; noise-free; about 30 s more of GPU time at DiSCo 364)")
-                        go = gr.Button("replay → CSD → track → score", variant="primary")
+                        ladder_on = gr.Checkbox(value=not full, visible=not full, label=d["ladder"])
+                        go = gr.Button(d["run_label"], variant="primary")
                         gpu_text = gr.Markdown(visible=runner is not None)
                         headline = gr.Markdown()
-            with gr.Tab("2 · ground truth") as gt_tab:
-                strands_view = gr.Plot(label="the strands")
-                gt_matrix = gr.Image(label="the ground-truth matrices", type="pil")
+            with gr.Tab(d["truth_tab"]) as gt_tab:
+                strands_view = gr.Plot(label=d["truth_labels"][0])
+                gt_matrix = gr.Image(label=d["truth_labels"][1], type="pil")
+                gr.Markdown(f"**The truth:** {d['truth']}.")
             with gr.Tab("3 · Replay DWI Explorer"):
-                gr.Markdown("What the replay made, before the noise and the tractography. **A** is the run you configured in the first tab "
-                            "(its replay before the noise); **B** is the same run with the one knob you chose there changed, and exists only "
-                            "when a knob is set. **Ingredients**: what each tier multiplies into every walker's term, reduced per voxel. "
-                            "**Layers**: A's walk replayed with A's tiers switched on one at a time, ending at A itself, then B; look at a "
-                            "layer, its difference to the previous one, or B minus A, in the DWI itself or in the tensor's MD and FA from the "
-                            "b ≤ 1500 shells; divide by the replay floor to see where a difference means something. A null result is a "
-                            "result: 7 T against 3 T at the catalogue's tissue moves the median voxel by 0.005 (99 % of voxels under 0.02), under "
-                            "the replay floor of about 0.01: the catalogue gives both seeded pools the same T2 at 7 T (47 ms), so the "
-                            "relaxation tier re-weights nothing between them, the contact tier does not depend on the field, and the sheath "
-                            "field's dephasing, though it grows from 0.10 to 0.24 rad of spread, moves the magnitude by 0.004 in the median voxel.")
+                gr.Markdown(d["explorer"])
                 with gr.Row():
-                    ingredient_pool = gr.Image(label="relaxation tier: intra-axonal weight fraction", type="pil")
-                    ingredient_contact = gr.Image(label="contact tier: the walkers' wall contact", type="pil")
-                    ingredient_field = gr.Image(label="field tier: dephasing phase spread at the echo", type="pil")
+                    ingredient_pool = gr.Image(label=d["ingredients"][0], type="pil")
+                    ingredient_contact = gr.Image(label=d["ingredients"][1], type="pil")
+                    ingredient_field = gr.Image(label=d["ingredients"][2], type="pil")
                 with gr.Row():
                     layer_choice = gr.Dropdown(["A"], value="A", label="layer")
                     mode = gr.Radio(list(EXPLORE_MODES), value=EXPLORE_MODES[0], label="show")
@@ -653,7 +588,8 @@ def build(runner=None):
                     explore_view = gr.Image(label="the chosen layer and mode", type="pil")
                     metric_view = gr.Image(label="the same for FA (or the chosen metric)", type="pil")
                 layer_tbl = gr.Dataframe(headers=["from", "to", "b (s/mm²)", "median |ΔS|", "99 % |ΔS|"], label="layer differences per shell, and the replay floor", interactive=False)
-            with gr.Tab("4 · DiSCo results"):
+                response_view = gr.Image(label="estimated vs true response per tissue", type="pil", visible=d["views"]["response"])
+            with gr.Tab(d["results_tab"]):
                 with gr.Row():
                     with gr.Column(scale=1):
                         dwi_view = gr.Image(label="DWI slice", type="pil")
@@ -662,47 +598,52 @@ def build(runner=None):
                             m_slider = gr.Slider(0, 363, value=0, step=1, label="measurement")
                             overlay = gr.Checkbox(value=True, label="FOD principal directions")
                             which = gr.Radio(["A", "B"], value="A", label="run")
+                    with gr.Column(scale=1, visible=d["views"]["truth"]):
+                        truth_view = gr.Image(label="the same slice with the input FOD's principal directions", type="pil")
                     with gr.Column(scale=1):
                         tract_view = gr.Plot(label="tractogram A")
-                mats = gr.Image(label="connectome A vs ground truth", type="pil")
+                fractions_view = gr.Image(label="recovered vs input fractions", type="pil", visible=d["views"]["fractions"])
+                mats = gr.Image(label="connectome A vs its truth", type="pil")
+                lobar_view = gr.Image(label="connectome A vs its truth over the lobar groups", type="pil", visible=d["views"]["lobar"])
                 with gr.Row(visible=False) as b_row:
                     tract_view_b = gr.Plot(label="tractogram B")
-                    mats_b = gr.Image(label="connectome B vs ground truth", type="pil")
+                    mats_b = gr.Image(label="connectome B vs its truth", type="pil")
                 spread_view = gr.Image(label="A over N tracker keys: mean and spread per pair", type="pil")
+                roundtrip = gr.Dataframe(headers=["what", "value"], label="the round trip: the reconstruction and the connectome against the input",
+                                         interactive=False, wrap=True, visible=d["views"]["roundtrip"])
                 with gr.Accordion("accuracy: what this replay is an approximation of", open=False):
-                    gr.Markdown("A replay is a measured approximation of the stored walk, not a rendering: the walk's two halves are replayed "
-                                "separately and their disagreement per voxel is the **floor** below which a signal difference means nothing; "
-                                "the layout keeps K temporal bands of each walker's path and the **band error** is what the dropped bands "
-                                "would have added at the built gradient amplitude.")
+                    gr.Markdown(d["accuracy"])
                     with gr.Row():
-                        floor_view = gr.Image(label="split-half floor (this run, the slice above)", type="pil")
+                        floor_view = gr.Image(label="split-half floor (this run, the slice above)", type="pil", visible=d["views"]["floor"])
                         accuracy = gr.Dataframe(headers=["what", "value"], label="the source and this run", interactive=False, wrap=True)
                 with gr.Row():
                     timings = gr.Dataframe(headers=["stage", "seconds"], label="timings", interactive=False)
                     with gr.Column():
                         tck = gr.File(label="tractograms (.tck, MRtrix): every streamline, and a 10k sample", file_count="multiple")
-                        volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
+                        volumes = gr.File(label=d["volumes_label"], file_count="multiple")
         compute_fn = compute if runner is None else runner(compute)      # the device part alone runs under a pool's GPU
 
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(compute_fn, *args, progress=progress)
-        tissue_numbers = [*T2s, *T1s, rho, chi_iso, chi_aniso, catalogue_note]
-        field_preset.change(lambda name: [field_presets[name]] + catalogue_numbers(field_presets[name]), inputs=field_preset,
-                            outputs=[field_T] + tissue_numbers, show_progress="hidden")
-        reset.click(catalogue_numbers, inputs=field_T, outputs=tissue_numbers, show_progress="hidden")
+        tissue_numbers = [widgets[name] for name in panel.catalogue] + [catalogue_note]
+        field_preset.change(lambda name: [field_presets[name]] + S.catalogue_numbers(cfg, field_presets[name]), inputs=field_preset,
+                            outputs=[widgets["field_T"]] + tissue_numbers, show_progress="hidden")
+        reset.click(lambda f: S.catalogue_numbers(cfg, f), inputs=widgets["field_T"], outputs=tissue_numbers, show_progress="hidden")
+
         def show_gradients(preset_, n_b0_, scanner_, scheme_, *shells_):
             try:
-                prot = _protocol_from_inputs(cfg, preset_, n_b0_, *shells_, scheme=scheme_, full=full)
+                prot = _protocol_from_inputs(S, cfg, preset_, n_b0_, *shells_, scheme=scheme_, full=full)
             except (ValueError, KeyError) as e:
                 return f"({e})"
-            return gradient_text(prot, cfg["shapes"], scanner_)[0]
+            return gradient_text(prot, shapes, scanner_)[0]
         for ctl in (preset, scanner, scheme_file, *shell_inputs):
             ctl.change(show_gradients, inputs=[preset, n_b0, scanner, scheme_file, *shell_inputs], outputs=gradients, show_progress="hidden")
         outputs = dict(result=result, headline=headline, dwi_view=dwi_view, tract_view=tract_view, mats=mats, timings=timings, tck=tck,
                        volumes=volumes, z_slider=z_slider, m_slider=m_slider, tract_view_b=tract_view_b, mats_b=mats_b, b_row=b_row,
                        floor_view=floor_view, accuracy=accuracy, spread_view=spread_view, explore_view=explore_view, metric_view=metric_view,
                        ingredient_pool=ingredient_pool, ingredient_contact=ingredient_contact, ingredient_field=ingredient_field,
-                       layer_table=layer_tbl, layer_choice=layer_choice, ez_slider=ez_slider, em_slider=em_slider)
+                       layer_table=layer_tbl, layer_choice=layer_choice, ez_slider=ez_slider, em_slider=em_slider, truth_view=truth_view,
+                       fractions_view=fractions_view, lobar_view=lobar_view, roundtrip=roundtrip, response_view=response_view)
         for ctl in (layer_choice, mode, metric, ez_slider, em_slider):
             ctl.change(redraw_explorer, inputs=[result, layer_choice, mode, metric, ez_slider, em_slider],
                        outputs=[explore_view, metric_view, ingredient_pool, ingredient_contact, ingredient_field], show_progress="hidden")
@@ -712,7 +653,7 @@ def build(runner=None):
         go.click(run_with_progress, inputs=run_inputs,
                  outputs=[outputs[name] for name in OUTPUTS], concurrency_limit=1, api_name="run_pipeline")   # the endpoint tools/live.py drives
         for ctl in (z_slider, m_slider, overlay, which):
-            ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view], show_progress="hidden")
+            ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view, truth_view, fractions_view], show_progress="hidden")
         gt_tab.select(ground_truth_views, outputs=[strands_view, gt_matrix])
         demo.load(lambda: (_load().get("error") and f"**the source did not load:** {_load()['error']}") or "", outputs=headline)
     return demo

@@ -1,14 +1,13 @@
-"""The DiSCo Space's pipeline: an acquisition on a replay source -> the DWI of the 40^3 grid -> noise -> CSD ->
-probabilistic tracking from the sixteen regions -> the 16 x 16 connectome against the dataset's ground truth. Plain
+"""The Spaces' pipeline: an acquisition on a replay source -> the DWI of the source's grid -> noise -> the
+reconstruction -> probabilistic tracking -> the connectome of the source's regions against the source's truth. Plain
 functions with their timings; nothing here draws or reads a widget.
 
-Two sources replay the same walk. :class:`Layout` (demo mode) is dmipy-sim's shape-moment layout: the DiSCo replay
-pack contracted once per stored pulse timing ("class"), so a protocol on those classes at any b-values, directions,
-tissue and field is an elementwise kernel on device-resident rows, in seconds. :class:`Columns` (full mode) is the
-columnar replay pack itself, read once per run for any pulse timing, in minutes. The CSD is dmipy-fit's batched
-Tournier 2007 solver at order 8 on the response ``white_matter_response_tournier07`` estimates from the volume; the
-tracker is dmipy-tract's ``track``; the score is the Pearson correlation of the symmetrised streamline counts with
-the strand-count and cross-sectional-area matrices over the 120 region pairs.
+The source is what the configuration names (:mod:`space.sources`): DiSCo's replay layout or columnar pack
+(:mod:`space.sources.disco`), or a brain composed from an FOD field, tissue fractions and replay packs
+(:mod:`space.sources.brain`). Everything a page needs from a source -- its texts, presets, tissue panel, regions,
+truth, reconstruction and GPU budget -- is the :class:`Source` interface, so one page serves both. The CSD is
+dmipy-fit's, the tracker dmipy-tract's ``track``, the connectome dmipy-tract's ``connectivity`` over the source's
+label image.
 """
 from __future__ import annotations
 
@@ -25,20 +24,38 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-CONFIG_PATH = os.path.join(HERE, "config.toml")
+DEFAULT_CONFIG = os.path.join(HERE, "config.toml")
 DATA_DIR = os.path.join(ROOT, "data")
 SH_ORDER = 8
-N_REGIONS = 16
 B0_MAX = 50.0                                        # s/mm^2: a row below it is a b = 0 measurement, everywhere in the pipeline
 BAND_TOL = 0.005                                     # the band tolerance (x the pack's floor) of the layout and of a full replay
-VOXEL_M = 25e-6                                      # DiSCo's voxel; the strands' coordinate unit
 BACKENDS = ("jax", "torch")
 MODES = ("demo", "full")
+RECONSTRUCTIONS = ("msmt", "tournier07")
+NO_KNOB = "none: run A only"                        # the knob that makes no B
 
 
-def config(path=CONFIG_PATH):
-    with open(path, "rb") as f:
+def config_path():
+    """The configuration this process serves: ``DISCO_CONFIG`` in the environment (a path, or a name in
+    ``space/`` such as ``brain.toml``), else ``space/config.toml`` (the DiSCo Space)."""
+    p = os.environ.get("DISCO_CONFIG") or DEFAULT_CONFIG
+    return p if os.path.isabs(p) or os.path.exists(p) else os.path.join(HERE, p)
+
+
+def config(path=None):
+    """The configuration at ``path``, else at :func:`config_path`."""
+    with open(path or config_path(), "rb") as f:
         return tomllib.load(f)
+
+
+def reconstruction(cfg):
+    """The reconstruction a run fits: ``msmt`` (three-tissue responses estimated from the data and multi-shell
+    multi-tissue CSD) or ``tournier07`` (the single-fibre response and single-tissue CSD): ``DISCO_RECONSTRUCTION``
+    in the environment, else ``[reconstruction] method``."""
+    r = os.environ.get("DISCO_RECONSTRUCTION") or cfg["reconstruction"]["method"]
+    if r not in RECONSTRUCTIONS:
+        raise ValueError(f"reconstruction must be one of {RECONSTRUCTIONS}, got {r!r}")
+    return r
 
 
 def mode(cfg):
@@ -213,21 +230,6 @@ def protocol_from_scheme(path, *, name="uploaded scheme"):
     return protocol_from_rows(b, np.asarray(enc.gradient_directions, np.float64), group.ravel(), make_shell, name=name)[0]
 
 
-def disco_protocol(cfg):
-    """DiSCo's own 364-measurement protocol (its gradient table, its per-shell timing classes from ``[disco]``) as
-    a Protocol with every row's own direction and b-value: the acquisition the reference volumes were replayed with.
-    Returns it and the table rows in the protocol's order (the reference volumes follow the table's)."""
-    bv = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_gradients.bvals")).ravel()
-    dirs = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_gradients_dipy.bvecs"))
-    if dirs.shape[0] == 3:
-        dirs = dirs.T
-    shells = cfg["disco"]["shells"]                                     # [{b, shape}] in the table's row order
-    centres = np.array([s["b"] for s in shells])
-    which = np.argmin(np.abs(bv[:, None] - centres[None, :]), axis=1)
-    return protocol_from_rows(bv, dirs, which, lambda k, rows: Shell(shells[k]["shape"], float(np.round(bv[rows].mean())), int(len(rows))),
-                              name="DiSCo 364")
-
-
 def preset_protocol(cfg, name):
     """A ``[presets]`` entry of the config as a Protocol."""
     p = cfg["presets"][name]
@@ -241,18 +243,18 @@ def retime(protocol, shape):
                     directions=protocol.directions, bvals=protocol.bvals, name=f"{protocol.name} on {shape}")
 
 
-def write_volumes(res, out_dir, *, prefix="disco"):
-    """The result's DWI as NIfTI (float32, identity affine, NaN as 0) with its bvals (s/mm^2) and bvecs (3 x N), and
+def write_volumes(res, out_dir, *, prefix, affine):
+    """The result's DWI as NIfTI (float32 on ``affine``, NaN as 0) with its bvals (s/mm^2) and bvecs (3 x N), and
     the FOD SH field as NIfTI (tournier07 basis, order 8); returns the four paths."""
     import nibabel as nib
     os.makedirs(out_dir, exist_ok=True)
     paths = {}
     dwi = os.path.join(out_dir, f"{prefix}_dwi.nii.gz")
-    nib.save(nib.Nifti1Image(np.nan_to_num(res.dwi).astype(np.float32), np.eye(4)), dwi); paths["dwi"] = dwi
+    nib.save(nib.Nifti1Image(np.nan_to_num(res.dwi).astype(np.float32), np.asarray(affine, np.float64)), dwi); paths["dwi"] = dwi
     bvals = os.path.join(out_dir, f"{prefix}.bvals"); np.savetxt(bvals, res.meas.bvals[None, :], fmt="%.1f"); paths["bvals"] = bvals
     bvecs = os.path.join(out_dir, f"{prefix}.bvecs"); np.savetxt(bvecs, res.meas.dirs.T, fmt="%.8f"); paths["bvecs"] = bvecs
     fod = os.path.join(out_dir, f"{prefix}_fod_sh.nii.gz")
-    nib.save(nib.Nifti1Image(np.nan_to_num(res.sh).astype(np.float32), np.eye(4)), fod); paths["fod"] = fod
+    nib.save(nib.Nifti1Image(np.nan_to_num(res.sh).astype(np.float32), np.asarray(affine, np.float64)), fod); paths["fod"] = fod
     return paths
 
 
@@ -365,40 +367,220 @@ def tissue_and_scanner(physics, unseeded=()):
     return tissue, (physics.field_T if tissue is not None and physics.field else None)
 
 
-# ---- the sources: what replays the walk -------------------------------------------------------------------------------
+# ---- the sources: what replays, what is tracked, what is scored ------------------------------------------------------
+
+@dataclass(frozen=True)
+class Control:
+    """One widget of a source's tissue-and-scanner panel: ``kind`` is an input (``checkbox``, ``number``, ``slider``,
+    ``dropdown``) or a piece of the panel's machinery (``field_preset``: the field presets that fill the catalogue's
+    numbers, ``catalogue_note`` and ``reset``: the note saying where the numbers came from and the button that
+    restores them, ``markdown``: text). ``value`` is the default; ``interactive`` False shows it fixed."""
+    name: str
+    kind: str
+    label: str = ""
+    value: object = None
+    choices: tuple = ()
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    step: Optional[float] = None
+    visible: bool = True
+    interactive: bool = True
+
+
+@dataclass(frozen=True)
+class Panel:
+    """A source's tissue-and-scanner panel: ``rows`` of :class:`Control` in the order drawn, ``fields`` the inputs'
+    names in the order the run signature carries them, ``catalogue`` the names the catalogue fills in (in the order
+    :meth:`Source.catalogue_numbers` returns them, a note last), ``field_presets`` the fields (T) offered."""
+    rows: tuple
+    fields: tuple
+    catalogue: tuple
+    field_presets: tuple
+
+    def controls(self):
+        return {c.name: c for row in self.rows for c in row}
+
+
+@dataclass(frozen=True)
+class Regions:
+    """The regions a connectome is counted between: ``labels`` an integer image (0 = no region, 1..n the regions),
+    ``affine`` its voxel-to-tracking-frame map in millimetres, ``names`` one per region, ``groups`` the coarser view
+    as ``((name, (label, ...)), ...)`` (empty when the source has none)."""
+    labels: np.ndarray
+    affine: np.ndarray
+    names: tuple
+    groups: tuple = ()
+
+    @property
+    def n(self):
+        return len(self.names)
+
+    @property
+    def pairs(self):
+        """The region pairs, the upper triangle without the diagonal."""
+        return np.triu_indices(self.n, 1)
+
+    def matrix(self, tg):
+        """The symmetrised ``n x n`` streamline-count matrix of ``tg`` between the regions (no self-connections):
+        dmipy-tract's ``connectivity`` over the label image, row 0 (no region) dropped."""
+        from dmipy_tract import connectivity
+        counts, _ = connectivity(tg, self.labels, self.affine)
+        M = np.zeros((self.n + 1, self.n + 1))
+        k = min(counts.shape[0], self.n + 1)
+        M[:k, :k] = counts[:k, :k]
+        M = M[1:, 1:]
+        M = M + M.T
+        np.fill_diagonal(M, 0)
+        return M
+
+    def grouped(self, M):
+        """``M`` summed over the groups: ``(G, G)``, the off-diagonal entries the counts between two groups, the
+        diagonal the count within a group (each pair once)."""
+        A = np.zeros((self.n, len(self.groups)))
+        for g, (_, ids) in enumerate(self.groups):
+            A[np.asarray(ids, int) - 1, g] = 1.0
+        G = A.T @ np.asarray(M, np.float64) @ A
+        G[np.diag_indices_from(G)] /= 2.0
+        return G
+
 
 class Source:
-    """What a replay source has beside its data: the DiSCo mask, the sixteen regions, the two ground-truth
-    matrices, the config's timing classes, the compute backend, and ``mode`` (``demo`` or ``full``). A source
-    validates a run, replays measurements, plans a replay and reports its accuracy."""
-    mode = ""
+    """A replay source: what the page shows and asks for (class-level, from the configuration alone, so the page is
+    built before any data loads) and what a run does with the data (the instance).
 
+    The page's side: :meth:`describe` (the title and every text that names the source), :meth:`presets` and
+    :meth:`protocol` (the acquisitions offered), :meth:`panel` (the tissue-and-scanner inputs),
+    :meth:`catalogue_numbers`, :meth:`physics_from`, :meth:`knobs` and :meth:`apply_knob` (B, one knob away from A),
+    :meth:`tracking_controls` and :meth:`estimated_seconds` (the GPU seconds a run reserves on a shared pool).
+
+    The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the host's share of a
+    replay, done before the device is held), :meth:`replay`, :meth:`reconstruct`, :meth:`tracking_inputs`,
+    :meth:`reference` and :meth:`score` (the truth the connectome is scored against), :meth:`compare` (A against
+    B), :meth:`ladder`, :meth:`ingredients`, :meth:`accuracy`."""
+    mode = ""
+    STAGES = ("replay", "noise", "csd", "track", "score")
+    TIERS = ()                                       # the physics tiers a ladder switches on one at a time
     unseeded = ()                                    # the substrate's pools no walker was seeded in
 
     def __init__(self, cfg):
-        import nibabel as nib
         self.cfg = cfg
         self.shapes = cfg["shapes"]
-        self.pools = tuple(cfg["physics"]["pools"])
         self.backend = backend(cfg)
-        self.mask = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_mask.nii.gz")).dataobj) > 0
-        self.rois = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_ROIs.nii.gz")).dataobj).astype(np.int32)
-        self.gt_count = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Strands_Count.txt"))
-        self.gt_area = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Cross-Sectional_Area.txt"))
 
-    def check_grid(self, grid_shape, what):
-        if tuple(grid_shape) != self.mask.shape:
-            raise ValueError(f"{what}'s grid {tuple(grid_shape)} is not the mask's {self.mask.shape}")
+    # ---- the page's side: from the configuration alone ----
+    @classmethod
+    def describe(cls, cfg):
+        """The texts that name the source: ``title``, ``heading`` (the page's first paragraph), ``acquisition``
+        (under the shell rows), ``tissue`` (under the panel), ``explorer`` (the explorer's paragraph), ``results_tab``,
+        ``truth_tab`` (the tab of the input and its truth), ``stages`` (the progress text per stage), ``fixed`` (what a
+        visitor cannot change, one line each), ``accuracy`` (the accuracy accordion's paragraph), ``ingredients``
+        (the three ingredient images' labels), ``truth`` (what the connectome is scored against, and how),
+        ``files`` (the download files' prefix)."""
+        raise NotImplementedError
+
+    @classmethod
+    def presets(cls, cfg):
+        """The acquisitions the page offers besides custom shells, the default first."""
+        raise NotImplementedError
+
+    @classmethod
+    def shapes_of(cls, cfg):
+        """The timing classes a shell can play: ``{name: {label, delta, Delta, TE[, kind]}}``."""
+        return cfg["shapes"]
+
+    @classmethod
+    def protocol(cls, cfg, name):
+        """The preset ``name`` as a :class:`Protocol`."""
+        raise NotImplementedError
+
+    @classmethod
+    def panel(cls, cfg):
+        """The tissue-and-scanner :class:`Panel`."""
+        raise NotImplementedError
+
+    @classmethod
+    def catalogue_numbers(cls, cfg, field_T):
+        """The panel's :attr:`Panel.catalogue` numbers at ``field_T`` in the page's units, a note last."""
+        raise NotImplementedError
+
+    @classmethod
+    def physics_from(cls, cfg, values):
+        """The panel (a dict by :attr:`Panel.fields`, page units) as the source's physics, or None when it is off."""
+        raise NotImplementedError
+
+    @classmethod
+    def knobs(cls, cfg):
+        """The one-knob changes B can make to A, ``{label: (kind, value)}`` (None for no B)."""
+        raise NotImplementedError
+
+    @classmethod
+    def apply_knob(cls, cfg, change, protocol, snr_on, snr, values):
+        """B's settings: A's with ``change`` applied; ``(protocol, snr_on, snr, values)``."""
+        raise NotImplementedError
+
+    @classmethod
+    def tracking_controls(cls, cfg):
+        """The tracker's inputs: ``{name: (minimum, maximum, value, step, label)}`` for ``density``,
+        ``max_angle`` and ``step``."""
+        raise NotImplementedError
+
+    @classmethod
+    def tracking(cls, cfg, *, density, max_angle, step, key):
+        """The tracker's :class:`Tracking` from the page's inputs."""
+        raise NotImplementedError
+
+    @classmethod
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder):
+        """The GPU seconds a run of ``protocol`` reserves on a shared pool, from the measured cost model."""
+        raise NotImplementedError
+
+    # ---- the run's side ----
+    @classmethod
+    def load(cls, cfg, *, local=None):
+        """The source of ``cfg`` with its data loaded (``local``: a local copy instead of the Hub's)."""
+        return cls(cfg)
 
     def validate(self, protocol, physics):
         """Refuses, before any work, a run this source cannot do; returns its measurements."""
         return measurements(protocol, self.shapes)
 
-    def replay(self, meas, physics=None):
+    def prepare(self, meas, physics=None):
+        """The host's share of a replay of ``meas`` at ``physics``, done in the page's process before the device is
+        held (None for a source that has none); :meth:`replay` takes it as ``prepared``."""
+        return None
+
+    def replay(self, meas, physics=None, prepared=None):
         """``(dwi, floor, s0_factor, seconds)``: the S0-normalised signal of every voxel per measurement (NaN
-        outside the pack's rows), the split-half floor per voxel, the voxel's raw b = 0 signal as a fraction of M0
-        (the bare signal of the fullest water voxel: what relaxation, contact and the field took, 1 when the source
-        cannot tell), and the time; at ``physics`` else bare diffusion."""
+        outside the source's voxels), the split-half floor per voxel (zero where the source has none), the voxel's
+        raw b = 0 signal as a fraction of M0 (what relaxation, contact and the field took, 1 when the source cannot
+        tell), and the time; at ``physics`` else bare diffusion; ``prepared`` is :meth:`prepare`'s."""
+        raise NotImplementedError
+
+    def reconstruct(self, dwi, s0_factor, meas, mask):
+        """``(sh, seconds, extras)``: the FOD field from the DWI, the time of each step, and whatever else the
+        reconstruction estimated (``fractions`` on the multi-tissue path): the configuration's
+        :func:`reconstruction`, the single-fibre response and dmipy-fit's batched Tournier 2007 CSD (:func:`csd`, one
+        step ``csd``) or three-tissue responses and multi-tissue CSD on the signal in M0 units (:func:`csd_msmt`)."""
+        if reconstruction(self.cfg) == "tournier07":
+            sh, t, _ = csd(dwi, meas, mask, backend=self.backend)
+            return sh, {"csd": t}, {}
+        sh, fractions, _, (t_resp, t_fit) = csd_msmt(dwi * s0_factor[..., None], meas, mask, backend=self.backend)
+        return sh, {"responses (dhollander16)": t_resp, f"MT-CSD (csd_msmt_{self.backend})": t_fit}, dict(fractions=fractions)
+
+    def tracking_inputs(self, sh, density):
+        """``(field, seeds)``: the FOD field on the tracking domain and the seeds at ``density``."""
+        raise NotImplementedError
+
+    def reference(self, tracking, seeds):
+        """``(reference, seconds)``: what the connectome is scored against at ``tracking`` from ``seeds``."""
+        raise NotImplementedError
+
+    def score(self, M, reference):
+        """The connectome ``M`` against ``reference``: a dict of numbers."""
+        raise NotImplementedError
+
+    def compare(self, a, b):
+        """Run A against run B (two :class:`Result`): a dict of numbers."""
         raise NotImplementedError
 
     def plan(self, meas, physics=None):
@@ -413,21 +595,88 @@ class Source:
         """Whatever a run kept on the device that must not survive it (nothing for a source that reads per run)."""
         return
 
-    def ingredients(self, meas, physics=None):
+    def ingredients(self, meas, physics=None, prepared=None):
         """The per-voxel maps of what each tier multiplies into the sum (None for a source without them)."""
         return None
 
-    def ladder(self, meas, physics):
-        """The noise-free replays with the tiers switched on one at a time, ``[(label, dwi)]`` from bare diffusion
-        up to (not including) ``physics`` itself; empty for a source that cannot afford them."""
+    def ladder_steps(self, physics):
+        """The rungs below ``physics``: ``[(label, physics)]`` from bare diffusion (None) with the source's
+        :attr:`TIERS` switched on one at a time, up to (not including) ``physics`` itself; empty for bare physics."""
+        if physics is None or physics.bare:
+            return []
+        steps = [("bare diffusion", None)]
+        on = []
+        wanted = [q for q in self.TIERS if getattr(physics, q)]
+        for tier in wanted[:-1]:
+            on.append(tier)
+            steps.append(("+ " + " + ".join(on), replace(physics, **{q: q in on for q in self.TIERS})))
+        return steps
+
+    def ladder(self, meas, physics, prepared=None):
+        """The noise-free replays of :meth:`ladder_steps`, ``[(label, dwi)]``; ``prepared`` is one :meth:`prepare`
+        per rung, in order (None for a source that has none)."""
+        steps = self.ladder_steps(physics)
+        prepared = prepared if prepared is not None else [None] * len(steps)
+        return [(label, self.replay(meas, ph, pr)[0]) for (label, ph), pr in zip(steps, prepared)]
+
+    # ---- what the page draws from a run (None where the source has no such view) ----
+    def score_key(self):
+        """The score's headline number, by its key in :meth:`score`'s dict."""
+        raise NotImplementedError
+
+    def score_text(self, tag, res):
+        """The headline of run ``tag`` (Markdown)."""
+        raise NotImplementedError
+
+    def compare_text(self, c, knob):
+        """The headline line of A against B (:meth:`compare`'s dict)."""
+        raise NotImplementedError
+
+    def matrices(self, M, score, reference):
+        """The connectome beside what it is scored against (an image)."""
+        raise NotImplementedError
+
+    def truth_views(self):
+        """The truth tab's two views (a 3-D figure, an image), drawn once per process."""
+        raise NotImplementedError
+
+    @staticmethod
+    def ingredient_layers(ingredients):
+        """The explorer's three ingredient images as ``[(title, map, style)]`` (``style`` the keywords of
+        :func:`space.viewers.map_slice`, ``map`` None for an image with nothing to show)."""
+        return [None, None, None]
+
+    def lobar(self, M, score, reference):
+        """The connectome over the regions' groups beside the reference's (an image), None without groups."""
+        return None
+
+    def truth_view(self, dwi, meas, z, m):
+        """A DWI slice with the input's FOD peaks over it, None for a source whose input is not an FOD."""
+        return None
+
+    def fractions_view(self, extras, z):
+        """The recovered tissue fractions against the input's at slice ``z``, None for a source without them."""
+        return None
+
+    def roundtrip_rows(self, res):
+        """Rows ``(what, value)`` of the reconstruction against the input; empty for a source without one."""
+        return []
+
+    def response_view(self, prepared, extras):
+        """The estimated responses against the true ones (an image), None for a source without them."""
+        return None
+
+    def extra_files(self, res, out_dir, stem):
+        """Files beside the tractograms and volumes (paths)."""
         return []
 
     def accuracy(self, res=None):
         """Rows ``(what, value)`` saying what this source's replay is an approximation of, and ``res``'s own floor."""
         rows = []
         if res is not None:
-            f = floor_stats(res)
-            rows.append(["this run's floor: median / 99 % / max over voxels with signal", f"{f['median']:.4f} / {f['p99']:.4f} / {f['max']:.4f}"])
+            if np.any(res.floor > 0):
+                f = floor_stats(res)
+                rows.append(["this run's floor: median / 99 % / max over voxels with signal", f"{f['median']:.4f} / {f['p99']:.4f} / {f['max']:.4f}"])
             sf = res.s0_factor[np.isfinite(res.dwi[..., 0])]
             rows.append(["this run's b = 0 signal over M0: min / median / max", f"{np.nanmin(sf):.3f} / {np.nanmedian(sf):.3f} / {np.nanmax(sf):.3f}"])
             snr = b0_snr(res)
@@ -443,220 +692,6 @@ def s0_normalised(S, b0, M0=None):
     factor = S0 / np.nanmax(M0) if M0 is not None else np.where(np.isfinite(S0), 1.0, np.nan)
     return S / S0[..., None], factor
 
-
-class Layout(Source):
-    """Demo mode: dmipy-sim's shape-moment layout (``dmipy_sim.replay.shape_moments``) at the config's dataset
-    revision, or a local copy; every stored class's timing is the config's, and a tissue needs the layout's tiers."""
-    mode = "demo"
-
-    def __init__(self, cfg, *, local=None):
-        from dmipy_sim.replay.shape_moments import ShapeMoments
-        super().__init__(cfg)
-        d = cfg["data"]
-        uri = local or f"hf://{d['repo']}/{d['moments']}"
-        self.moments = ShapeMoments.open(uri, revision=d.get("revision") or None) if uri.startswith("hf://") else ShapeMoments(uri)
-        self.resident = resident(cfg)
-        want = d.get("source_manifest_sha256")
-        got = self.moments.manifest["source"]["manifest_sha256"]
-        if want and got != want:
-            raise ValueError(f"the layout at {uri} was contracted from columnar manifest {got[:12]}, the config pins {want[:12]}")
-        missing = [s for s in self.shapes if s not in self.moments.shapes]
-        if missing:
-            raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {self.moments.shapes}")
-        for name, t in self.shapes.items():
-            enc = self.moments.manifest["shapes"][name].get("encoding") or {}
-            for k in ("delta", "Delta", "TE"):
-                v = enc.get(k)
-                v = v[0] if isinstance(v, list) and v else v
-                if v is not None and abs(float(v) - float(t[k])) > 1e-9:
-                    raise ValueError(f"class {name}: the layout's {k} is {v} s, the config's {t[k]} s")
-        self.tiers = bool(self.moments.manifest.get("tiers"))
-        self.M0 = None                                   # the bare b = 0 map (every voxel's walker weight): set by warm()
-        if self.tiers:                                   # the pools with walkers are the spec's first n_pools ids
-            t = self.moments.manifest["tiers"]
-            spec_pools = sorted(t["substrate"]["pools"], key=lambda q: q["id"]) if t.get("substrate") else []
-            seeded = tuple(q["name"] for q in spec_pools[:int(t["pools"])])
-            if set(seeded) != set(self.pools):
-                raise ValueError(f"the layout's seeded pools are {seeded}, the config's [physics] pools {self.pools}")
-            self.unseeded = tuple(q["name"] for q in spec_pools[int(t["pools"]):])
-        self.check_grid(self.moments.grid.shape, "the layout")
-
-    def validate(self, protocol, physics):
-        meas = measurements(protocol, self.shapes)
-        if physics and not physics.bare and not self.tiers:
-            raise ValueError("this layout holds bare diffusion only: switch the tissue panel off")
-        if physics and set(physics.pools) != set(self.pools):
-            raise ValueError(f"the tissue names the pools {physics.pools}; this layout's are {self.pools}")
-        return meas
-
-    def replay(self, meas, physics=None):
-        t0 = time.perf_counter()
-        S = np.full(self.mask.shape + (len(meas.bvals),), np.nan)
-        floor = np.zeros(self.mask.shape)
-        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
-        b0 = physics.b0_direction if physics else B0_ALONG_Z
-        for name in np.unique(meas.shape):
-            rows = meas.shape == name
-            S[..., rows], f = self.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=self.backend,
-                                                 resident=True, tissue=tissue, scanner=scanner, b0_direction=b0)
-            floor = np.fmax(floor, f)                    # resident within a run: release() drops the device copies after it
-        if self.M0 is None:                              # the bare b = 0 map: the walker weight of every voxel
-            self.M0 = self.moments.image(meas.shape[0], np.zeros(1), np.array([B0_ALONG_Z]), backend=self.backend, resident=True)[0][..., 0]
-        dwi, factor = s0_normalised(S, meas.b0, self.M0)
-        return dwi, floor, factor, time.perf_counter() - t0
-
-    def release(self):
-        if not self.resident:
-            self.moments.release()
-
-    def ingredients(self, meas, physics=None):
-        """What each tier multiplies into the sum, per voxel, for the run's first class (the layout's
-        :meth:`~dmipy_sim.replay.shape_moments.ShapeMoments.tier_maps` on the device columns the replay left
-        resident): ``intra_fraction`` (the walker weight in the intra-axonal pool over the voxel's),
-        ``wall_contact_um`` (the walkers' boundary local time l under the class's gate, a length; the layout stores
-        it signed as the exponent's term, -l, so the contact tier's weight is exp(rho c / D) = exp(-rho l / D)),
-        ``contact_survival`` (that factor at the run's rho, None without the contact tier), ``field_rad`` (the spread
-        over the voxel's walkers of the dephasing phase the sheath's field gives them by the echo at the run's field
-        and direction, the exact per-walker phase the kernel applies, in radians; None without the field tier), and
-        ``D_walk`` (m^2/s)."""
-        if not self.tiers:
-            return None
-        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
-        b0 = physics.b0_direction if physics else B0_ALONG_Z
-        maps = self.moments.tier_maps(str(meas.shape[0]), tissue, scanner, backend=self.backend, resident=True, b0_direction=b0)
-        contact = maps["contact"]
-        return dict(D_walk=float(self.moments.manifest["tiers"]["D_walk"]), intra_fraction=maps["pool"]["intra"],
-                    wall_contact_um=None if contact is None else -contact * 1e6,
-                    contact_survival=maps["contact_weight"] if (physics and physics.contact) else None,
-                    field_rad=maps["phase_std"] if (physics and physics.field) else None)
-
-    def ladder(self, meas, physics):
-        if physics is None or physics.bare:
-            return []
-        steps = [("bare diffusion", None)]
-        on = []
-        for tier in ("relaxation", "contact", "field"):
-            if getattr(physics, tier):
-                on.append(tier)
-                if len(on) < sum(getattr(physics, q) for q in ("relaxation", "contact", "field")):
-                    steps.append(("+ " + " + ".join(on), replace(physics, **{q: q in on for q in ("relaxation", "contact", "field")})))
-        return [(label, self.replay(meas, ph)[0]) for label, ph in steps]
-
-    def default_physics(self):
-        """The tissue panel's default (``[physics]``), or None when it starts off or the layout has no tiers."""
-        p = self.cfg["physics"]
-        return Physics.at(float(p["default_field"]), pools=self.pools) if (p["default_on"] and self.tiers) else None
-
-    def warm(self):
-        """DiSCo's own protocol replayed once at the default physics (every class it plays compiled at the row
-        counts the default run uses), then one direction on every other class (its tier group's terms contracted
-        and on the device). When the tiles are not kept resident (a pool that drops the device between calls), the
-        padded host arrays are loaded into this process instead, so a forked worker inherits them and pays the
-        transfer alone."""
-        if not self.resident:
-            self.moments.preload(list(self.shapes))
-            return
-        physics = self.default_physics()
-        disco = disco_protocol(self.cfg)[0]
-        self.replay(measurements(disco, self.shapes), physics)
-        rest = [name for name in self.shapes if name not in {s.shape for s in disco.shells}]
-        if rest:
-            self.replay(measurements(Protocol(tuple(Shell(name, 1000.0, 1) for name in rest), n_b0=1, name="warm"), self.shapes), physics)
-
-    def accuracy(self, res=None):
-        m = self.moments.manifest; src = m["source"]
-        rows = [["temporal bands kept (K)", str(m["K"])],
-                ["band error at the built amplitude (worst class)", f"{m['band_error']:.2e}"],
-                ["band tolerance (× the pack's floor)", f"{m['tol']:g}"],
-                ["source pack", str(src.get("pack"))],
-                ["source pack's certified median floor", f"{src['floor']:.4g}"],
-                ["source manifest sha256", src["manifest_sha256"][:16]],
-                ["layout written by", f"{m.get('code', {}).get('commit', '?')[:12]} on {m.get('created', '?')}"],
-                ["pulses", "square (slew rate ∞), one TE per class"],
-                ["tiers stored", "pool, contact, field" if self.tiers else "none (bare diffusion only)"]]
-        rows += super().accuracy(res)
-        if res is not None:
-            for name in np.unique(res.meas.shape):
-                sh = m["shapes"][name]; enc = sh.get("encoding") or {}
-                first = {k: (v[0] if isinstance(v, list) and v else v) for k, v in enc.items()}
-                rows.append([f"class {name}", f"δ {first.get('delta')} / Δ {first.get('Delta')} / TE {first.get('TE')} s, "
-                                              f"built at {float(sh.get('amplitude_built') or 0) * 1e3:.0f} mT/m, pathway amplitude {sh.get('pathway') or 1}"])
-        return rows
-
-
-class Columns(Source):
-    """Full mode: the columnar replay pack (:class:`dmipy_sim.replay.columnar.ColumnarPack`) at
-    :func:`columns_uri`, read once per run: one ScannerSequence per run (one echo time, one pulse kind, square
-    pulses), the tissue and field of the run, the field along the pack's z."""
-    mode = "full"
-    RATE = {True: 45e6, False: 500e6}                # bytes/s read from the Hub, from a local disk
-
-    def __init__(self, cfg, *, uri=None):
-        from dmipy_sim.replay.columnar import ColumnarPack
-        super().__init__(cfg)
-        self.uri = uri or columns_uri(cfg)
-        self.pack = ColumnarPack(self.uri, workers=int(cfg["mode"]["workers"]))
-        self.check_grid(self.pack.grid.shape, "the pack")
-        self.remote = self.uri.startswith("hf://")
-
-    def kinds(self, meas):
-        """The pulse kinds (``pgse`` / ``pgste``) of the classes the rows play; a free timing is PGSE."""
-        return sorted({self.shapes[n].get("kind", "pgse") if n in self.shapes else "pgse" for n in np.unique(meas.shape)})
-
-    def validate(self, protocol, physics):
-        meas = measurements(protocol, self.shapes)
-        if len(np.unique(np.round(meas.TE, 9))) != 1:
-            raise ValueError("full mode replays one echo time per run")
-        if len(self.kinds(meas)) != 1:
-            raise ValueError("full mode replays one pulse kind (PGSE or stimulated echo) per run")
-        if physics and not physics.along_z:
-            raise ValueError("full mode replays the field along z only")
-        return meas
-
-    def sequence(self, meas):
-        """The one ScannerSequence of the measurements: square pulses, every row's own delta / Delta at the rows'
-        common TE; a stimulated echo stores for TM = Delta - delta between 90° pulses."""
-        import dmipy_sim as d
-        TE = float(np.unique(np.round(meas.TE, 9))[0])
-        kind, = self.kinds(meas)
-        if kind == "pgste":
-            return d.pgste(meas.dirs.tolist(), meas.delta, meas.Delta - meas.delta, bvalues=meas.bvals * 1e6, n_t=1000,
-                           slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-        return d.pgse(meas.dirs.tolist(), meas.delta, meas.Delta, bvalues=meas.bvals * 1e6, TE=TE, n_t=1000, slew_rate=np.inf)
-
-    def plan(self, meas, physics=None):
-        """What the replay will read (the pack's plan: bands, modes, tiers, rows, bytes) and ``estimated_seconds``
-        at the source's read rate."""
-        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
-        plan = self.pack.plan(self.sequence(meas), tissue=tissue, scanner=scanner, tol=BAND_TOL)
-        plan["estimated_seconds"] = plan["bytes"] / self.RATE[self.remote]
-        return plan
-
-    def replay(self, meas, physics=None, *, progress=None):
-        from dmipy_sim.replay.study import Study, Protocol as SProtocol, Acquisition
-        t0 = time.perf_counter()
-        tissue, scanner = tissue_and_scanner(physics, self.unseeded)
-        study = Study(SProtocol([Acquisition(self.sequence(meas), name="run")]), tissues=[tissue], scanners=[scanner])
-        S, floor, plan = self.pack.image_study(study, tol=BAND_TOL, chunk_rows=1_000_000, progress=progress)
-        self.last_plan = plan
-        dwi, factor = s0_normalised(S[0], meas.b0)      # the pack's bare weights are not read here: the factor is 1
-        return dwi, floor[0], factor, time.perf_counter() - t0
-
-    def accuracy(self, res=None):
-        m = self.pack.meta
-        rows = [["source pack", str(m.get("id"))], ["source pack's certified median floor", f"{self.pack.floor:.4g}"],
-                ["bands kept", str(self.pack.K)], ["band tolerance (× the pack's floor)", f"{BAND_TOL:g}"],
-                ["pulses", "square (slew rate ∞), one TE and one pulse kind per run"]]
-        plan = getattr(self, "last_plan", None)
-        if plan:
-            rows.append(["last replay read", f"{plan.get('rows', 0):,} rows, {plan.get('bytes', 0) / 1e9:.1f} GB, bands {plan.get('K')}, modes {plan.get('modes')}"])
-        return rows + super().accuracy(res)
-
-
-def source(cfg, *, local=None):
-    """The replay source the config's mode names: a :class:`Layout` (``DISCO_MOMENTS`` or ``local`` for a local
-    copy) or a :class:`Columns`."""
-    return Columns(cfg) if mode(cfg) == "full" else Layout(cfg, local=local or os.environ.get("DISCO_MOMENTS"))
 
 
 # ---- the stages -------------------------------------------------------------------------------------------------
@@ -689,18 +724,53 @@ def scheme(meas):
 
 
 def csd(dwi, meas, mask, backend="jax"):
-    """``(sh, seconds)``: the FOD field ``(X, Y, Z, 45)`` in the tournier07 basis, dmipy-fit's batched Tournier 2007
-    solver on ``backend`` with the response ``white_matter_response_tournier07`` estimates from the masked voxels,
-    fitted on ``mask`` (the voxels with signal)."""
+    """``(sh, seconds, response)``: the FOD field ``(X, Y, Z, 45)`` in the tournier07 basis, dmipy-fit's batched
+    Tournier 2007 solver on ``backend`` with the response ``white_matter_response_tournier07`` estimates from the
+    masked voxels (``response`` is its ``(S0, model)``), fitted on ``mask`` (the voxels with signal)."""
     from dmipy_fit.core.modeling_framework import MultiCompartmentSphericalHarmonicsModel
     from dmipy_fit.tissue_response.white_matter_response import white_matter_response_tournier07
     t0 = time.perf_counter()
     data = np.nan_to_num(dwi, nan=0.0)
     sch = scheme(meas)
-    _, response, _ = white_matter_response_tournier07(sch, data[mask])
+    S0, response, _ = white_matter_response_tournier07(sch, data[mask])
     mc = MultiCompartmentSphericalHarmonicsModel(models=[response], sh_order=SH_ORDER)
     fitted = mc.fit(sch, data, mask=mask, solver=f"csd_tournier07_{backend}", verbose=False)
-    return np.asarray(fitted.fitted_parameters["sh_coeff"], np.float64), time.perf_counter() - t0
+    return np.asarray(fitted.fitted_parameters["sh_coeff"], np.float64), time.perf_counter() - t0, (S0, response)
+
+
+MSMT_ISSUE = "dmrai-lab/dmipy-fit#39"
+
+
+def csd_msmt(data, meas, mask, backend="torch"):
+    """``(sh, fractions, responses, seconds)``: three-tissue responses estimated from the data (Dhollander 2016,
+    ``three_tissue_response_dhollander16`` with ``mask=``) and multi-shell multi-tissue CSD (Jeurissen 2014,
+    ``solver='csd_msmt_<backend>'``), dmipy-fit's batched solvers of dmipy-fit#39. ``data`` is the signal in M0 units
+    (not S0-normalised: the tissues' b = 0 signals are what separates them); ``sh`` the WM FOD ``(X, Y, Z, 45)``,
+    ``fractions`` the fitted WM / GM / CSF volume fractions ``(X, Y, Z, 3)``, ``responses`` ``(S0s, models)`` as
+    estimated, ``seconds`` ``(responses, fit)``. Refuses by name, before any work, a dmipy-fit without them."""
+    import inspect
+    from dmipy_fit.core.modeling_framework import MultiCompartmentSphericalHarmonicsModel
+    from dmipy_fit.tissue_response.three_tissue_response import three_tissue_response_dhollander16
+    params = inspect.signature(three_tissue_response_dhollander16).parameters
+    if "mask" not in params or "backend" not in params:
+        raise RuntimeError(f"this dmipy-fit has no batched dhollander16 (three_tissue_response_dhollander16(scheme, data, mask=, backend=)): "
+                           f"the multi-tissue reconstruction is {MSMT_ISSUE}; until it merges, DISCO_RECONSTRUCTION=tournier07 "
+                           f"runs the single-tissue Tournier 2007 CSD instead")
+    t0 = time.perf_counter()
+    data = np.nan_to_num(np.asarray(data, np.float64), nan=0.0)
+    sch = scheme(meas)
+    S0s, models, _ = three_tissue_response_dhollander16(sch, data, mask=mask, backend=backend)
+    t_resp = time.perf_counter() - t0; t0 = time.perf_counter()
+    mc = MultiCompartmentSphericalHarmonicsModel(models=list(models), S0_tissue_responses=list(S0s), sh_order=SH_ORDER)
+    try:
+        fitted = mc.fit(sch, data, mask=mask, solver=f"csd_msmt_{backend}", verbose=False)
+    except ValueError as e:
+        if "Unknown solver" in str(e):
+            raise RuntimeError(f"this dmipy-fit has no solver csd_msmt_{backend}: the multi-tissue CSD is {MSMT_ISSUE}") from e
+        raise
+    fp = fitted.fitted_parameters
+    fractions = np.stack([np.asarray(fp[name], np.float64) for name in mc.partial_volume_names], -1)
+    return np.asarray(fp["sh_coeff"], np.float64), fractions, (list(S0s), list(models)), (t_resp, time.perf_counter() - t0)
 
 
 @dataclass(frozen=True)
@@ -712,13 +782,6 @@ class Tracking:
     max_steps: int = 500
     relative_threshold: float = 0.1
     key: int = 0
-
-
-def tracking_inputs(sh, source, density):
-    """``(field, seeds)``: the FOD field on the mask and the ``density^3`` seeds per region voxel, built once for
-    however many tracker keys run on them."""
-    from dmipy_tract import FODField, seeds_from_mask
-    return FODField(sh, np.eye(4), source.mask | (source.rois > 0)), seeds_from_mask(source.rois > 0, np.eye(4), density=density)
 
 
 def track(field, seeds, settings, backend):
@@ -744,17 +807,44 @@ def peaks(sh, n_dirs=362):
     return d.reshape(sh.shape[:-1] + (3,)), np.clip(peak, 0, None).reshape(sh.shape[:-1])
 
 
-def connectome(tg, source):
-    """The symmetrised 16 x 16 streamline-count matrix (no self-connections)."""
-    from dmipy_tract import connectivity
-    matrix, _ = connectivity(tg, source.rois, np.eye(4))
-    M = matrix[1:N_REGIONS + 1, 1:N_REGIONS + 1].astype(np.float64)
-    M = M + M.T
-    np.fill_diagonal(M, 0)
-    return M
-
-
-PAIRS = np.triu_indices(N_REGIONS, 1)                # the 120 region pairs
+def fod_peaks(sh, n_max=3, *, relative=0.1, separation_deg=25.0, n_dirs=362, chunk=20000):
+    """The FOD's peaks per voxel of ``sh (..., n_coef)``: ``(dirs (..., n_max, 3), amps (..., n_max), count (...))``,
+    the local maxima of the FOD on the tracker's hemisphere (antipodes identified, a direction's neighbours those
+    within 12 degrees) above ``relative`` of the voxel's largest value, strongest first, a weaker one within
+    ``separation_deg`` of a stronger one dropped; zero rows beyond ``count``. The first is :func:`peaks`'s."""
+    from dmipy_tract import hemisphere, sh_matrix
+    V = hemisphere(n_dirs)
+    B = sh_matrix(SH_ORDER, V)
+    c = np.abs(V @ V.T)
+    nbr = [np.flatnonzero((c[i] > np.cos(np.radians(12.0))) & (np.arange(n_dirs) != i)) for i in range(n_dirs)]
+    width = max(len(x) for x in nbr)
+    table = np.array([np.pad(x, (0, width - len(x)), constant_values=i) for i, x in enumerate(nbr)])
+    coef = np.nan_to_num(np.asarray(sh, np.float64)).reshape(-1, np.shape(sh)[-1])
+    n = coef.shape[0]
+    dirs = np.zeros((n, n_max, 3)); amps = np.zeros((n, n_max)); count = np.zeros(n, np.int64)
+    cos_sep = np.cos(np.radians(separation_deg))
+    for s0 in range(0, n, chunk):
+        A = coef[s0:s0 + chunk] @ B.T                                            # (m, n_dirs)
+        top = A.max(1, keepdims=True)
+        is_max = (A >= A[:, table].max(2)) & (A > relative * top) & (top > 0)
+        cand = np.where(is_max, A, -np.inf)
+        order = np.argsort(-cand, axis=1)[:, :n_max + 3]                         # a few spare candidates for the separation rule
+        kept = np.zeros((len(A), n_max), np.int64); nk = np.zeros(len(A), np.int64)
+        for j in range(order.shape[1]):
+            idx = order[:, j]
+            ok = np.isfinite(cand[np.arange(len(A)), idx]) & (nk < n_max)
+            for q in range(n_max):                                               # not within separation of a kept one
+                prev = kept[:, q]
+                close = (q < nk) & (np.abs(np.einsum("ij,ij->i", V[idx], V[prev])) > cos_sep)
+                ok &= ~close
+            kept[ok, nk[ok]] = idx[ok]; nk[ok] += 1
+        rows = np.arange(len(A))[:, None]
+        valid = np.arange(n_max)[None, :] < nk[:, None]
+        dirs[s0:s0 + chunk] = np.where(valid[..., None], V[kept], 0.0)
+        amps[s0:s0 + chunk] = np.where(valid, A[rows, kept], 0.0)
+        count[s0:s0 + chunk] = nk
+    lead = np.shape(sh)[:-1]
+    return dirs.reshape(lead + (n_max, 3)), amps.reshape(lead + (n_max,)), count.reshape(lead)
 
 
 def pearson(a, b):
@@ -766,38 +856,22 @@ def pearson(a, b):
 
 
 def connected_pairs(M):
-    """How many of the 120 region pairs ``M`` connects."""
-    return int((M[PAIRS] > 0).sum())
+    """How many region pairs (the upper triangle of ``M`` without the diagonal) ``M`` connects."""
+    return int((np.asarray(M)[np.triu_indices(len(M), 1)] > 0).sum())
 
 
-def score(M, source):
-    """Pearson correlations over the 120 region pairs with the strand-count and area matrices, and the pair
-    bookkeeping (connected, ground-truth, false, missed)."""
-    gt = source.gt_count
-    return dict(pearson_count=pearson(M[PAIRS], gt[PAIRS]), pearson_area=pearson(M[PAIRS], source.gt_area[PAIRS]),
-                connected_pairs=connected_pairs(M), gt_pairs=connected_pairs(gt),
-                false_pairs=int(((M[PAIRS] > 0) & (gt[PAIRS] == 0)).sum()), missed_pairs=int(((M[PAIRS] == 0) & (gt[PAIRS] > 0)).sum()))
-
-
-def compare(a, b):
-    """A against B over the 120 region pairs: the Pearson between the two streamline-count matrices, the pairs
-    connected in one only, and B's score minus A's."""
-    ma, mb = a.matrix[PAIRS], b.matrix[PAIRS]
-    return dict(pearson_ab=pearson(ma, mb), only_a=int(((ma > 0) & (mb == 0)).sum()), only_b=int(((mb > 0) & (ma == 0)).sum()),
-                delta_count=b.score["pearson_count"] - a.score["pearson_count"], delta_area=b.score["pearson_area"] - a.score["pearson_area"])
-
-
-def pair_spread(matrices, scores):
-    """Over repeated runs: the streamline-count mean and standard deviation per region pair, the Pearson-vs-count
-    mean and standard deviation, and the median coefficient of variation over the pairs that any run connected."""
+def pair_spread(matrices, scores, *, key):
+    """Over repeated runs: the streamline-count mean and standard deviation per region pair, the mean and standard
+    deviation of the score ``key``, and the median coefficient of variation over the pairs that any run connected."""
     M = np.stack(matrices).astype(np.float64)
+    pairs = np.triu_indices(M.shape[1], 1)
     mean = M.mean(0); std = M.std(0, ddof=1) if len(M) > 1 else np.zeros_like(mean)
-    any_ = mean[PAIRS] > 0
-    cv = std[PAIRS][any_] / mean[PAIRS][any_]
-    pc = np.array([s["pearson_count"] for s in scores])
-    return dict(mean=mean, std=std, n=len(M), pearson_mean=float(pc.mean()), pearson_std=float(pc.std(ddof=1)) if len(pc) > 1 else 0.0,
+    any_ = mean[pairs] > 0
+    cv = std[pairs][any_] / mean[pairs][any_]
+    pc = np.array([s[key] for s in scores])
+    return dict(mean=mean, std=std, n=len(M), key=key, pearson_mean=float(pc.mean()), pearson_std=float(pc.std(ddof=1)) if len(pc) > 1 else 0.0,
                 cv_median=float(np.median(cv)) if cv.size else float("nan"), pairs_any=int(any_.sum()),
-                pairs_always=int((M[:, PAIRS[0], PAIRS[1]] > 0).all(0).sum()))
+                pairs_always=int((M[:, pairs[0], pairs[1]] > 0).all(0).sum()))
 
 
 def dti(dwi, meas, mask, *, b_max=1500.0):
@@ -893,10 +967,11 @@ def sample_tractogram(tg, n, *, seed=0):
 
 @dataclass
 class Result:
-    """One run: the protocol and its rows, the DWI the CSD saw (noisy when ``snr`` is set), the replay floor per
-    voxel, the voxel's b = 0 signal over M0 (what the physics took, the b = 0 SNR is ``snr`` times it), the FOD SH
+    """One run: the protocol and its rows, the DWI the reconstruction saw (noisy when ``snr`` is set), the replay floor
+    per voxel, the voxel's b = 0 signal over M0 (what the physics took, the b = 0 SNR is ``snr`` times it), the FOD SH
     field, the tractogram and its seeds, the connectome and its score, the stage times, the physics (None for bare
-    diffusion), and ``clean``, the replay before the noise."""
+    diffusion), ``clean`` (the replay before the noise), ``reference`` (what the connectome was scored against) and
+    ``extras`` (what the source's reconstruction and scoring estimated beside the FOD, by name)."""
     protocol: Protocol
     meas: Measurements
     dwi: np.ndarray
@@ -910,37 +985,44 @@ class Result:
     seconds: dict = field(default_factory=dict)
     clean: Optional[np.ndarray] = None
     snr: Optional[float] = None
-    physics: Optional[Physics] = None
+    physics: Optional[object] = None
+    reference: Optional[object] = None
+    extras: dict = field(default_factory=dict)
 
 
-STAGES = ("replay", "noise", "csd", "track", "score")
-
-
-def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None):
-    """The pipeline as a generator: before each of the ``STAGES`` it yields ``(stage, k, n)`` (so a page can show
-    where the run is, from inside any worker), and last the :class:`Result`. ``physics`` is the tissue and scanner
-    the replay is evaluated at (None: bare diffusion)."""
+def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, prepared=None):
+    """The pipeline as a generator: before each of the source's ``STAGES`` it yields ``(stage, k, n)`` (so a page
+    can show where the run is, from inside any worker), and last the :class:`Result`. ``physics`` is the tissue and
+    scanner the replay is evaluated at (None: bare diffusion); ``prepared`` is the source's :meth:`Source.prepare`
+    for it, done on the host before."""
     t_run = time.perf_counter()
+    stages = source.STAGES
 
     def at(stage):
         print(f"[pipeline] {stage} at +{time.perf_counter() - t_run:.1f} s", flush=True)      # the server log shows where a run is
-        return stage, STAGES.index(stage), len(STAGES)
+        return stage, stages.index(stage), len(stages)
     meas = source.validate(protocol, physics)
-    yield at("replay"); dwi, floor, s0_factor, t_replay = source.replay(meas, physics)
+    yield at("replay"); dwi, floor, s0_factor, t_replay = source.replay(meas, physics, prepared)
     yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, s0_factor, seed=noise_seed, backend=source.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
-    yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=source.backend)
-    yield at("track"); t0 = time.perf_counter(); fld, seeds = tracking_inputs(sh, source, tracking.density); tg, _ = track(fld, seeds, tracking, source.backend); t_track = time.perf_counter() - t0
-    yield at("score"); t0 = time.perf_counter(); M = connectome(tg, source); s = score(M, source); t_score = time.perf_counter() - t0
+    yield at("csd"); sh, t_csd, extras = source.reconstruct(noisy, s0_factor, meas, signal)
+    yield at("track"); t0 = time.perf_counter(); fld, seeds = source.tracking_inputs(sh, tracking.density); tg, _ = track(fld, seeds, tracking, source.backend); t_track = time.perf_counter() - t0
+    seconds = dict(replay=t_replay, noise=t_noise, **t_csd, track=t_track)
+    if "truth" in stages:
+        yield at("truth")
+    reference, t_ref = source.reference(tracking, seeds)
+    if "truth" in stages:
+        seconds["truth"] = t_ref
+    yield at("score"); t0 = time.perf_counter(); M = source.regions.matrix(tg); s = source.score(M, reference); seconds["score"] = time.perf_counter() - t0
+    seconds["total"] = sum(seconds.values())
     yield Result(protocol, meas, noisy, floor, s0_factor, sh, tg, seeds, M, s, snr=snr, physics=physics, clean=dwi,
-                 seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
-                              total=t_replay + t_noise + t_csd + t_track + t_score))
+                 seconds=seconds, reference=reference, extras=extras)
 
 
-def run(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, progress=None):
+def run(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, prepared=None, progress=None):
     """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
     each stage begins."""
-    for item in run_stages(source, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed, physics=physics):
+    for item in run_stages(source, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed, physics=physics, prepared=prepared):
         if isinstance(item, Result):
             return item
         if progress:
@@ -949,10 +1031,11 @@ def run(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physic
 
 def repeat_tracking(res, source, tracking, keys):
     """The tractography of ``res`` (its FOD field, the seeds built once) repeated over tracker ``keys``: a generator
-    of ``(key, matrix, score, seconds)``; the replay, noise and CSD are kept, only the tracker's randomness varies."""
-    fld, seeds = tracking_inputs(res.sh, source, tracking.density)
+    of ``(key, matrix, score, seconds)`` scored against ``res``'s own reference; the replay, noise and
+    reconstruction are kept, only the tracker's randomness varies."""
+    fld, seeds = source.tracking_inputs(res.sh, tracking.density)
     for k in keys:
         t0 = time.perf_counter()
         tg, _ = track(fld, seeds, replace(tracking, key=int(k)), source.backend)
-        M = connectome(tg, source)
-        yield int(k), M, score(M, source), time.perf_counter() - t0
+        M = source.regions.matrix(tg)
+        yield int(k), M, source.score(M, res.reference), time.perf_counter() - t0

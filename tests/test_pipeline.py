@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from space import pipeline as P
+from space.sources import disco as D
 
 CFG = P.config()
 
@@ -46,7 +47,7 @@ def test_protocol_refusals():
 def test_discos_table_is_a_protocol_of_its_own_rows():
     """The dataset's 364 rows: 4 shells on 3 timing classes, every row's direction its own, b = 0 rows first, the
     rows' b-values those of the table."""
-    p, idx = P.disco_protocol(CFG)
+    p, idx = D.disco_protocol(CFG)
     m = P.measurements(p, CFG["shapes"])
     bv = np.loadtxt(P.DATA_DIR + "/DiSCo_gradients.bvals").ravel()[idx]  # the table's rows in the protocol's order
     assert p.name == "DiSCo 364" and p.n_meas == 364 == len(idx) and sorted(idx) == list(range(364))
@@ -89,17 +90,17 @@ def test_the_snr_is_at_m0_and_each_voxels_b0_snr_follows_its_s0_factor():
     assert P.b0_snr(P.Result(None, None, norm, None, f, None, None, None, None, {})) is None
 
 
-class _Source(P.Source):
-    """The ground truth and the config without any replay data (P.Source loads the files, nothing else)."""
+class _Source(D.Disco):
+    """The ground truth and the config without any replay data (D.Disco loads the files, nothing else)."""
     mode = "test"
 
 
 def test_the_score_of_the_ground_truth_is_one_and_the_pairs_add_up():
     gt = _Source(CFG)
-    s = P.score(gt.gt_count, gt)
+    s = gt.score(gt.gt_count, gt.reference(None, None)[0])
     assert s["pearson_count"] == pytest.approx(1.0) and s["false_pairs"] == 0 == s["missed_pairs"]
     assert s["connected_pairs"] == s["gt_pairs"] == 25 == P.connected_pairs(gt.gt_count)
-    empty = P.score(np.zeros((16, 16)), gt)
+    empty = gt.score(np.zeros((16, 16)), gt.reference(None, None)[0])
     assert empty["missed_pairs"] == 25 and empty["connected_pairs"] == 0 and np.isnan(empty["pearson_count"])   # a constant matrix: NaN, no warning
     assert np.isnan(P.pearson([1, 1, 1], [1, 2, 3])) and P.pearson([1, 2, 3], [2, 4, 6]) == pytest.approx(1.0)
 
@@ -112,7 +113,7 @@ def test_the_volumes_round_trip(tmp_path):
     dwi = np.random.default_rng(0).random((4, 4, 4, 7)); dwi[0, 0, 0] = np.nan
     sh = np.random.default_rng(1).random((4, 4, 4, 45))
     res = P.Result(p, m, dwi, np.zeros((4, 4, 4)), np.ones((4, 4, 4)), sh, None, None, None, {}, {})
-    paths = P.write_volumes(res, str(tmp_path), prefix="t")
+    paths = P.write_volumes(res, str(tmp_path), prefix="t", affine=np.eye(4))
     back = np.asarray(nib.load(paths["dwi"]).dataobj)
     np.testing.assert_allclose(back, np.nan_to_num(dwi).astype(np.float32))
     np.testing.assert_allclose(np.loadtxt(paths["bvals"]), m.bvals); np.testing.assert_allclose(np.loadtxt(paths["bvecs"]).T, m.dirs, atol=1e-8)
@@ -242,7 +243,7 @@ def test_the_gradient_a_shell_needs_and_the_scanners_that_can_play_it():
     p = P.Protocol((P.Shell("d12-D24", 1000, 30),), n_b0=1)
     assert P.playable(p, CFG["shapes"], "prisma")[0][-1] and not P.playable(p, CFG["shapes"], "low_field")[0][-1]
     assert P.playable(p, CFG["shapes"], None)[0][5] is None and P.playable(p, CFG["shapes"], None)[0][-1]
-    disco, _ = P.disco_protocol(CFG)
+    disco, _ = D.disco_protocol(CFG)
     rows = P.playable(disco, CFG["shapes"], "connectom")
     assert all(r[-1] for r in rows) and not all(r[-1] for r in P.playable(disco, CFG["shapes"], "prisma"))
     free = P.Protocol((P.Shell.free(1000, 30, 0.012, 0.024, 0.06),), n_b0=1)
@@ -252,10 +253,10 @@ def test_the_gradient_a_shell_needs_and_the_scanners_that_can_play_it():
 def test_the_pair_spread_over_repeated_runs():
     M1 = np.zeros((16, 16)); M1[0, 1] = M1[1, 0] = 10; M1[2, 3] = M1[3, 2] = 4
     M2 = M1.copy(); M2[0, 1] = M2[1, 0] = 14; M2[2, 3] = M2[3, 2] = 0; M2[4, 5] = M2[5, 4] = 2
-    sp = P.pair_spread([M1, M2], [dict(pearson_count=0.8), dict(pearson_count=0.9)])
+    sp = P.pair_spread([M1, M2], [dict(pearson_count=0.8), dict(pearson_count=0.9)], key="pearson_count")
     assert sp["n"] == 2 and abs(sp["pearson_mean"] - 0.85) < 1e-12 and abs(sp["pearson_std"] - np.std([0.8, 0.9], ddof=1)) < 1e-12
     assert sp["pairs_any"] == 3 and sp["pairs_always"] == 1 and sp["mean"][0, 1] == 12 and abs(sp["std"][0, 1] - np.std([10, 14], ddof=1)) < 1e-12
-    one = P.pair_spread([M1], [dict(pearson_count=0.8)])
+    one = P.pair_spread([M1], [dict(pearson_count=0.8)], key="pearson_count")
     assert one["pearson_std"] == 0.0 and one["std"].max() == 0.0
 
 
@@ -328,16 +329,16 @@ def test_the_ingredients_are_the_layouts_tier_maps_in_the_pages_units():
             calls.append((shape, tissue is not None, scanner, backend, resident, tuple(b0_direction)))
             return dict(pool={"intra": np.full((2, 1, 1), 0.4), "extra": np.full((2, 1, 1), 0.6)}, contact=np.array([[[-2e-5]], [[np.nan]]]),
                         contact_weight=np.full((2, 1, 1), 0.9), phase=np.zeros((2, 1, 1)), phase_std=np.full((2, 1, 1), 0.1))
-    lay = P.Layout.__new__(P.Layout); lay.moments = _M(); lay.tiers = True; lay.backend = "torch"; lay.unseeded = ("myelin",)
+    lay = D.Layout.__new__(D.Layout); lay.moments = _M(); lay.tiers = True; lay.backend = "torch"; lay.unseeded = ("myelin",)
     meas = P.measurements(P.Protocol((P.Shell("d12-D24", 1000, 6),), n_b0=1), P.config()["shapes"])
     ph = P.Physics.at(3.0)
-    out = P.Layout.ingredients(lay, meas, ph)
+    out = D.Layout.ingredients(lay, meas, ph)
     assert out["D_walk"] == 6e-10 and out["intra_fraction"][0, 0, 0] == 0.4
     np.testing.assert_allclose(out["wall_contact_um"].ravel(), [20.0, np.nan])
     assert out["contact_survival"][0, 0, 0] == 0.9 and out["field_rad"][0, 0, 0] == 0.1
     assert calls[-1] == ("d12-D24", True, 3.0, "torch", True, (0.0, 0.0, 1.0))
-    bare = P.Layout.ingredients(lay, meas, None)
+    bare = D.Layout.ingredients(lay, meas, None)
     assert bare["contact_survival"] is None and bare["field_rad"] is None and bare["wall_contact_um"][0, 0, 0] == 20.0
     assert calls[-1][1:3] == (False, None)
     lay.tiers = False
-    assert P.Layout.ingredients(lay, meas, ph) is None
+    assert D.Layout.ingredients(lay, meas, ph) is None

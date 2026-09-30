@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 from space import pipeline as P
+from space import sources
+from space.sources import disco as D
 
 CFG = P.config()
 OUT = os.environ.get("GATE_OUT", os.path.join(P.ROOT, "gate.json"))
@@ -25,7 +27,7 @@ def layout():
         pytest.skip("the gate runs on a GPU")
     pytest.importorskip("huggingface_hub")
     t0 = time.perf_counter()
-    lay = P.source(CFG)
+    lay = sources.source(CFG)
     lay.warm()
     lay.load_seconds = time.perf_counter() - t0
     return lay
@@ -38,7 +40,7 @@ def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layou
     3 T and 7 T with every tier on and the field along z (the references' setting)."""
     import nibabel as nib
     from huggingface_hub import hf_hub_download
-    p, order = P.disco_protocol(CFG)                                   # order: the table's rows in the protocol's order
+    p, order = D.disco_protocol(CFG)                                   # order: the table's rows in the protocol's order
     physics = None if run == "bare" else P.Physics.at(float(run[:-1]))
     m = layout.validate(p, physics)
     dwi, floor, factor, secs = layout.replay(m, physics)
@@ -55,7 +57,7 @@ def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layou
 def test_the_noiseless_pipeline_scores_within_the_references_band(layout):
     """Pearson vs strand count at or above the gate's floor (the replay reference's band is 0.912 +- 0.003; the
     tracker on the reference volume measured 0.927) and no ground-truth pair missed; the timings recorded."""
-    p, _ = P.disco_protocol(CFG)
+    p, _ = D.disco_protocol(CFG)
     tr = P.Tracking(**{k: CFG["tracking"][k] for k in ("density", "step_mm", "max_angle", "max_steps")})
     first = P.run(layout, p, snr=None, tracking=tr)                    # includes every compile
     steady = P.run(layout, p, snr=None, tracking=tr)

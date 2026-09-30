@@ -66,14 +66,21 @@ against the published reference volume by the gate.
 Dockerfile, entrypoint.sh   python:3.11-slim, the pinned stack, ldconfig for the CUDA wheels, caches on /data (self-contained)
 Dockerfile.base / .space    the same split in two: the stack as ghcr.io/dmrai-lab/disco-space (image.yml), the app on top
 requirements.txt            the pins (dmipy packages by commit)
-space/config.toml           dataset + layout revision, the timing classes, DiSCo's shells, presets, tracking, the gate
-space/pipeline.py           replay -> noise -> CSD -> track -> score, plain functions with timings
-space/app.py                Gradio Blocks over pipeline.py: three tabs (acquisition; ground truth: the strands in 3-D; results:
-                            DWI slice viewer with FOD peaks, 3-D tractogram, connectome, timings, downloads); the progress bar names the stage
+space/config.toml           the DiSCo Space: dataset + layout revision, the timing classes, DiSCo's shells, presets, tracking, the gate
+space/brain.toml            the brain Space (DISCO_CONFIG=brain.toml): the asset, the pack menu, the timing classes, presets, the GPU budget
+space/pipeline.py           replay -> noise -> reconstruction -> track -> score, plain functions with timings; the Source interface
+space/sources/disco.py      the DiSCo source: its layout (demo) and columnar pack (full), texts, panel, regions, ground truth, budget
+space/sources/brain.py      the brain source: an asset (FOD, fractions, parcellation) composed with WM / GM packs on the device
+space/app.py                Gradio Blocks over the configured source: four tabs (acquisition, tissue and scanner; the truth; the
+                            Replay DWI Explorer; results: DWI slice viewer with FOD peaks, 3-D tractogram, connectome, timings,
+                            downloads); the progress bar names the stage
 space/viewers.py            the figures (matplotlib slices and matrices, Plotly 3-D views); nothing derived here
 data/                       DiSCo mask, regions, gradient table, ground-truth matrices and strands (CC BY 4.0, see SOURCE.md)
 tests/test_pipeline.py      CPU: protocol construction, DiSCo's table, the score on the ground truth itself
 tests/test_acceptance.py    GPU + data: the gate (Pearson, missed pairs, the reference volume, timings)
+tests/test_brain.py         the brain source on its local fixture: the replay against dmipy-sim's Phantom, the page's chain
+tools/build_brain_fixture.py  the BATMAN subject in the brain asset's layout (local development fixture, never published)
+tools/measure_brain.py      the brain's costs per stage (the [budget] of brain.toml is refit from it)
 .github/workflows/gate.yml  the gate as a Hugging Face Job on an L4 (GitHub runners have no GPU)
 .github/workflows/image.yml the base image to GHCR on every change to the pins (the package must be public for HF to pull it)
 ```
@@ -128,6 +135,11 @@ b = 0 signal: on DiSCo 364 at 3 T with every tier the b = 0 signal is 0.32–0.3
 contact in the densest strand voxels), so SNR 30 at M0 is SNR 11 at b = 0 and the connectome's Pearson vs strand
 count goes from 0.924 (bare, or SNR 80 at M0) to 0.912; noiseless it is 0.927 (measured on the L40S, 2026-09-30). Deploy with `tools/deploy.py --zero`
 (`README-zero.md`, `requirements-zero.txt`, the root `app.py`).
+
+**The brain Space** (`rfick/brain-zero`, disco-space#8) is this repository deployed with
+`tools/deploy.py --zero --space rfick/brain-zero --config brain.toml`: the deploy sets `DISCO_CONFIG=brain.toml` on the
+Space and takes `README-brain-zero.md` as its README (its measured table). The page, the pipeline and the quota
+machinery are the same; the source (`space/sources/brain.py`) is a real brain composed from an asset and two packs.
 
 ## Measured
 

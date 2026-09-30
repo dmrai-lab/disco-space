@@ -208,11 +208,20 @@ def _result_state(res, sample, source, load_seconds):
                 load_seconds=load_seconds, tractogram=sample, n_streamlines=len(res.tractogram), shape=source.mask.shape, name=res.protocol.name)
 
 
-def _explorer_state(results, ladder, ingredients, source):
+def _layer_labels(physics, knob):
+    """The explorer's names for A and B: A is the ladder's top rung, named by every tier it has on; B is A with the
+    knob."""
+    tiers = [q for q in ("relaxation", "contact", "field") if physics and getattr(physics, q)]
+    a = "A = bare" + "".join(f" + {q}" for q in tiers) if tiers else "A = bare diffusion"
+    return a, f"B = A with {knob}"
+
+
+def _explorer_state(results, ladder, ingredients, source, knob):
     """What the Replay DWI Explorer keeps per session: the noise-free layers (the ladder, then A, then B) as float16
     volumes with their tensor maps, the replay floor, the ingredient maps, the per-shell layer differences."""
     ra = results["A"]; mask = np.isfinite(ra.clean[..., 0])
-    layers = list(ladder) + [("A", ra.clean)] + ([("B", results["B"].clean)] if "B" in results else [])
+    name_a, name_b = _layer_labels(ra.physics, knob)
+    layers = list(ladder) + [(name_a, ra.clean)] + ([(name_b, results["B"].clean)] if "B" in results else [])
     metrics = {}
     for label, vol in layers:
         try:
@@ -291,9 +300,10 @@ def explore(ex, layer, mode, metric, z, m):
             return V.map_slice(x, z, f"{layer} is the first layer: its signal, slice z = {z}", cmap="gray", vmin=0, vmax=1)
         prev = field(labels[i - 1])
         return V.map_slice(x - prev, z, f"{what} minus {labels[i - 1]}, slice z = {z}", symmetric=True)
-    if "B" not in vols or "A" not in vols:
-        return V.map_slice(x, z, f"no B in this run: {what}, slice z = {z}", cmap="gray" if k == 0 else "viridis")
-    d = field("B") - field("A")
+    a_label = next((l for l in labels if l.startswith("A")), None); b_label = next((l for l in labels if l.startswith("B")), None)
+    if a_label is None or b_label is None:
+        return V.map_slice(x, z, f"no B in this run (choose a knob in the acquisition tab): {what}, slice z = {z}", cmap="gray" if k == 0 else "viridis")
+    d = field(b_label) - field(a_label)
     if mode == "B − A":
         return V.map_slice(d, z, f"B − A, {metric} at measurement {m}" if k == 0 else f"B − A, {metric}", symmetric=True)
     return V.map_slice(d / np.where(ex["floor"] > 0, ex["floor"], np.nan), z, f"(B − A) ÷ replay floor, {metric}" + (f" at measurement {m}" if k == 0 else ""), symmetric=True)
@@ -376,8 +386,8 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
         spread = P.pair_spread(mats, scores)
     yield _status(f"**drawing** … ({time.perf_counter() - t0:.0f} s so far)")
     rs = {tag: _result_state(r, samples[tag], source, state["load_seconds"]) for tag, r in results.items()}
-    ex = _explorer_state(results, ladder, ingredients, source)
-    labels = [l for l, _ in ex["layers"]]
+    ex = _explorer_state(results, ladder, ingredients, source, knob)
+    labels = [l for l, _ in ex["layers"]]; name_a = labels[-2] if "B" in results else labels[-1]
     ra = rs["A"]; rb = rs.get("B")
     headline = _score_text("A", results["A"])
     if rb:
@@ -403,9 +413,9 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
            gr.update(visible=rb is not None),
            V.floor_slice(ra["floor"], z0, ra["floor_median"], label="A: "), source.accuracy(results["A"]),
            V.spread_matrices(spread) if spread else None,
-           explore(ex, "A", "minus the previous layer" if len(labels) > 1 else "signal", METRICS[0], z0, m0),
-           explore(ex, "A", "signal", METRICS[2], z0, m0), *ingredient_views(ex, z0), layer_table(ex),
-           gr.update(choices=labels, value="A"), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1))
+           explore(ex, name_a, "minus the previous layer" if len(labels) > 1 else "signal", METRICS[0], z0, m0),
+           explore(ex, name_a, "signal", METRICS[2], z0, m0), *ingredient_views(ex, z0), layer_table(ex),
+           gr.update(choices=labels, value=name_a), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1))
 
 
 def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
@@ -546,10 +556,12 @@ def build(runner=None):
                 strands_view = gr.Plot(label="the strands")
                 gt_matrix = gr.Image(label="the ground-truth matrices", type="pil")
             with gr.Tab("3 · Replay DWI Explorer"):
-                gr.Markdown("What the replay made, before the noise and the tractography. **Ingredients**: what each tier multiplies into "
-                            "every walker's term, reduced per voxel. **Layers**: the same walk replayed with the tiers switched on one at "
-                            "a time, then A and B; look at a layer, its difference to the previous one, or B minus A, in the DWI itself or "
-                            "in the tensor's MD and FA from the b ≤ 1500 shells; divide by the replay floor to see where a difference means something.")
+                gr.Markdown("What the replay made, before the noise and the tractography. **A** is the run you configured in the first tab "
+                            "(its replay before the noise); **B** is the same run with the one knob you chose there changed, and exists only "
+                            "when a knob is set. **Ingredients**: what each tier multiplies into every walker's term, reduced per voxel. "
+                            "**Layers**: A's walk replayed with A's tiers switched on one at a time, ending at A itself, then B; look at a "
+                            "layer, its difference to the previous one, or B minus A, in the DWI itself or in the tensor's MD and FA from the "
+                            "b ≤ 1500 shells; divide by the replay floor to see where a difference means something.")
                 with gr.Row():
                     ingredient_pool = gr.Image(label="relaxation tier: intra-axonal weight fraction", type="pil")
                     ingredient_contact = gr.Image(label="contact tier: the walkers' wall contact", type="pil")

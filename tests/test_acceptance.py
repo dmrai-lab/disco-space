@@ -31,15 +31,18 @@ def layout():
     return lay
 
 
-def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layout):
+@pytest.mark.parametrize("run", ["bare", "3T", "7T"])
+def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layout, run):
     """S0-normalised, on every voxel the reference has signal: the replay through the moments is the replay the
-    reference was made with, to the float32 arithmetic of the layout."""
+    reference was made with, to the float32 arithmetic of the layout; bare, and in the catalogue's white matter at
+    3 T and 7 T with every tier on and the field along z (the references' setting)."""
     import nibabel as nib
     from huggingface_hub import hf_hub_download
     p, _ = P.disco_protocol(CFG)
     m = P.measurements(p, layout.shapes)
-    dwi, floor, secs = P.replay(layout, m)
-    ref_path = hf_hub_download(CFG["data"]["repo"], "disco/reference/disco_replay_bare.nii.gz", repo_type="dataset")
+    physics = None if run == "bare" else P.Physics.at(float(run[:-1]))
+    dwi, floor, secs = P.replay(layout, m, physics)
+    ref_path = hf_hub_download(CFG["data"]["repo"], f"disco/reference/disco_replay_{run}.nii.gz", repo_type="dataset")
     ref = np.asarray(nib.load(ref_path).dataobj, np.float64)
     # the reference's rows follow the table's order; ours put the b = 0 rows first, then the shells in table order
     bv = np.loadtxt(os.path.join(P.DATA_DIR, "DiSCo_gradients.bvals")).ravel()
@@ -50,7 +53,7 @@ def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layou
     ref = ref[..., order]
     both = np.isfinite(dwi) & (ref != 0)
     d = np.abs(dwi - ref)[both]
-    print(f"\nreference check: max |dS| {d.max():.2e}, 99.9 % {np.quantile(d, 0.999):.2e}, median {np.median(d):.2e} "
+    print(f"\nreference check {run}: max |dS| {d.max():.2e}, 99.9 % {np.quantile(d, 0.999):.2e}, median {np.median(d):.2e} "
           f"over {both.any(-1).sum()} voxels; replay {secs:.2f} s")
     assert (~np.isfinite(dwi) & (ref != 0)).any(-1).sum() == 0, "voxels the reference has signal in and the layout has no rows"
     assert d.max() < CFG["gate"]["reference_max_abs_diff"]

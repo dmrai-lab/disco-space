@@ -21,6 +21,8 @@ MAX_SHELLS = 4
 CUSTOM = "custom shells"
 UPLOADED = "uploaded scheme"
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
+N_PHYSICS = 17                                           # on, field, B0 preset, theta, phi, 3 T2, 3 T1, rho, chi_iso, chi_aniso, 3 tiers
+FREE_B0 = "free (polar and azimuth angles below)"
 STAGE_TEXT = {"replay": "replaying the grid from the stored walk", "noise": "adding Rician noise", "csd": "fitting CSD (order 8)",
               "track": "tracking from the sixteen regions", "score": "scoring the connectome"}
 _state = {"layout": None, "error": None}
@@ -75,6 +77,29 @@ def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=None, full=Fa
     return P.Protocol(tuple(shells), n_b0=int(n_b0), name=CUSTOM)
 
 
+def _physics_from_inputs(cfg, on, field_T, b0_mode, theta, phi, T2i, T2e, T2m, T1i, T1e, T1m, rho, chi_iso, chi_aniso, relax, contact, fld):
+    """The page's tissue-and-scanner panel as a :class:`space.pipeline.Physics` (None when the panel is off): T2 and
+    T1 in ms, rho in um/s, chi in ppm on the page; SI in the pipeline."""
+    if not on:
+        return None
+    u = P.B0_PRESETS[b0_mode] if b0_mode in P.B0_PRESETS else P.b0_direction(theta, phi)
+    return P.Physics(field_T=float(field_T), b0_direction=u,
+                     T2={"intra": float(T2i) * 1e-3, "extra": float(T2e) * 1e-3, "myelin": float(T2m) * 1e-3},
+                     T1={"intra": float(T1i) * 1e-3, "extra": float(T1e) * 1e-3, "myelin": float(T1m) * 1e-3},
+                     rho=float(rho) * 1e-6, chi_iso=float(chi_iso) * 1e-6, chi_aniso=float(chi_aniso) * 1e-6,
+                     relaxation=bool(relax), contact=bool(contact), field=bool(fld))
+
+
+def catalogue_numbers(field_T):
+    """The catalogue's white matter at ``field_T`` in the page's units (ms, um/s, ppm) plus the note that says which
+    cited field it came from: what the reset button and the field presets fill in."""
+    c = P.catalogue(float(field_T))
+    note = (f"catalogue values at {c['catalogue_field']:g} T" if abs(c["catalogue_field"] - float(field_T)) < 1e-9
+            else f"the catalogue has no cited relaxation at {float(field_T):g} T: nearest is {c['catalogue_field']:g} T, edit as you see fit")
+    return ([c["T2"][q] * 1e3 for q in P.POOLS] + [c["T1"][q] * 1e3 for q in P.POOLS]
+            + [c["rho"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
+
+
 def _result_state(res, layout, state):
     """What the results tab needs, kept per session: float32 volumes, the peaks, a streamline sample, the numbers."""
     peaks, amp = P.peaks(res.sh)
@@ -83,7 +108,7 @@ def _result_state(res, layout, state):
                 tractogram=res.tractogram, rois=layout.rois, shape=layout.mask.shape, name=res.protocol.name)
 
 
-def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, *shell_inputs, progress=None):
+def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, *rest, progress=None):
     """The run button, a generator: while a stage runs it yields the stage's name into the headline (the other
     outputs untouched), and last the results. A generator reaches the page from inside any worker, where a progress
     object does not."""
@@ -97,8 +122,10 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
         raise gr.Error(f"the layout did not load: {state['error']}")
     layout, cfg = state["layout"], state["cfg"]
     full = isinstance(layout, P.Columns)
+    physics_inputs, shell_inputs = rest[:N_PHYSICS], rest[N_PHYSICS:]
     try:
         protocol = _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=scheme_file, full=full)
+        physics = _physics_from_inputs(cfg, *physics_inputs)
         if full:                                             # the plan before any byte moves: what it reads, how long
             plan = layout.plan(P.measurements(protocol, cfg["shapes"]))
             yield (keep, f"**full replay: {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
@@ -108,7 +135,7 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
     tracking = P.Tracking(density=int(density), step_mm=float(step_mm), max_angle=float(max_angle), key=int(key))
     t0 = time.perf_counter()
     res = None
-    for item in P.run_stages(layout, protocol, snr=(float(snr) if snr_on else None), tracking=tracking):
+    for item in P.run_stages(layout, protocol, snr=(float(snr) if snr_on else None), tracking=tracking, physics=physics):
         if isinstance(item, P.Result):
             res = item
             break
@@ -124,8 +151,8 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
     rs = _result_state(res, layout, state)
     s = res.score
     headline = (f"**Pearson vs strand count {s['pearson_count']:.3f}, vs cross-sectional area {s['pearson_area']:.3f}** "
-                f"({protocol.n_meas} measurements, {len(res.tractogram):,} streamlines, {res.seconds['total']:.1f} s in total; "
-                f"replay floor median {np.nanmedian(res.floor[layout.mask]):.4f}). Results are in the third tab.")
+                f"({protocol.n_meas} measurements, {physics.label() if physics else 'bare diffusion'}, {len(res.tractogram):,} streamlines, "
+                f"{res.seconds['total']:.1f} s in total; replay floor median {np.nanmedian(res.floor[layout.mask]):.4f}). Results are in the third tab.")
     z0 = rs["dwi"].shape[2] // 2
     m0 = int(np.flatnonzero(~rs["meas"].b0)[0]) if (~rs["meas"].b0).any() else 0
     yield (rs, headline, V.dwi_slice(rs["dwi"], rs["meas"], z0, m0, peaks=rs["peaks"], peak_amp=rs["peak_amp"], overlay=True),
@@ -197,6 +224,32 @@ def build(runner=None):
                                         + ". The same image beside the columnar pack (`DISCO_MODE=full`) replays any timing, in minutes.")
                         scheme_file = gr.File(label="uploaded scheme: Camino STEJSKALTANNER (.scheme)", file_count="single", type="filepath", visible=full)
                     with gr.Column(scale=1):
+                        phys = cfg["physics"]; f0 = float(phys["default_field"]); c0 = catalogue_numbers(f0)
+                        field_presets = {f"{f:g} T": float(f) for f in phys["fields"]}
+                        with gr.Accordion("tissue and scanner: the physics tiers", open=True):
+                            physics_on = gr.Checkbox(value=bool(phys["default_on"]), label="evaluate the walk in tissue at a field (off: bare diffusion)")
+                            with gr.Row():
+                                field_preset = gr.Dropdown(list(field_presets), value=f"{f0:g} T", label="field preset")
+                                field_T = gr.Slider(0.05, 12.0, value=f0, step=0.001, label="B0 (T)")
+                            with gr.Row():
+                                b0_mode = gr.Dropdown(list(P.B0_PRESETS) + [FREE_B0], value=list(P.B0_PRESETS)[0], label="B0 direction")
+                                theta = gr.Slider(0, 180, value=0, step=1, label="polar angle from z (°)")
+                                phi = gr.Slider(0, 360, value=0, step=1, label="azimuth from x (°)")
+                            with gr.Row():
+                                tier_relax = gr.Checkbox(value=True, label="relaxation (T2, T1)")
+                                tier_contact = gr.Checkbox(value=True, label="contact (surface relaxivity ρ)")
+                                tier_field = gr.Checkbox(value=True, label="field (myelin susceptibility)")
+                            with gr.Row():
+                                T2i = gr.Number(value=c0[0], label="T2 intra (ms)"); T2e = gr.Number(value=c0[1], label="T2 extra (ms)"); T2m = gr.Number(value=c0[2], label="T2 myelin (ms)")
+                            with gr.Row():
+                                T1i = gr.Number(value=c0[3], label="T1 intra (ms)"); T1e = gr.Number(value=c0[4], label="T1 extra (ms)"); T1m = gr.Number(value=c0[5], label="T1 myelin (ms)")
+                            with gr.Row():
+                                rho = gr.Number(value=c0[6], label="ρ (µm/s)"); chi_iso = gr.Number(value=c0[7], label="χ_iso myelin (ppm)"); chi_aniso = gr.Number(value=c0[8], label="Δχ_a myelin (ppm)")
+                            with gr.Row():
+                                catalogue_note = gr.Markdown(c0[9])
+                                reset = gr.Button("reset to the catalogue at this field", size="sm")
+                        physics_inputs = [physics_on, field_T, b0_mode, theta, phi, T2i, T2e, T2m, T1i, T1e, T1m, rho, chi_iso, chi_aniso,
+                                          tier_relax, tier_contact, tier_field]
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
                             snr = gr.Slider(5, 100, value=30, step=1, label="SNR at b = 0")
@@ -228,7 +281,11 @@ def build(runner=None):
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(*args, progress=progress)
         # a runner (the ZeroGPU entry) owns the call and its progress object: Gradio hands it the inputs only
-        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, *shell_inputs],
+        tissue_numbers = [T2i, T2e, T2m, T1i, T1e, T1m, rho, chi_iso, chi_aniso, catalogue_note]
+        field_preset.change(lambda name: [field_presets[name]] + catalogue_numbers(field_presets[name]), inputs=field_preset,
+                            outputs=[field_T] + tissue_numbers, show_progress="hidden")
+        reset.click(catalogue_numbers, inputs=field_T, outputs=tissue_numbers, show_progress="hidden")
+        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, *physics_inputs, *shell_inputs],
                  outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay):

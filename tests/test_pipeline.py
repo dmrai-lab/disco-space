@@ -148,3 +148,29 @@ def test_a_camino_scheme_becomes_a_protocol_with_every_rows_timing(tmp_path):
     assert m.b0[0] and (m.delta[1:5] == 0.0100).all() and (m.delta[5:] == 0.0150).all() and np.allclose(m.TE, 0.08)
     assert np.allclose(np.linalg.norm(m.dirs, axis=1), 1.0)
     np.testing.assert_allclose(sorted(s.b for s in p.shells), [305, 1409], atol=1)   # Stejskal-Tanner b of 40 and 50 mT/m
+
+
+def test_the_physics_is_the_catalogue_at_the_nearest_field_with_the_tiers_as_switches():
+    """3 T is cited; 0.064 T and 11.7 T take the nearest cited field (1.5 T, 7 T) and say so; a tier off leaves that
+    part out of the tissue; all off is bare (no tissue); the refusals."""
+    c3 = P.catalogue(3.0); assert c3["catalogue_field"] == 3.0 and set(c3["T2"]) == set(P.POOLS) and c3["T2"]["myelin"] < c3["T2"]["intra"]
+    assert P.catalogue(0.064)["catalogue_field"] == 1.5 and P.catalogue(11.7)["catalogue_field"] == 7.0
+    ph = P.Physics.at(3.0)
+    tis = ph.tissue()
+    assert tis.T2 == c3["T2"] and tis.T1 == c3["T1"] and tis.rho == c3["rho"] and tis.chi_iso == c3["chi_iso"] and tis.chi_aniso == c3["chi_aniso"]
+    assert not ph.bare and "relaxation+contact+field" in ph.label()
+    no_field = P.Physics.at(7.0, field=False, b0_direction=P.b0_direction(90, 0))
+    assert no_field.tissue().chi_iso is None and no_field.tissue().chi_aniso == 0.0 and no_field.tissue().rho == c3["rho"]
+    np.testing.assert_allclose(no_field.b0_direction, (1, 0, 0), atol=1e-12)
+    bare = P.Physics.at(3.0, relaxation=False, contact=False, field=False)
+    assert bare.bare and bare.tissue() is None and bare.label() == "bare diffusion"
+    only_relax = P.Physics.at(3.0, contact=False, field=False, T2={"intra": 0.08, "extra": 0.08, "myelin": 0.02})
+    assert only_relax.tissue().T2["intra"] == 0.08 and only_relax.tissue().rho is None
+    with pytest.raises(ValueError, match="tesla"):
+        P.Physics.at(3000.0)
+    with pytest.raises(ValueError, match="per pool"):
+        P.Physics.at(3.0, T2={"intra": 0.05})
+    with pytest.raises(ValueError, match="unit vector"):
+        P.Physics.at(3.0, b0_direction=(0, 0, 2))
+    for name, preset in P.B0_PRESETS.items():
+        np.testing.assert_allclose(np.linalg.norm(preset), 1.0)

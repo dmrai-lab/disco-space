@@ -310,11 +310,16 @@ class Columns:
         return plan
 
 
-def replay_full(columns, meas, *, tissue=None, scanner=None, progress=None):
+def replay_full(columns, meas, physics=None, *, progress=None):
     """``(dwi, floor, seconds)`` from the columnar pack: one pass over its rows for the measurements' sequence, the
-    split-half floor per voxel; S0-normalised like :func:`replay`."""
+    split-half floor per voxel; S0-normalised like :func:`replay`. The field's direction is the pack's z here
+    (the columnar study has no orientation knob yet: disco-space#4)."""
     from dmipy_sim.replay.study import Study, Protocol as SProtocol, Acquisition
     t0 = time.perf_counter()
+    tissue = physics.tissue() if physics else None
+    scanner = physics.field_T if tissue is not None else None
+    if physics and not np.allclose(physics.b0_direction, (0.0, 0.0, 1.0)):
+        raise ValueError("full mode replays the field along z only")
     seq = columns.sequence(meas)
     study = Study(SProtocol([Acquisition(seq, name="run")]), tissues=[tissue], scanners=[scanner])
     S, floor, plan = columns.pack.image_study(study, tol=0.005, chunk_rows=1_000_000, progress=progress)
@@ -323,18 +328,105 @@ def replay_full(columns, meas, *, tissue=None, scanner=None, progress=None):
     return S / S0, floor, time.perf_counter() - t0
 
 
+# ---- the physics: tissue and scanner (disco-space#4 iteration 1) ----------------------------------------------------
+FIELDS = (0.064, 1.5, 3.0, 7.0, 11.7)                    # the page's field presets (T)
+CATALOGUE_FIELDS = (1.5, 3.0, 7.0)                       # where dmipy-sim's white-matter catalogue has cited relaxation
+POOLS = ("intra", "extra", "myelin")                     # the DiSCo pack's pools, as its tissue mapping names them
+B0_PRESETS = {"along z (the strands' frame)": (0.0, 0.0, 1.0), "transverse (x): 90° from z, as in a biplanar magnet like the Swoop": (1.0, 0.0, 0.0)}
+
+
+def catalogue(field_T):
+    """dmipy-sim's canonical white matter at the catalogue field nearest ``field_T`` (in log distance): ``T2`` and
+    ``T1`` per pool (s), ``rho`` (m/s), ``chi_iso`` and ``chi_aniso`` (SI), and ``catalogue_field``, the field the
+    numbers were cited at (the page says so when it is not the chosen one)."""
+    import warnings
+    from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
+    near = min(CATALOGUE_FIELDS, key=lambda f: abs(np.log(f / float(field_T))))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        w = canonical_white_matter(field_T=near)
+    return dict(catalogue_field=near, T2={q: float(w[f"T2_{q}"]) for q in POOLS}, T1={q: float(w[f"T1_{q}"]) for q in POOLS},
+                rho=float(w["rho2"]), chi_iso=float(w["chi_iso_myelin"]), chi_aniso=float(w["delta_chi_a"]))
+
+
+def b0_direction(theta_deg, phi_deg):
+    """The unit field direction at polar angle ``theta`` from z and azimuth ``phi`` from x (degrees)."""
+    t, f = np.radians(float(theta_deg)), np.radians(float(phi_deg))
+    return (float(np.sin(t) * np.cos(f)), float(np.sin(t) * np.sin(f)), float(np.cos(t)))
+
+
+@dataclass(frozen=True)
+class Physics:
+    """The tissue and the scanner a replay is evaluated at: the field (T) and its direction in the substrate frame,
+    T2 and T1 per pool (s), the walls' surface relaxivity ``rho`` (m/s), myelin's ``chi_iso`` and ``chi_aniso``
+    (SI); ``relaxation`` / ``contact`` / ``field`` switch the three tiers, so a tier is a knob the page can turn off
+    one at a time. :meth:`tissue` is the :class:`dmipy_sim.spec.tissue.Tissue` for the replay (None when every tier
+    is off: bare diffusion)."""
+    field_T: float
+    T2: dict
+    T1: dict
+    rho: float
+    chi_iso: float
+    chi_aniso: float
+    b0_direction: tuple = (0.0, 0.0, 1.0)
+    relaxation: bool = True
+    contact: bool = True
+    field: bool = True
+
+    def __post_init__(self):
+        if not (0 < self.field_T < 30):
+            raise ValueError(f"the field is in tesla, got {self.field_T}")
+        for what, m in (("T2", self.T2), ("T1", self.T1)):
+            if set(m) != set(POOLS) or any(not (0 < float(v) < 100) for v in m.values()):
+                raise ValueError(f"{what} is seconds per pool {POOLS}, got {m}")
+        if self.rho < 0:
+            raise ValueError("the surface relaxivity is non-negative")
+        u = np.asarray(self.b0_direction, np.float64)
+        if u.shape != (3,) or not np.isclose(np.linalg.norm(u), 1.0, atol=1e-6):
+            raise ValueError("b0_direction is a unit vector")
+
+    @classmethod
+    def at(cls, field_T, *, b0_direction=(0.0, 0.0, 1.0), **overrides):
+        """The catalogue's white matter at ``field_T`` with ``overrides`` (any field of the class)."""
+        c = catalogue(field_T); c.pop("catalogue_field")
+        return cls(field_T=float(field_T), b0_direction=tuple(float(x) for x in b0_direction), **{**c, **overrides})
+
+    @property
+    def bare(self):
+        return not (self.relaxation or self.contact or self.field)
+
+    def tissue(self):
+        from dmipy_sim.spec.tissue import Tissue
+        if self.bare:
+            return None
+        return Tissue(T2=dict(self.T2) if self.relaxation else None, T1=dict(self.T1) if self.relaxation else None,
+                      rho=self.rho if self.contact else None, chi_iso=self.chi_iso if self.field else None,
+                      chi_aniso=self.chi_aniso if self.field else 0.0)
+
+    def label(self):
+        if self.bare:
+            return "bare diffusion"
+        tiers = [n for n, on in (("relaxation", self.relaxation), ("contact", self.contact), ("field", self.field)) if on]
+        u = self.b0_direction
+        return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {'+'.join(tiers)}"
+
+
 # ---- the stages -------------------------------------------------------------------------------------------------
 
-def replay(layout, meas):
+def replay(layout, meas, physics=None):
     """``(dwi, floor, seconds)``: the S0-normalised signal of every voxel per measurement (NaN outside the pack's
-    rows), the largest split-half floor over the timing classes, and the time."""
+    rows), the largest split-half floor over the timing classes, and the time; at ``physics`` (a :class:`Physics`:
+    the tissue, the field and its direction), else bare diffusion."""
     t0 = time.perf_counter()
     S = np.full(layout.mask.shape + (len(meas.bvals),), np.nan)
     floor = np.zeros(layout.mask.shape)
+    tissue = physics.tissue() if physics else None
+    scanner = physics.field_T if tissue is not None else None
+    b0 = physics.b0_direction if physics else (0.0, 0.0, 1.0)
     for name in np.unique(meas.shape):
         rows = meas.shape == name
         S[..., rows], f = layout.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=layout.backend,
-                                                resident=layout.resident)
+                                                resident=layout.resident, tissue=tissue, scanner=scanner, b0_direction=b0)
         floor = np.fmax(floor, f)
     S0 = np.nanmean(S[..., meas.b0], axis=-1, keepdims=True)
     return S / S0, floor, time.perf_counter() - t0
@@ -446,14 +538,16 @@ class Result:
     score: dict
     seconds: dict = field(default_factory=dict)
     snr: Optional[float] = None
+    physics: Optional[Physics] = None
 
 
 STAGES = ("replay", "noise", "csd", "track", "score")
 
 
-def run_stages(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0):
+def run_stages(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None):
     """The pipeline as a generator: before each of the ``STAGES`` it yields ``(stage, k, n)`` (so a page can show
-    where the run is, from inside any worker), and last the :class:`Result`."""
+    where the run is, from inside any worker), and last the :class:`Result`. ``physics`` is the tissue and scanner
+    the replay is evaluated at (None: bare diffusion)."""
     t_run = time.perf_counter()
 
     def at(stage):
@@ -462,23 +556,23 @@ def run_stages(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0)
     meas = measurements(protocol, layout.shapes)
     yield at("replay")
     if isinstance(layout, Columns):
-        dwi, floor, t_replay = replay_full(layout, meas)
+        dwi, floor, t_replay = replay_full(layout, meas, physics)
     else:
-        dwi, floor, t_replay = replay(layout, meas)
+        dwi, floor, t_replay = replay(layout, meas, physics)
     yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=layout.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
     yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=layout.backend)
     yield at("track"); tg, seeds, t_track = track(sh, layout, tracking)
     yield at("score"); t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
-    yield Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr,
+    yield Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr, physics=physics,
                  seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
                               total=t_replay + t_noise + t_csd + t_track + t_score))
 
 
-def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, progress=None):
+def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, progress=None):
     """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
     each stage begins."""
-    for item in run_stages(layout, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed):
+    for item in run_stages(layout, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed, physics=physics):
         if isinstance(item, Result):
             return item
         if progress:

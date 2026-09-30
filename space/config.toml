@@ -38,6 +38,14 @@ label = "Connectome 2.0 δ 8 / Δ 20 ms"
 delta = 0.008
 Delta = 0.020
 TE = 0.0535
+# The stimulated echo matched to DiSCo's b = 3091 shell: the same diffusion time (Delta = delta + TM = 45.9 ms) with
+# the magnetisation stored along z for TM, so susceptibility dephasing (and T2) act only during the two deltas.
+[shapes."ste-d7.6-TM38.3"]
+label = "stimulated echo δ 7.6 / TM 38.3 ms (Δ 45.9 ms, the PGSTE twin of the b = 3091 class)"
+delta = 0.0076
+Delta = 0.0459
+TE = 0.0535
+kind = "pgste"
 
 # DiSCo's own protocol: which timing class each shell of the dataset's gradient table plays (b in s/mm^2, the
 # table's rows are assigned to the nearest b here).
@@ -64,6 +72,14 @@ shells = [
 [presets."Connectome 2.0 b6000 x 60"]
 n_b0 = 2
 shells = [{ shape = "d8-D20", b = 6000, n_dirs = 60 }]
+
+# The tissue and the scanner (disco-space#4 iteration 1): the field presets the page offers (T), the default field,
+# and whether a run starts with the tiers on. Tissue defaults come from dmipy-sim's white-matter catalogue at the
+# nearest cited field (1.5 / 3 / 7 T) and are editable on the page.
+[physics]
+fields = [0.064, 1.5, 3.0, 7.0, 11.7]
+default_field = 3.0
+default_on = true
 
 # The mode (disco-space#4): demo = the prebaked shape-moment layout (the hosted Spaces; seconds; the stored pulse
 # timings), full = the columnar replay pack itself (minutes per volume; any timing; the scheme upload), read from

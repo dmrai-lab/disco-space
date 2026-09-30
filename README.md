@@ -24,6 +24,14 @@ Rician noise, fits CSD (order 8, the single-fibre response from the volume), tra
 sixteen regions and scores the 16 × 16 connectome against the dataset's strand-count and area matrices. Every
 stage's time is on screen.
 
+**The physics as knobs.** The walk carries more than positions: each walker's pool, its wall contacts and the
+susceptibility field it saw are stored as tiers, so the same run can be evaluated bare or in tissue at a scanner.
+The *tissue and scanner* panel sets the field (presets 0.064, 1.5, 3, 7, 11.7 T or any value), its direction in the
+phantom's frame (along z, transverse, or free angles), T2 and T1 per pool, the surface relaxivity and myelin's
+susceptibility, each tier switchable on its own; the defaults are dmipy-sim's cited white-matter catalogue at the
+nearest field. A stimulated-echo pulse timing (δ 7.6 / TM 38.3 ms) is the twin of DiSCo's b = 3091 class: the same
+diffusion time with the magnetisation stored along z, so the field acts only during the two δ.
+
 **Two modes, one image.** The hosted Spaces run in *demo* mode: the acquisition's pulse timing is one of a few
 stored classes (the shape-moment layout, `disco/moments/` of the dataset, one pass over the pack per class), so a
 run takes seconds and the b-values, directions, SNR, tissue and scanner stay free. The same image beside the
@@ -73,13 +81,13 @@ the packages' test suites: compressed image 3.68 -> 2.42 GB; the gate in the tri
 the last digit, 0.9270634171621878, steady 18.4 s on an A10G). The app then needs another ~150 s to download the
 13 GB layout and compile before it serves, which is the storage item, not the image's.
 
-**Storage.** Hugging Face replaced the persistent-storage tiers with Storage Buckets mounted as volumes: the layout
-sits in the private bucket `rfick/disco-space-data` (11.9 GB, copied server-side from the dataset with
-`HfApi.copy_files` in 2 s, about $0.20 a month at $18 per TB), mounted at `/data` with `set_space_volumes`, and the
-Space variable `DISCO_MOMENTS=/data/moments` points the app at it; the JAX compile cache lives on the same volume.
-Measured 2026-09-29 (A10G): a wake without a build serves in 16 s (was ~250 s), and the first DiSCo 364 request after
-that wake answers in 86 s wall (the layout read from the mount plus the run; 132 s on the first wake, when the compile
-cache is still empty).
+**Storage.** Both Spaces download the layout from the dataset at the config's pinned revision when their container
+starts (the Docker Space into `/data/hf` on its own disk, the ZeroGPU parent process into the Hub cache before the
+page serves), so a wake costs one download per container start, not per visitor; nothing is mounted. The Storage
+Bucket of the first deployment (`rfick/disco-space-data`) is retired by `tools/deploy.py`, which removes the
+`DISCO_MOMENTS` variable and any volume it finds. Measured 2026-09-29 (A10G, with the bucket): a wake without a
+build served in 16 s and the first DiSCo 364 request after it answered in 86 s wall; the Hub-download figures are
+measured on the next deploy.
 
 ```bash
 pip install -r requirements.txt

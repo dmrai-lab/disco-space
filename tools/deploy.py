@@ -3,7 +3,10 @@ naming the source commit; Hugging Face rebuilds the image on that push. With ``-
 is ``Dockerfile.space`` on the prebuilt ``ghcr.io/dmrai-lab/disco-space:<tag>`` (the image workflow's output), so
 the build copies files instead of installing the stack.
 
-    HF_TOKEN=... python tools/deploy.py [--space rfick/disco] [--sha <git sha>] [--base-tag <sha|latest>]
+    HF_TOKEN=... python tools/deploy.py [--space rfick/disco] [--sha <git sha>] [--base-tag <sha|latest>] [--zero]
+
+Both Spaces read the layout from the Hub at the config's revision when their container starts (disco-space#4: the
+bucket is retired), so the deploy also removes a ``DISCO_MOMENTS`` variable and any mounted volume it finds.
 """
 import argparse
 import os
@@ -12,6 +15,20 @@ import subprocess
 import tempfile
 
 IGNORE = [".git/*", "__pycache__/*", "*.pyc", ".github/*", ".pytest_cache/*", ".gitignore", "gate.json"]   # tests and tools go too: the gate job runs on the Space's own files
+
+
+def retire_bucket(api, space):
+    """No ``DISCO_MOMENTS`` variable and no volume on ``space``: the app then downloads the layout from the Hub."""
+    try:
+        api.delete_space_variable(space, "DISCO_MOMENTS")
+        print("removed the DISCO_MOMENTS variable")
+    except Exception as e:                                  # absent already, or the API says so
+        print("DISCO_MOMENTS variable:", repr(e)[:120])
+    try:
+        api.set_space_volumes(space, volumes=[])
+        print("no volumes mounted")
+    except Exception as e:
+        print("volumes:", repr(e)[:160])
 
 
 def main():
@@ -50,6 +67,7 @@ def main():
                              commit_message=f"disco-space {sha[:12]}" + (f" on base {a.base_tag[:12]}" if a.base_tag else ""))
     if staged:
         shutil.rmtree(staged)
+    retire_bucket(api, a.space)
     print(info.commit_url)
     print("stage", api.get_space_runtime(a.space).stage)
 

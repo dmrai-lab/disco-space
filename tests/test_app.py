@@ -35,3 +35,14 @@ def test_full_mode_takes_the_rows_own_timing_and_demo_mode_refuses_the_upload():
         A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme="x.scheme")
     with pytest.raises(ValueError, match="upload"):
         A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme=None, full=True)
+
+
+def test_the_physics_panel_is_a_physics_in_si_or_none_when_off():
+    nums = A.catalogue_numbers(3.0)
+    assert nums[-1].startswith("catalogue values at 3 T") and A.catalogue_numbers(0.064)[-1].startswith("the catalogue has no cited")
+    inputs = [True, 3.0, next(iter(P.B0_PRESETS)), 0, 0] + nums[:9] + [True, True, False]
+    ph = A._physics_from_inputs(CFG, *inputs)
+    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[6] * 1e-6 and not ph.field and ph.relaxation
+    assert A._physics_from_inputs(CFG, False, *inputs[1:]) is None
+    free = A._physics_from_inputs(CFG, *([True, 7.0, A.FREE_B0, 90, 90] + nums[:9] + [True, True, True]))
+    assert abs(free.b0_direction[1] - 1.0) < 1e-12

@@ -108,10 +108,12 @@ handed an RTX PRO 6000 Blackwell MIG slice with 51 GB): `DISCO_BACKEND=torch` sw
 solver and the tracker to their PyTorch kernels (dmipy-sim#510, dmipy-fit#37, dmipy-tract#4), `spaces.GPU` wraps the
 run, the layout is downloaded from the Hub into the parent process once per container and the forked GPU worker inherits
 it (the host-to-device transfer runs at 8 GB/s), and nothing in the worker touches JAX (the noise
-draw comes from numpy there; a JAX call in the forked worker aborts the task). Measured 2026-09-29 through the API:
-DiSCo 364 at SNR 30 in 51 s wall, 21 s in the pipeline (replay 12.6 s with the per-call transfer and kernel compile,
-noise 0.5, CSD 3.6, tracking 4.5); a custom two-shell protocol in 44 s wall, 18.6 s in the pipeline. No idle cost, no
-sleep; per-visitor quotas instead of a queue on one card. Deploy with `tools/deploy.py --zero`
+draw comes from numpy there; a JAX call in the forked worker aborts the task). Measured 2026-09-30 through the API
+on the tiered layout (3 T, every tier on, SNR 30): the container built and started in 364 s (the 31.6 GB layout
+downloaded from the Hub and preloaded in 55 s of that); DiSCo 364 in 84 s wall, 30 s in the pipeline (replay 22.8 s
+with the per-call transfer of the moment and tier columns, noise 0.5, CSD 3.3, tracking 3.3), Pearson 0.924; a
+custom two-shell protocol (77 measurements) in 54 s wall, 9.6 s in the pipeline. No idle cost, no sleep; per-visitor
+quotas instead of a queue on one card. Deploy with `tools/deploy.py --zero`
 (`README-zero.md`, `requirements-zero.txt`, the root `app.py`).
 
 ## Measured

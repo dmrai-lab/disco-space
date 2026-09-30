@@ -43,7 +43,8 @@ def probe():
     out = dict(torch=torch.__version__, cuda=torch.cuda.is_available(), device=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
                gpu_memory_gb=round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1) if torch.cuda.is_available() else None,
                layout=where, data=sorted(os.path.basename(p) for p in glob.glob(os.path.join(where, "*")))[:12], backend=os.environ.get("DISCO_BACKEND"),
-               resident=os.environ.get("DISCO_RESIDENT"), load_seconds=round(st.get("load_seconds", float("nan")), 1), error=st.get("error"))
+               resident=os.environ.get("DISCO_RESIDENT"), load_seconds=round(st.get("load_seconds", float("nan")), 1), error=st.get("error"),
+               cpus=len(os.sched_getaffinity(0)), cpu_count=os.cpu_count())
     try:
         with open("/proc/meminfo") as f:
             mem = dict(l.split(":") for l in f.read().splitlines() if ":" in l)

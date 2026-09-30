@@ -113,7 +113,12 @@ on the tiered layout (3 T, every tier on, SNR 30): the container built and start
 downloaded from the Hub and preloaded in 55 s of that); DiSCo 364 in 84 s wall, 30 s in the pipeline (replay 22.8 s
 with the per-call transfer of the moment and tier columns, noise 0.5, CSD 3.3, tracking 3.3), Pearson 0.924; a
 custom two-shell protocol (77 measurements) in 54 s wall, 9.6 s in the pipeline. No idle cost, no sleep; per-visitor
-quotas instead of a queue on one card. Deploy with `tools/deploy.py --zero`
+quotas instead of a queue on one card.
+
+**The SNR is defined at M0**, the bare signal of the fullest water voxel, and each voxel's noise follows its own
+b = 0 signal: on DiSCo 364 at 3 T with every tier the b = 0 signal is 0.32–0.38 of M0 (T2 near TE, the walls'
+contact in the densest strand voxels), so SNR 30 at M0 is SNR 11 at b = 0 and the connectome's Pearson vs strand
+count goes from 0.924 (bare, or SNR 80 at M0) to 0.912; noiseless it is 0.927 (measured on the L40S, 2026-09-30). Deploy with `tools/deploy.py --zero`
 (`README-zero.md`, `requirements-zero.txt`, the root `app.py`).
 
 ## Measured

@@ -15,16 +15,16 @@ import torch                                            # noqa: E402
 
 from space import app as A                              # noqa: E402
 
-DURATION = int(os.environ.get("DISCO_GPU_SECONDS", "480"))
-
-
 def gpu_runner(fn):
-    """``fn`` under the GPU for ``DURATION`` seconds, deterministic, full precision. The progress bar is declared
-    on the decorated function itself (``progress=gr.Progress()``), which is how ZeroGPU forwards it into the GPU
-    worker; a progress object passed in from outside cannot cross the process boundary."""
+    """``fn`` under the GPU for the seconds :func:`space.app.estimated_seconds` reads off the inputs (``DISCO_GPU_SECONDS``
+    overrides with a fixed number), deterministic, full precision. The progress bar is declared on the decorated
+    function itself, the one way a progress object reaches the GPU worker; the stage names reach the page through
+    the generator's yields."""
     import gradio as gr
+    fixed = os.environ.get("DISCO_GPU_SECONDS")
+    duration = (lambda *args, **kw: int(fixed)) if fixed else (lambda *args, **kw: A.estimated_seconds(*args))
 
-    @spaces.GPU(duration=DURATION)
+    @spaces.GPU(duration=duration)
     def run(*args, progress=gr.Progress()):
         torch.use_deterministic_algorithms(True)
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -39,7 +39,7 @@ def probe():
     for the deployment check, `/probe`)."""
     import glob, json, time
     import numpy as np
-    st = A._load(); lay = st["layout"]; where = getattr(getattr(lay, "moments", None), "path", "")
+    st = A._load(); src = st["source"]; where = getattr(getattr(src, "moments", None), "path", "")
     out = dict(torch=torch.__version__, cuda=torch.cuda.is_available(), device=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
                gpu_memory_gb=round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1) if torch.cuda.is_available() else None,
                layout=where, data=sorted(os.path.basename(p) for p in glob.glob(os.path.join(where, "*")))[:12], backend=os.environ.get("DISCO_BACKEND"),
@@ -54,19 +54,20 @@ def probe():
     if files:
         t0 = time.perf_counter(); m = np.load(files[0], mmap_mode="r"); chunk = np.array(m[:100000]); dt = time.perf_counter() - t0
         out["read_mb"] = round(chunk.nbytes / 1e6, 1); out["read_mb_per_s"] = round(chunk.nbytes / 1e6 / dt, 1)
-        t0 = time.perf_counter(); dev = torch.as_tensor(chunk, device="cuda"); torch.cuda.synchronize(); out["upload_mb_per_s"] = round(chunk.nbytes / 1e6 / (time.perf_counter() - t0), 1)
+        t0 = time.perf_counter(); torch.as_tensor(chunk, device="cuda"); torch.cuda.synchronize(); out["upload_mb_per_s"] = round(chunk.nbytes / 1e6 / (time.perf_counter() - t0), 1)
     # the moment image inside this worker: the first compiled call, a second one (the kernel alone), the eager kernel
     try:
         from dmipy_sim.replay import shape_moments as SM
+        kernel = dict(SM._TORCH_KERNEL)
         b = np.full(184, 1e9); u = np.tile([0.6, 0.0, 0.8], (184, 1)); name = "d10.2-D16.7"
-        cache = os.environ.get("TORCHINDUCTOR_CACHE_DIR"); out["inductor_cache_dir"] = cache
-        out["inductor_cache_files_before"] = len(glob.glob(os.path.join(cache, "**", "*"), recursive=True)) if cache and os.path.isdir(cache) else None
-        t0 = time.perf_counter(); lay.moments.image(name, b, u, backend="torch", resident=True); torch.cuda.synchronize(); out["image_first_compiled_s"] = round(time.perf_counter() - t0, 2)
-        t0 = time.perf_counter(); lay.moments.image(name, b, u, backend="torch", resident=True); torch.cuda.synchronize(); out["image_second_compiled_s"] = round(time.perf_counter() - t0, 2)
-        SM._TORCH_KERNEL["fn"] = SM._tile_sums_torch
-        t0 = time.perf_counter(); lay.moments.image(name, b, u, backend="torch", resident=True); torch.cuda.synchronize(); out["image_eager_s"] = round(time.perf_counter() - t0, 2)
-        t0 = time.perf_counter(); lay.moments.image(name, b, u, backend="torch", resident=False); torch.cuda.synchronize(); out["image_eager_nonresident_s"] = round(time.perf_counter() - t0, 2)
-        out["inductor_cache_files_after"] = len(glob.glob(os.path.join(cache, "**", "*"), recursive=True)) if cache and os.path.isdir(cache) else None
+        try:
+            t0 = time.perf_counter(); src.moments.image(name, b, u, backend="torch", resident=True); torch.cuda.synchronize(); out["image_first_compiled_s"] = round(time.perf_counter() - t0, 2)
+            t0 = time.perf_counter(); src.moments.image(name, b, u, backend="torch", resident=True); torch.cuda.synchronize(); out["image_second_compiled_s"] = round(time.perf_counter() - t0, 2)
+            SM._TORCH_KERNEL["fn"] = SM._tile_sums_torch
+            t0 = time.perf_counter(); src.moments.image(name, b, u, backend="torch", resident=True); torch.cuda.synchronize(); out["image_eager_s"] = round(time.perf_counter() - t0, 2)
+            t0 = time.perf_counter(); src.moments.image(name, b, u, backend="torch", resident=False); torch.cuda.synchronize(); out["image_eager_nonresident_s"] = round(time.perf_counter() - t0, 2)
+        finally:
+            SM._TORCH_KERNEL.update(kernel)                  # the probe leaves the kernel as it found it
     except Exception as e:
         out["image_probe_error"] = repr(e)[:300]
     return json.dumps(out)

@@ -43,25 +43,29 @@ def test_the_3d_views_hold_their_sample():
     import os
     rois = np.asarray(nib.load(os.path.join(P.DATA_DIR, "DiSCo_ROIs.nii.gz")).dataobj).astype(np.int32)
     strands = [np.cumsum(np.random.default_rng(i).normal(size=(20, 3)), 0) + 20 for i in range(50)]
-    fig = V.strands3d(strands, np.full(50, 2e-3), rois, rois.shape, n=30)
+    regions = V.region_markers(rois)
+    assert regions.mode == "markers+text" and len(regions.x) == 16
+    fig = V.strands3d(strands, np.full(50, 2e-6), regions, rois.shape, n=30)
     lines = [t for t in fig.data if t.mode == "lines"]
-    assert sum(sum(1 for x in t.x if x is None) for t in lines) == 30               # one None per path
-    assert any(t.mode == "markers+text" and len(t.x) == 16 for t in fig.data)
+    assert sum(int(np.isnan(np.asarray(t.x, float)).sum()) for t in lines) == 30    # one NaN gap per path
+    assert "2.0-2.0 µm" in fig.layout.title.text
     from dmipy_tract import Tractogram
     pts = np.concatenate(strands[:10]).astype(np.float32); offsets = np.r_[0, np.cumsum([len(s) for s in strands[:10]])]
     tg = Tractogram(pts, offsets, np.arange(10), np.zeros((10, 2), np.int8))
-    fig2 = V.tractogram3d(tg, rois, rois.shape, n=4)
-    assert sum(sum(1 for x in t.x if x is None) for t in fig2.data if t.mode == "lines") == 4
+    fig2 = V.tractogram3d(tg, regions, rois.shape, n=4, total=12345)
+    assert sum(int(np.isnan(np.asarray(t.x, float)).sum()) for t in fig2.data if t.mode == "lines") == 4
+    assert "4 of 12,345" in fig2.layout.title.text
+    assert V.ground_truth_matrix(np.eye(16) * 0 + np.triu(np.ones((16, 16)), 1), np.triu(np.ones((16, 16)), 1) * 0.5, 120).size[0] > 100
 
 
 def test_the_timings_rows_are_the_stages():
     rows = V.timings_rows(dict(replay=1.0, csd=2.0, total=3.0), 10.0)
-    assert rows[0][0].startswith("layout") and [r[0] for r in rows[1:]] == ["replay", "csd", "total"]
+    assert rows[0][0].startswith("source") and [r[0] for r in rows[1:]] == ["replay", "csd", "total"]
 
 
 def test_the_floor_slice_draws_the_positive_voxels():
     floor = np.zeros((8, 8, 4), np.float32); floor[2:6, 2:6, :] = 0.01; floor[3, 3, 1] = 0.05
-    img = V.floor_slice(floor, 1, label="A: ")
+    img = V.floor_slice(floor, 1, 0.01, label="A: ")
     assert img.size[0] > 100 and img.size[1] > 100
 
 

@@ -48,7 +48,7 @@ docker run -p 7860:7860 -e DISCO_MODE=full -e DISCO_COLUMNS=/columns -v /path/to
 
 **The data path.** `disco/moments/` on the dataset is dmipy-sim's *shape-moment layout*: the replay pack contracted
 once against each PGSE timing class (δ/Δ at TE 53.5 ms, square pulses), so that any b-value and direction on a
-class is a three-term phase per walker. Six classes are stored (`space/config.toml`, `[shapes]`); the layout is
+class is a three-term phase per walker. Seven classes are stored (`space/config.toml`, `[shapes]`: six PGSE and one stimulated echo); the layout is
 written by `dmipy_sim.replay.shape_moments.write_shape_moments` from the certified columnar rows and names the
 columnar manifest's sha256 it was contracted from. The replay of DiSCo's protocol from the layout is checked
 against the published reference volume by the gate.
@@ -106,8 +106,8 @@ With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2
 `rfick/disco-zero` is the same application on Hugging Face's shared GPU pool (Gradio SDK, `zero-a10g`; the pool
 handed an RTX PRO 6000 Blackwell MIG slice with 51 GB): `DISCO_BACKEND=torch` switches the layout image, the CSD
 solver and the tracker to their PyTorch kernels (dmipy-sim#510, dmipy-fit#37, dmipy-tract#4), `spaces.GPU` wraps the
-run, the layout is preloaded into the parent process from the mounted bucket and the forked GPU worker inherits it
-(the mount reads at 80 MB/s, the host-to-device transfer at 8 GB/s), and nothing in the worker touches JAX (the noise
+run, the layout is downloaded from the Hub into the parent process once per container and the forked GPU worker inherits
+it (the host-to-device transfer runs at 8 GB/s), and nothing in the worker touches JAX (the noise
 draw comes from numpy there; a JAX call in the forked worker aborts the task). Measured 2026-09-29 through the API:
 DiSCo 364 at SNR 30 in 51 s wall, 21 s in the pipeline (replay 12.6 s with the per-call transfer and kernel compile,
 noise 0.5, CSD 3.6, tracking 4.5); a custom two-shell protocol in 44 s wall, 18.6 s in the pipeline. No idle cost, no
@@ -133,7 +133,7 @@ band error 1.4e-4 against the pack's floor 4.8e-3). The L4 run is the gate job i
 (`tools/gate_job.py`, 2026-09-29).
 
 **Live Space** (`rfick/disco`, A10G small after two "not enough hardware capacity" failures on the L4 on 2026-09-29,
-through its API with `tools/live_check.py`): first request after a cold start 150 s wall (layout on the device 104 s
+through its API with `tools/live.py`): first request after a cold start 150 s wall (layout on the device 104 s
 once per process, then 49.6 s for DiSCo 364 at SNR 30 including every compile: replay 9.4, noise 1.1, CSD 6.5,
 tracking 32.4, score 0.3; Pearson 0.924 / 0.926). A custom two-shell protocol (77 measurements) right after: 34 s
 wall, 11.8 s in the pipeline (replay 1.4, CSD 4.3, tracking 5.2), Pearson 0.904. The `.tck` (290 MB), the DWI with

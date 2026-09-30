@@ -38,45 +38,56 @@ def test_full_mode_takes_the_rows_own_timing_and_demo_mode_refuses_the_upload():
         A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme=None, full=True)
 
 
+def _values(on=True, field_T=3.0, **over):
+    nums = A.catalogue_numbers(field_T)[:9]
+    v = dict(zip(A.PHYSICS_FIELDS, [on, field_T, next(iter(A.B0_MODES)), 0, 0] + nums + [True, True, True]))
+    v.update(over)
+    return v
+
+
 def test_the_physics_panel_is_a_physics_in_si_or_none_when_off():
     nums = A.catalogue_numbers(3.0)
     assert nums[-1].startswith("catalogue values at 3 T") and A.catalogue_numbers(0.064)[-1].startswith("the catalogue has no cited")
-    inputs = [True, 3.0, next(iter(P.B0_PRESETS)), 0, 0] + nums[:9] + [True, True, False]
-    ph = A._physics_from_inputs(CFG, *inputs)
+    ph = A.physics_from(_values(field=False))
     assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[6] * 1e-6 and not ph.field and ph.relaxation
-    assert A._physics_from_inputs(CFG, False, *inputs[1:]) is None
-    free = A._physics_from_inputs(CFG, *([True, 7.0, A.FREE_B0, 90, 90] + nums[:9] + [True, True, True]))
+    assert A.physics_from(_values(on=False)) is None
+    free = A.physics_from(_values(field_T=7.0, b0_mode=A.FREE_B0, theta=90, phi=90))
     assert abs(free.b0_direction[1] - 1.0) < 1e-12
+    with pytest.raises(ValueError, match="17 inputs"):
+        A.physics_values(1, 2, 3)
 
 
 def test_a_knob_changes_one_thing_of_a():
     """Every knob maps to B = A with that one change: the field takes the catalogue tissue with it, a tier goes off,
-    the tissue goes off, the noise changes, every shell is retimed; A's other settings survive."""
-    nums = A.catalogue_numbers(3.0)[:9]
-    ph = [True, 3.0, next(iter(P.B0_PRESETS)), 0, 0] + nums + [True, True, True]
+    the tissue goes off, the noise changes, every shell is retimed; A's other settings survive; a panel knob on an
+    A whose panel is off is refused (B would differ in two things)."""
+    v = _values()
     prot = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS)
     ks = A.knobs(CFG)
     assert ks[A.NO_KNOB] is None and len(ks) == 1 + 5 + 2 + 3 + 1 + 3 + len(CFG["shapes"])
     for name, change in ks.items():
         if change is None:
             continue
-        pb, on, snr, phb = A.apply_knob(CFG, change, prot, True, 30.0, ph)
-        diffs = [i for i in range(len(ph)) if phb[i] != ph[i]]
+        pb, on, snr, vb = A.apply_knob(change, prot, True, 30.0, v)
+        diffs = [k for k in A.PHYSICS_FIELDS if vb[k] != v[k]]
         kind = change[0]
         if kind == "field":
-            assert phb[1] == change[1] and phb[5:14] == A.catalogue_numbers(change[1])[:9] and pb is prot
+            assert vb["field_T"] == change[1] and [vb[k] for k in A.TISSUE_NUMBERS] == A.catalogue_numbers(change[1])[:9] and pb is prot
         elif kind == "b0":
-            assert diffs == [2] or (diffs == [] and change[1] == ph[2])
+            assert diffs == ["b0_mode"] or (diffs == [] and change[1] == v["b0_mode"])
         elif kind == "tier":
-            assert diffs == [change[1]] and phb[change[1]] is False
+            assert diffs == [change[1]] and vb[change[1]] is False
         elif kind == "bare":
-            assert diffs == [0] and A._physics_from_inputs(CFG, *phb) is None
+            assert diffs == ["on"] and A.physics_from(vb) is None
         elif kind == "snr":
             assert diffs == [] and (on, snr) == ((False, 30.0) if change[1] is None else (True, change[1]))
         elif kind == "shape":
             assert diffs == [] and all(s.shape == change[1] for s in pb.shells) and [s.b for s in pb.shells] == [s.b for s in prot.shells]
+        if kind in ("field", "b0", "tier"):
+            with pytest.raises(ValueError, match="which is off for A"):
+                A.apply_knob(change, prot, True, 30.0, _values(on=False))
     with pytest.raises(ValueError, match="unknown knob"):
-        A.apply_knob(CFG, ("what", 1), prot, True, 30.0, ph)
+        A.apply_knob(("what", 1), prot, True, 30.0, v)
 
 
 def test_compare_is_symmetric_in_its_pairs_and_zero_for_the_same_run():
@@ -96,3 +107,47 @@ def test_the_gradient_table_names_the_shell_the_scanner_cannot_play():
     table, ok = A.gradient_text(prot, CFG["shapes"], "prisma")
     assert "70 mT/m" in table and "194 mT/m" in table and "cannot play" in table and not ok      # shell 2: b 3000 at δ 8 / Δ 20
     assert A.gradient_text(prot, CFG["shapes"], "connectom")[1] and A.gradient_text(prot, CFG["shapes"], A.NO_SCANNER)[1]
+
+
+class _Demo(P.Source):
+    """A demo source without replay data: validates as a tiered layout would."""
+    mode = "demo"
+    tiers = True
+
+    def validate(self, protocol, physics):
+        if physics and not physics.bare and not self.tiers:
+            raise ValueError("bare only")
+        return P.measurements(protocol, self.shapes)
+
+
+def test_the_runs_are_planned_and_refused_before_any_work():
+    """plan_runs: A alone, A + B with a knob, the scanner's refusal naming the run, the source's refusal, and the
+    upload refused in demo mode."""
+    src = _Demo(CFG)
+    v = _values()
+    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, A.NO_SCANNER, v, ROWS)
+    assert [r[0] for r in runs] == ["A"] and runs[0][4].field_T == 3.0
+    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "SNR → 10", A.NO_SCANNER, v, ROWS)
+    assert [r[0] for r in runs] == ["A", "B"] and runs[1][3] == 10.0 and runs[1][1] is runs[0][1]
+    with pytest.raises(ValueError, match="cannot play run A"):
+        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, "low_field", v, ROWS)
+    with pytest.raises(ValueError, match="cannot play run B"):
+        A.plan_runs(CFG, src, "clinical b1000 x 30", 1, True, 30.0, None, "every shell's pulse timing → d8-D20 (Connectome 2.0 δ 8 / Δ 20 ms)", "prisma", v, ROWS)
+    src.tiers = False
+    with pytest.raises(ValueError, match="bare only"):
+        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, A.NO_SCANNER, v, ROWS)
+    with pytest.raises(ValueError, match="full mode"):
+        A.plan_runs(CFG, src, A.UPLOADED, 2, True, 30.0, "x.scheme", A.NO_KNOB, A.NO_SCANNER, _values(on=False), ROWS)
+    with pytest.raises(ValueError, match="unknown knob"):
+        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "twist", A.NO_SCANNER, v, ROWS)
+
+
+def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
+    v = list(_values().values())
+    one = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, *v, *ROWS)
+    two = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, *v, *ROWS)
+    keys = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 8, *v, *ROWS)
+    small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, *v, *ROWS)
+    assert 60 <= small < one < two <= 480 and one < keys <= 480
+    assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, *v, *ROWS) == 480
+    assert len(A.OUTPUTS) == 16

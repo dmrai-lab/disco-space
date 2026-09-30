@@ -32,7 +32,7 @@ def main():
     token = os.environ.get("HF_TOKEN") or get_token()
     api = HfApi(token=token)
     rev = api.repo_info(a.space, repo_type="space").sha
-    job = api.run_job(image=f"hf.co/spaces/{a.space}", command=["bash", "-c", SCRIPT], env={"SPACE": a.space},
+    job = api.run_job(image=f"hf.co/spaces/{a.space}", command=["bash", "-c", SCRIPT],
                       secrets={"HF_TOKEN": token}, flavor=a.flavor, timeout=a.timeout, name=f"disco-space-gate-{rev[:8]}")
     print(f"job {job.id} on {a.flavor}: the image of {a.space} (repo at {rev})", flush=True)
     t0 = time.time()

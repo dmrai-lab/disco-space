@@ -25,7 +25,7 @@ def layout():
         pytest.skip("the gate runs on a GPU")
     pytest.importorskip("huggingface_hub")
     t0 = time.perf_counter()
-    lay = P.Layout(CFG, local=os.environ.get("DISCO_MOMENTS"))
+    lay = P.source(CFG)
     lay.warm()
     lay.load_seconds = time.perf_counter() - t0
     return lay
@@ -38,19 +38,12 @@ def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layou
     3 T and 7 T with every tier on and the field along z (the references' setting)."""
     import nibabel as nib
     from huggingface_hub import hf_hub_download
-    p, _ = P.disco_protocol(CFG)
-    m = P.measurements(p, layout.shapes)
+    p, order = P.disco_protocol(CFG)                                   # order: the table's rows in the protocol's order
     physics = None if run == "bare" else P.Physics.at(float(run[:-1]))
-    dwi, floor, secs = P.replay(layout, m, physics)
-    ref_path = hf_hub_download(CFG["data"]["repo"], f"disco/reference/disco_replay_{run}.nii.gz", repo_type="dataset")
-    ref = np.asarray(nib.load(ref_path).dataobj, np.float64)
-    # the reference's rows follow the table's order; ours put the b = 0 rows first, then the shells in table order
-    bv = np.loadtxt(os.path.join(P.DATA_DIR, "DiSCo_gradients.bvals")).ravel()
-    b0 = bv < 50
-    centres = np.array([s["b"] for s in CFG["disco"]["shells"]])
-    which = np.argmin(np.abs(bv[:, None] - centres[None, :]), axis=1)
-    order = np.concatenate([np.flatnonzero(b0)] + [np.flatnonzero((which == k) & ~b0) for k in range(len(centres))])
-    ref = ref[..., order]
+    m = layout.validate(p, physics)
+    dwi, floor, secs = layout.replay(m, physics)
+    ref_path = hf_hub_download(CFG["data"]["repo"], f"disco/reference/disco_replay_{run}.nii.gz", repo_type="dataset", revision=CFG["data"]["revision"])
+    ref = np.asarray(nib.load(ref_path).dataobj, np.float64)[..., order]
     both = np.isfinite(dwi) & (ref != 0)
     d = np.abs(dwi - ref)[both]
     print(f"\nreference check {run}: max |dS| {d.max():.2e}, 99.9 % {np.quantile(d, 0.999):.2e}, median {np.median(d):.2e} "

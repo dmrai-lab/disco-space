@@ -1,9 +1,6 @@
 #!/bin/bash
-# The Space's entry: caches on the persistent volume when /data is writable, else on the ephemeral disk.
+# The Space's entry: the caches named by the image's environment (JAX_COMPILATION_CACHE_DIR, HF_HOME under /data, the
+# container's own disk) are created, then the page serves; it downloads the layout from the Hub while it comes up.
 set -e
-if ! ( mkdir -p /data/jax-cache /data/hf 2>/dev/null && touch /data/.w 2>/dev/null ); then
-  export JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache HF_HOME=/tmp/hf
-  mkdir -p /tmp/jax-cache /tmp/hf
-fi
-python -c "import jax; print('devices', jax.devices(), flush=True)"
+mkdir -p "$JAX_COMPILATION_CACHE_DIR" "$HF_HOME"
 exec python -m space.app

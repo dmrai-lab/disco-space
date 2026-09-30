@@ -1,13 +1,14 @@
-"""The DiSCo Space's pipeline: an acquisition on the replay layout -> the DWI of the 40^3 grid -> noise -> CSD ->
+"""The DiSCo Space's pipeline: an acquisition on a replay source -> the DWI of the 40^3 grid -> noise -> CSD ->
 probabilistic tracking from the sixteen regions -> the 16 x 16 connectome against the dataset's ground truth. Plain
 functions with their timings; nothing here draws or reads a widget.
 
-The data path is dmipy-sim's shape-moment layout (``dmipy_sim.replay.shape_moments``): the DiSCo replay pack
-contracted once per PGSE timing class ("shape"), so a protocol on those classes at any b-values and directions is an
-elementwise kernel on device-resident rows. The CSD is dmipy-fit's ``csd_tournier07_jax`` at order 8 with the
-response from the volume's single-fibre voxels; the tracker is dmipy-tract's ``track``; the score is the Pearson
-correlation of the symmetrised streamline counts with the strand-count and cross-sectional-area matrices over the
-120 region pairs, as the replay paper's ``disco_tract.py`` scores.
+Two sources replay the same walk. :class:`Layout` (demo mode) is dmipy-sim's shape-moment layout: the DiSCo replay
+pack contracted once per stored pulse timing ("class"), so a protocol on those classes at any b-values, directions,
+tissue and field is an elementwise kernel on device-resident rows, in seconds. :class:`Columns` (full mode) is the
+columnar replay pack itself, read once per run for any pulse timing, in minutes. The CSD is dmipy-fit's batched
+Tournier 2007 solver at order 8 on the response ``white_matter_response_tournier07`` estimates from the volume; the
+tracker is dmipy-tract's ``track``; the score is the Pearson correlation of the symmetrised streamline counts with
+the strand-count and cross-sectional-area matrices over the 120 region pairs.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ try:
     import tomllib                                   # 3.11+
 except ModuleNotFoundError:                          # the ZeroGPU image is Python 3.10
     import tomli as tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import numpy as np
@@ -28,6 +29,11 @@ CONFIG_PATH = os.path.join(HERE, "config.toml")
 DATA_DIR = os.path.join(ROOT, "data")
 SH_ORDER = 8
 N_REGIONS = 16
+B0_MAX = 50.0                                        # s/mm^2: a row below it is a b = 0 measurement, everywhere in the pipeline
+BAND_TOL = 0.005                                     # the band tolerance (x the pack's floor) of the layout and of a full replay
+VOXEL_M = 25e-6                                      # DiSCo's voxel; the strands' coordinate unit
+BACKENDS = ("jax", "torch")
+MODES = ("demo", "full")
 
 
 def config(path=CONFIG_PATH):
@@ -35,40 +41,34 @@ def config(path=CONFIG_PATH):
         return tomllib.load(f)
 
 
-BACKENDS = ("jax", "torch")
-MODES = ("demo", "full")
-
-
 def mode(cfg):
-    """``demo``: the prebaked shape-moment layout (seconds; the stored pulse timings, the free knobs), what the hosted
-    Spaces run. ``full``: the columnar replay pack itself (minutes per volume; any timing, any waveform, every tier),
-    what the same image does with the pack beside it. ``DISCO_MODE`` in the environment, else ``[mode] mode``."""
-    m = os.environ.get("DISCO_MODE") or cfg.get("mode", {}).get("mode", "demo")
+    """``demo``: the shape-moment layout (seconds; the stored pulse timings). ``full``: the columnar replay pack
+    (minutes per volume; any timing). ``DISCO_MODE`` in the environment, else ``[mode] mode``."""
+    m = os.environ.get("DISCO_MODE") or cfg["mode"]["mode"]
     if m not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {m!r}")
     return m
 
 
 def columns_uri(cfg):
-    """Where full mode reads the columnar pack: ``DISCO_COLUMNS`` (a directory, or ``hf://owner/name/prefix`` at the
-    Hub's 45 MB/s), else ``[mode] columns``."""
-    return os.environ.get("DISCO_COLUMNS") or cfg.get("mode", {}).get("columns", "hf://SubstrateCommons/disco-replay/disco")
+    """Where full mode reads the columnar pack: ``DISCO_COLUMNS`` (a directory, or ``hf://owner/name/prefix``), else
+    ``[mode] columns``."""
+    return os.environ.get("DISCO_COLUMNS") or cfg["mode"]["columns"]
 
 
 def resident(cfg):
     """Whether the layout's device tensors stay across calls: ``DISCO_RESIDENT`` (``0``/``false`` for a pool that
-    drops the device between calls) else the config's ``[compute] resident`` (true)."""
+    drops the device between calls) else ``[compute] resident``."""
     env = os.environ.get("DISCO_RESIDENT")
     if env is not None:
         return env.strip().lower() not in ("0", "false", "no")
-    return bool(cfg.get("compute", {}).get("resident", True))
+    return bool(cfg["compute"]["resident"])
 
 
 def backend(cfg):
-    """The compute backend: ``DISCO_BACKEND`` in the environment, else the config's ``[compute] backend`` (``jax``).
-    ``torch`` is for a host that runs PyTorch only (disco-space#2): the layout image, the CSD solver and the tracker
-    all switch together."""
-    b = os.environ.get("DISCO_BACKEND") or cfg.get("compute", {}).get("backend", "jax")
+    """The compute backend, ``jax`` or ``torch`` (a host that runs PyTorch only: the layout image, the CSD solver
+    and the tracker switch together): ``DISCO_BACKEND`` in the environment, else ``[compute] backend``."""
+    b = os.environ.get("DISCO_BACKEND") or cfg["compute"]["backend"]
     if b not in BACKENDS:
         raise ValueError(f"backend must be one of {BACKENDS}, got {b!r}")
     return b
@@ -78,15 +78,22 @@ def backend(cfg):
 
 @dataclass(frozen=True)
 class Shell:
-    """One shell: the timing class it plays, its b-value (s/mm^2) and its direction count. In full mode a shell may
-    carry its own pulse timing instead of a stored class: ``delta``, ``Delta``, ``TE`` in seconds (``shape`` then
-    names it only)."""
+    """One shell: the timing class it plays, its b-value (s/mm^2) and its direction count. A shell made by
+    :meth:`free` carries its own pulse timing (``delta``, ``Delta``, ``TE`` in seconds) instead of a stored class,
+    and ``shape`` names it."""
     shape: str
     b: float
     n_dirs: int
     delta: Optional[float] = None
     Delta: Optional[float] = None
     TE: Optional[float] = None
+
+    @classmethod
+    def free(cls, b, n_dirs, delta, Delta, TE):
+        """A shell at its own square-pulse timing (seconds), named ``d<delta>-D<Delta>-TE<TE>`` in ms."""
+        if not (0 < delta < Delta < TE):
+            raise ValueError(f"a free pulse timing needs 0 < delta < Delta < TE, got {delta}, {Delta}, {TE}")
+        return cls(f"d{delta * 1e3:g}-D{Delta * 1e3:g}-TE{TE * 1e3:g}", float(b), int(n_dirs), float(delta), float(Delta), float(TE))
 
     @property
     def free_timing(self):
@@ -134,85 +141,104 @@ class Measurements:
 
     @property
     def b0(self):
-        return self.bvals < 50
+        return self.bvals < B0_MAX
 
 
 def measurements(protocol, shapes):
-    """The rows of ``protocol`` with the timings of ``shapes`` (the config's ``[shapes]`` table)."""
-    from dmipy_tract import hemisphere
+    """The rows of ``protocol`` with the timings of ``shapes`` (the config's ``[shapes]`` table) or the shells' own."""
     timing = {}
     for s in protocol.shells:
         if s.free_timing:
-            if s.Delta is None or s.TE is None or not (0 < s.delta < s.Delta < s.TE):
-                raise ValueError(f"a free pulse timing needs 0 < delta < Delta < TE, got {s}")
-            timing[s.shape] = dict(delta=float(s.delta), Delta=float(s.Delta), TE=float(s.TE))
+            timing[s.shape] = dict(delta=s.delta, Delta=s.Delta, TE=s.TE)
         elif s.shape not in shapes:
             raise KeyError(f"no timing class {s.shape!r}; the layout holds {sorted(shapes)}")
         else:
             timing[s.shape] = shapes[s.shape]
     names = [protocol.shells[0].shape] * protocol.n_b0
-    b = [0.0] * protocol.n_b0
-    dirs = [np.tile([0.0, 0.0, 1.0], (protocol.n_b0, 1))]
     for s in protocol.shells:
-        names += [s.shape] * s.n_dirs; b += [s.b] * s.n_dirs
-        dirs.append(hemisphere(s.n_dirs))
-    dirs = np.concatenate(dirs) if protocol.directions is None else np.asarray(protocol.directions, np.float64)
-    b = np.asarray(b, np.float64) if protocol.bvals is None else np.asarray(protocol.bvals, np.float64)
+        names += [s.shape] * s.n_dirs
+    if protocol.directions is None:
+        from dmipy_tract import hemisphere
+        dirs = np.concatenate([np.tile([0.0, 0.0, 1.0], (protocol.n_b0, 1))] + [hemisphere(s.n_dirs) for s in protocol.shells])
+    else:
+        dirs = np.asarray(protocol.directions, np.float64)
+    if protocol.bvals is None:
+        b = np.asarray([0.0] * protocol.n_b0 + [s.b for s in protocol.shells for _ in range(s.n_dirs)], np.float64)
+    else:
+        b = np.asarray(protocol.bvals, np.float64)
     delta = np.array([timing[n]["delta"] for n in names]); Delta = np.array([timing[n]["Delta"] for n in names])
     TE = np.array([timing[n]["TE"] for n in names])
     return Measurements(b, dirs, np.asarray(names), delta, Delta, TE)
 
 
+def protocol_from_rows(bvals, dirs, group, make_shell, *, name):
+    """A Protocol from a table of rows (``bvals`` in s/mm^2, ``dirs`` (N, 3) in any norm, ``group`` an integer per
+    row saying which shell it belongs to) and ``make_shell(group, rows) -> Shell``: the b = 0 rows first (their
+    direction set to z), then every group's rows in ascending group order, each row's own b-value and unit
+    direction. Returns the protocol and ``idx``, the table rows in the protocol's order."""
+    bvals = np.asarray(bvals, np.float64).ravel(); dirs = np.asarray(dirs, np.float64); group = np.asarray(group)
+    if dirs.ndim != 2 or dirs.shape != (len(bvals), 3):
+        raise ValueError(f"dirs must be ({len(bvals)}, 3), got {dirs.shape}")
+    if np.any(bvals < 0) or not np.all(np.isfinite(bvals)) or not np.all(np.isfinite(dirs)):
+        raise ValueError("the table has a negative or non-finite entry")
+    b0 = bvals < B0_MAX
+    if not b0.any():
+        raise ValueError("the table needs a b = 0 row (the DWI is normalised by it)")
+    norm = np.linalg.norm(dirs, axis=1)
+    if np.any(norm[~b0] == 0):
+        raise ValueError("a b > 0 row has a zero direction")
+    dirs = np.where(b0[:, None], np.array([0.0, 0.0, 1.0]), dirs / np.where(norm > 0, norm, 1.0)[:, None])
+    idx = [np.flatnonzero(b0)]; shells = []
+    for g in np.unique(group[~b0]):
+        rows = np.flatnonzero((group == g) & ~b0)
+        idx.append(rows); shells.append(make_shell(g, rows))
+    idx = np.concatenate(idx)
+    return Protocol(tuple(shells), n_b0=int(b0.sum()), directions=dirs[idx], bvals=bvals[idx], name=name), idx
+
+
 def protocol_from_scheme(path, *, name="uploaded scheme"):
     """A Camino ``STEJSKALTANNER`` scheme file (``gx gy gz |G| Delta delta TE`` per row, SI units) as a Protocol
-    with every row's own b-value, direction and pulse timing, for full mode: one shell per distinct
-    (b, delta, Delta, TE), the b = 0 rows first. Read by :func:`dmipy_sim.io.mcdc.read_scheme`, the one reader of
-    that format."""
+    with every row's own b-value, direction and pulse timing, for full mode: one free shell per distinct
+    (b, delta, Delta, TE) in that order, the b = 0 rows first. Read by :func:`dmipy_sim.io.mcdc.read_scheme`, the
+    one reader of that format."""
     from dmipy_sim.io.mcdc import read_scheme
-    seq = read_scheme(path)
-    enc = seq.encoding
+    enc = read_scheme(path).encoding
     b = np.asarray(enc.bvalues, np.float64) / 1e6
-    dirs = np.asarray(enc.gradient_directions, np.float64)
     delta = np.asarray(enc.delta, np.float64); Delta = np.asarray(enc.Delta, np.float64); TE = np.asarray(enc.TE, np.float64)
-    b0 = b < 50
-    if not b0.any():
-        raise ValueError("the scheme needs a b = 0 row (the DWI is normalised by it)")
-    dirs = np.where(b0[:, None], np.array([0.0, 0.0, 1.0]), dirs / np.where(np.linalg.norm(dirs, axis=1) > 0, np.linalg.norm(dirs, axis=1), 1.0)[:, None])
     keys = np.stack([np.round(b), np.round(delta * 1e6), np.round(Delta * 1e6), np.round(TE * 1e6)], 1)
-    order = np.r_[np.flatnonzero(b0), np.flatnonzero(~b0)]
-    shells = []
-    for k in np.unique(keys[~b0], axis=0):
-        rows = np.flatnonzero((keys == k).all(1) & ~b0)
-        shells.append(Shell(f"d{k[1] / 1e3:g}-D{k[2] / 1e3:g}-TE{k[3] / 1e3:g}", float(k[0]), int(len(rows)),
-                            delta=float(delta[rows[0]]), Delta=float(Delta[rows[0]]), TE=float(TE[rows[0]])))
-    # the rows in the protocol's order: b = 0 first (the first shell's timing), then each shell's rows
-    idx = [np.flatnonzero(b0)] + [np.flatnonzero((keys == k).all(1) & ~b0) for k in np.unique(keys[~b0], axis=0)]
-    idx = np.concatenate(idx)
-    return Protocol(tuple(shells), n_b0=int(b0.sum()), directions=dirs[idx], bvals=b[idx], name=name)
+    _, group = np.unique(keys, axis=0, return_inverse=True)
+    def make_shell(g, rows):
+        r = rows[0]
+        return Shell.free(keys[r, 0], len(rows), delta[r], Delta[r], TE[r])
+    return protocol_from_rows(b, np.asarray(enc.gradient_directions, np.float64), group.ravel(), make_shell, name=name)[0]
 
 
 def disco_protocol(cfg):
-    """DiSCo's own 364-measurement protocol (its gradient table, its per-shell timings) as a Protocol with every
-    row's own direction and b-value: the acquisition the reference volumes were replayed with. Returns it with the
-    rows' b-values in the protocol's order."""
+    """DiSCo's own 364-measurement protocol (its gradient table, its per-shell timing classes from ``[disco]``) as
+    a Protocol with every row's own direction and b-value: the acquisition the reference volumes were replayed with.
+    Returns it and the table rows in the protocol's order (the reference volumes follow the table's)."""
     bv = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_gradients.bvals")).ravel()
     dirs = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_gradients_dipy.bvecs"))
     if dirs.shape[0] == 3:
         dirs = dirs.T
-    dirs = np.where(bv[:, None] > 0, dirs, np.array([0.0, 0.0, 1.0]))
-    dirs = dirs / np.linalg.norm(dirs, axis=1, keepdims=True)           # the text table's rounding leaves 4e-6
     shells = cfg["disco"]["shells"]                                     # [{b, shape}] in the table's row order
     centres = np.array([s["b"] for s in shells])
     which = np.argmin(np.abs(bv[:, None] - centres[None, :]), axis=1)
-    b0 = bv < 50                                    # rows: the b = 0 first, then the shells in the table's order
-    idx = [np.flatnonzero(b0)]
-    sh = []
-    for k, s in enumerate(shells):
-        rows = np.flatnonzero((which == k) & ~b0)
-        if len(rows):
-            idx.append(rows); sh.append(Shell(s["shape"], float(np.round(bv[rows].mean())), int(len(rows))))
-    idx = np.concatenate(idx)
-    return Protocol(tuple(sh), n_b0=int(b0.sum()), directions=dirs[idx], bvals=bv[idx], name="DiSCo 364"), bv[idx]
+    return protocol_from_rows(bv, dirs, which, lambda k, rows: Shell(shells[k]["shape"], float(np.round(bv[rows].mean())), int(len(rows))),
+                              name="DiSCo 364")
+
+
+def preset_protocol(cfg, name):
+    """A ``[presets]`` entry of the config as a Protocol."""
+    p = cfg["presets"][name]
+    return Protocol(tuple(Shell(s["shape"], float(s["b"]), int(s["n_dirs"])) for s in p["shells"]), n_b0=int(p["n_b0"]), name=name)
+
+
+def retime(protocol, shape):
+    """``protocol`` with every shell on the timing class ``shape`` (b-values, directions and counts kept): the A/B
+    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another."""
+    return Protocol(tuple(Shell(shape, s.b, s.n_dirs) for s in protocol.shells), n_b0=protocol.n_b0,
+                    directions=protocol.directions, bvals=protocol.bvals, name=f"{protocol.name} on {shape}")
 
 
 def write_volumes(res, out_dir, *, prefix="disco"):
@@ -230,125 +256,11 @@ def write_volumes(res, out_dir, *, prefix="disco"):
     return paths
 
 
-# ---- the data ---------------------------------------------------------------------------------------------------
-
-class Layout:
-    """What the pipeline reads: the shape-moment layout (device-resident rows), the DiSCo mask, regions and the
-    two ground-truth matrices."""
-
-    def __init__(self, cfg, *, local=None):
-        import nibabel as nib
-        from dmipy_sim.replay.shape_moments import ShapeMoments
-        d = cfg["data"]
-        uri = local or f"hf://{d['repo']}/{d['moments']}"
-        self.moments = ShapeMoments.open(uri, revision=d.get("revision") or None) if uri.startswith("hf://") else ShapeMoments(uri)
-        self.shapes = cfg["shapes"]
-        self.backend = backend(cfg)
-        self.resident = resident(cfg)
-        want = d.get("source_manifest_sha256")
-        got = self.moments.manifest["source"]["manifest_sha256"]
-        if want and got != want:
-            raise ValueError(f"the layout at {uri} was contracted from columnar manifest {got[:12]}, the config pins {want[:12]}")
-        missing = [s for s in self.shapes if s not in self.moments.shapes]
-        if missing:
-            raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {self.moments.shapes}")
-        self.mask = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_mask.nii.gz")).dataobj) > 0
-        self.rois = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_ROIs.nii.gz")).dataobj).astype(np.int32)
-        self.gt_count = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Strands_Count.txt"))
-        self.gt_area = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Cross-Sectional_Area.txt"))
-        if tuple(self.moments.grid.shape) != self.mask.shape:
-            raise ValueError(f"the layout's grid {tuple(self.moments.grid.shape)} is not the mask's {self.mask.shape}")
-
-    def accuracy(self):
-        """What the layout is an approximation of, from its manifest (iteration 3 of disco-space#4): the band count
-        and the band error at the built amplitude, the tolerance, the source pack (id, its certificate's median
-        floor, its manifest sha) and the layout's code commit; rows of ``(what, value)`` for the page."""
-        m = self.moments.manifest; src = m["source"]
-        rows = [["temporal bands kept (K)", str(m["K"])],
-                ["band error at the built amplitude (worst class)", f"{m['band_error']:.2e}"],
-                ["band tolerance (× the pack's floor)", f"{m['tol']:g}"],
-                ["source pack", str(src.get("pack"))],
-                ["source pack's certified median floor", f"{src['floor']:.4g}"],
-                ["source manifest sha256", src["manifest_sha256"][:16]],
-                ["layout written by", f"{m.get('code', {}).get('commit', '?')[:12]} on {m.get('created', '?')}"],
-                ["pulses", "square (slew rate ∞), one TE per class; see the class table"],
-                ["tiers stored", "pool, contact, field" if m.get("tiers") else "none (bare diffusion only)"]]
-        return rows
-
-    def warm(self):
-        """Every timing class on the device (the first call to each compiles and transfers); when the tiles are not
-        kept resident (a pool that drops the device between calls), the padded host arrays are loaded into this
-        process instead, so a forked worker inherits them and pays the transfer alone."""
-        if not self.resident:
-            self.moments.preload(list(self.shapes))
-            return
-        for s in self.shapes:
-            self.moments.image(s, [0.0], [[0.0, 0.0, 1.0]], backend=self.backend)
-
-
-class Columns:
-    """Full mode's data: the columnar replay pack (:class:`dmipy_sim.replay.columnar.ColumnarPack`) at
-    :func:`columns_uri`, with the DiSCo mask, regions and ground truth beside it."""
-
-    def __init__(self, cfg, *, uri=None):
-        import nibabel as nib
-        from dmipy_sim.replay.columnar import ColumnarPack
-        self.uri = uri or columns_uri(cfg)
-        self.pack = ColumnarPack(self.uri, workers=int(cfg.get("mode", {}).get("workers", 16)))
-        self.shapes = cfg["shapes"]
-        self.backend = "jax"; self.resident = True
-        self.mask = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_mask.nii.gz")).dataobj) > 0
-        self.rois = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_ROIs.nii.gz")).dataobj).astype(np.int32)
-        self.gt_count = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Strands_Count.txt"))
-        self.gt_area = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Cross-Sectional_Area.txt"))
-        if tuple(self.pack.grid.shape) != self.mask.shape:
-            raise ValueError(f"the pack's grid {tuple(self.pack.grid.shape)} is not the mask's {self.mask.shape}")
-        self.remote = self.uri.startswith("hf://")
-
-    def warm(self):
-        return
-
-    def sequence(self, meas):
-        """The one ScannerSequence of the measurements (PGSE, square pulses, every row's own delta / Delta at the rows'
-        common TE; several TEs are several sequences and refused here)."""
-        import dmipy_sim as d
-        TEs = np.unique(np.round(meas.TE, 9))
-        if len(TEs) != 1:
-            raise ValueError(f"full mode replays one echo time per run; the rows have {len(TEs)}")
-        return d.pgse(meas.dirs.tolist(), meas.delta, meas.Delta, bvalues=meas.bvals * 1e6, TE=float(TEs[0]), n_t=1000, slew_rate=np.inf)
-
-    def plan(self, meas, tissue=None, scanner=None):
-        """What the replay will read and about how long it takes: the pack's plan plus a rate (the Hub's measured 45 MB/s,
-        a local disk's 500 MB/s)."""
-        plan = self.pack.plan(self.sequence(meas), tissue=tissue, scanner=scanner, tol=0.005)
-        rate = 45e6 if self.remote else 500e6
-        plan["estimated_seconds"] = plan["bytes"] / rate
-        return plan
-
-
-def replay_full(columns, meas, physics=None, *, progress=None):
-    """``(dwi, floor, seconds)`` from the columnar pack: one pass over its rows for the measurements' sequence, the
-    split-half floor per voxel; S0-normalised like :func:`replay`. The field's direction is the pack's z here
-    (the columnar study has no orientation knob yet: disco-space#4)."""
-    from dmipy_sim.replay.study import Study, Protocol as SProtocol, Acquisition
-    t0 = time.perf_counter()
-    tissue = physics.tissue() if physics else None
-    scanner = physics.field_T if tissue is not None else None
-    if physics and not np.allclose(physics.b0_direction, (0.0, 0.0, 1.0)):
-        raise ValueError("full mode replays the field along z only")
-    seq = columns.sequence(meas)
-    study = Study(SProtocol([Acquisition(seq, name="run")]), tissues=[tissue], scanners=[scanner])
-    S, floor, plan = columns.pack.image_study(study, tol=0.005, chunk_rows=1_000_000, progress=progress)
-    S = S[0]; floor = floor[0]
-    S0 = np.nanmean(S[..., meas.b0], axis=-1, keepdims=True)
-    return S / S0, floor, time.perf_counter() - t0
-
-
-# ---- the physics: tissue and scanner (disco-space#4 iteration 1) ----------------------------------------------------
-FIELDS = (0.064, 1.5, 3.0, 7.0, 11.7)                    # the page's field presets (T)
+# ---- the physics: tissue and scanner --------------------------------------------------------------------------------
 CATALOGUE_FIELDS = (1.5, 3.0, 7.0)                       # where dmipy-sim's white-matter catalogue has cited relaxation
 POOLS = ("intra", "extra", "myelin")                     # the DiSCo pack's pools, as its tissue mapping names them
-B0_PRESETS = {"along z (the strands' frame)": (0.0, 0.0, 1.0), "transverse (x): 90° from z, as in a biplanar magnet like the Swoop": (1.0, 0.0, 0.0)}
+B0_ALONG_Z = (0.0, 0.0, 1.0)
+B0_TRANSVERSE = (1.0, 0.0, 0.0)
 
 
 def catalogue(field_T):
@@ -357,6 +269,8 @@ def catalogue(field_T):
     numbers were cited at (the page says so when it is not the chosen one)."""
     import warnings
     from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
+    if not float(field_T) > 0:
+        raise ValueError(f"the field is in tesla, got {field_T}")
     near = min(CATALOGUE_FIELDS, key=lambda f: abs(np.log(f / float(field_T))))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -384,7 +298,7 @@ class Physics:
     rho: float
     chi_iso: float
     chi_aniso: float
-    b0_direction: tuple = (0.0, 0.0, 1.0)
+    b0_direction: tuple = B0_ALONG_Z
     relaxation: bool = True
     contact: bool = True
     field: bool = True
@@ -402,7 +316,7 @@ class Physics:
             raise ValueError("b0_direction is a unit vector")
 
     @classmethod
-    def at(cls, field_T, *, b0_direction=(0.0, 0.0, 1.0), **overrides):
+    def at(cls, field_T, *, b0_direction=B0_ALONG_Z, **overrides):
         """The catalogue's white matter at ``field_T`` with ``overrides`` (any field of the class)."""
         c = catalogue(field_T); c.pop("catalogue_field")
         return cls(field_T=float(field_T), b0_direction=tuple(float(x) for x in b0_direction), **{**c, **overrides})
@@ -410,6 +324,10 @@ class Physics:
     @property
     def bare(self):
         return not (self.relaxation or self.contact or self.field)
+
+    @property
+    def along_z(self):
+        return bool(np.allclose(self.b0_direction, B0_ALONG_Z))
 
     def tissue(self):
         from dmipy_sim.spec.tissue import Tissue
@@ -427,26 +345,223 @@ class Physics:
         return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {'+'.join(tiers)}"
 
 
-# ---- the stages -------------------------------------------------------------------------------------------------
-
-def replay(layout, meas, physics=None):
-    """``(dwi, floor, seconds)``: the S0-normalised signal of every voxel per measurement (NaN outside the pack's
-    rows), the largest split-half floor over the timing classes, and the time; at ``physics`` (a :class:`Physics`:
-    the tissue, the field and its direction), else bare diffusion."""
-    t0 = time.perf_counter()
-    S = np.full(layout.mask.shape + (len(meas.bvals),), np.nan)
-    floor = np.zeros(layout.mask.shape)
+def tissue_and_scanner(physics):
+    """``(tissue, scanner)`` for a replay at ``physics``: ``(None, None)`` for bare diffusion."""
     tissue = physics.tissue() if physics else None
-    scanner = physics.field_T if tissue is not None else None
-    b0 = physics.b0_direction if physics else (0.0, 0.0, 1.0)
-    for name in np.unique(meas.shape):
-        rows = meas.shape == name
-        S[..., rows], f = layout.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=layout.backend,
-                                                resident=layout.resident, tissue=tissue, scanner=scanner, b0_direction=b0)
-        floor = np.fmax(floor, f)
-    S0 = np.nanmean(S[..., meas.b0], axis=-1, keepdims=True)
-    return S / S0, floor, time.perf_counter() - t0
+    return tissue, (physics.field_T if tissue is not None else None)
 
+
+# ---- the sources: what replays the walk -------------------------------------------------------------------------------
+
+class Source:
+    """What a replay source has beside its data: the DiSCo mask, the sixteen regions, the two ground-truth
+    matrices, the config's timing classes, the compute backend, and ``mode`` (``demo`` or ``full``). A source
+    validates a run, replays measurements, plans a replay and reports its accuracy."""
+    mode = ""
+
+    def __init__(self, cfg):
+        import nibabel as nib
+        self.cfg = cfg
+        self.shapes = cfg["shapes"]
+        self.backend = backend(cfg)
+        self.mask = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_mask.nii.gz")).dataobj) > 0
+        self.rois = np.asarray(nib.load(os.path.join(DATA_DIR, "DiSCo_ROIs.nii.gz")).dataobj).astype(np.int32)
+        self.gt_count = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Strands_Count.txt"))
+        self.gt_area = np.loadtxt(os.path.join(DATA_DIR, "DiSCo_Connectivity_Matrix_Cross-Sectional_Area.txt"))
+
+    def check_grid(self, grid_shape, what):
+        if tuple(grid_shape) != self.mask.shape:
+            raise ValueError(f"{what}'s grid {tuple(grid_shape)} is not the mask's {self.mask.shape}")
+
+    def validate(self, protocol, physics):
+        """Refuses, before any work, a run this source cannot do; returns its measurements."""
+        return measurements(protocol, self.shapes)
+
+    def replay(self, meas, physics=None):
+        """``(dwi, floor, seconds)``: the S0-normalised signal of every voxel per measurement (NaN outside the
+        pack's rows), the split-half floor per voxel, and the time; at ``physics`` else bare diffusion."""
+        raise NotImplementedError
+
+    def plan(self, meas, physics=None):
+        """What a replay reads before any byte moves (None when the source has nothing to plan)."""
+        return None
+
+    def warm(self):
+        """Whatever the first run would otherwise pay (nothing for a source that reads per run)."""
+        return
+
+    def accuracy(self, res=None):
+        """Rows ``(what, value)`` saying what this source's replay is an approximation of, and ``res``'s own floor."""
+        rows = []
+        if res is not None:
+            f = floor_stats(res)
+            rows.append(["this run's floor: median / 99 % / max over voxels with signal", f"{f['median']:.4f} / {f['p99']:.4f} / {f['max']:.4f}"])
+        return rows
+
+
+def s0_normalised(S, b0):
+    return S / np.nanmean(S[..., b0], axis=-1, keepdims=True)
+
+
+class Layout(Source):
+    """Demo mode: dmipy-sim's shape-moment layout (``dmipy_sim.replay.shape_moments``) at the config's dataset
+    revision, or a local copy; every stored class's timing is the config's, and a tissue needs the layout's tiers."""
+    mode = "demo"
+
+    def __init__(self, cfg, *, local=None):
+        from dmipy_sim.replay.shape_moments import ShapeMoments
+        super().__init__(cfg)
+        d = cfg["data"]
+        uri = local or f"hf://{d['repo']}/{d['moments']}"
+        self.moments = ShapeMoments.open(uri, revision=d.get("revision") or None) if uri.startswith("hf://") else ShapeMoments(uri)
+        self.resident = resident(cfg)
+        want = d.get("source_manifest_sha256")
+        got = self.moments.manifest["source"]["manifest_sha256"]
+        if want and got != want:
+            raise ValueError(f"the layout at {uri} was contracted from columnar manifest {got[:12]}, the config pins {want[:12]}")
+        missing = [s for s in self.shapes if s not in self.moments.shapes]
+        if missing:
+            raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {self.moments.shapes}")
+        for name, t in self.shapes.items():
+            enc = self.moments.manifest["shapes"][name].get("encoding") or {}
+            for k in ("delta", "Delta", "TE"):
+                v = enc.get(k)
+                v = v[0] if isinstance(v, list) and v else v
+                if v is not None and abs(float(v) - float(t[k])) > 1e-9:
+                    raise ValueError(f"class {name}: the layout's {k} is {v} s, the config's {t[k]} s")
+        self.tiers = bool(self.moments.manifest.get("tiers"))
+        self.check_grid(self.moments.grid.shape, "the layout")
+
+    def validate(self, protocol, physics):
+        meas = measurements(protocol, self.shapes)
+        if physics and not physics.bare and not self.tiers:
+            raise ValueError("this layout holds bare diffusion only: switch the tissue panel off")
+        return meas
+
+    def replay(self, meas, physics=None):
+        t0 = time.perf_counter()
+        S = np.full(self.mask.shape + (len(meas.bvals),), np.nan)
+        floor = np.zeros(self.mask.shape)
+        tissue, scanner = tissue_and_scanner(physics)
+        b0 = physics.b0_direction if physics else B0_ALONG_Z
+        for name in np.unique(meas.shape):
+            rows = meas.shape == name
+            S[..., rows], f = self.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=self.backend,
+                                                 resident=self.resident, tissue=tissue, scanner=scanner, b0_direction=b0)
+            floor = np.fmax(floor, f)
+        return s0_normalised(S, meas.b0), floor, time.perf_counter() - t0
+
+    def default_physics(self):
+        """The tissue panel's default (``[physics]``), or None when it starts off or the layout has no tiers."""
+        p = self.cfg["physics"]
+        return Physics.at(float(p["default_field"])) if (p["default_on"] and self.tiers) else None
+
+    def warm(self):
+        """DiSCo's own protocol replayed once at the default physics: every class's kernel compiled and its rows on
+        the device at the row counts the default run uses. When the tiles are not kept resident (a pool that drops
+        the device between calls), the padded host arrays are loaded into this process instead, so a forked worker
+        inherits them and pays the transfer alone."""
+        if not self.resident:
+            self.moments.preload(list(self.shapes))
+            return
+        self.replay(measurements(disco_protocol(self.cfg)[0], self.shapes), self.default_physics())
+
+    def accuracy(self, res=None):
+        m = self.moments.manifest; src = m["source"]
+        rows = [["temporal bands kept (K)", str(m["K"])],
+                ["band error at the built amplitude (worst class)", f"{m['band_error']:.2e}"],
+                ["band tolerance (× the pack's floor)", f"{m['tol']:g}"],
+                ["source pack", str(src.get("pack"))],
+                ["source pack's certified median floor", f"{src['floor']:.4g}"],
+                ["source manifest sha256", src["manifest_sha256"][:16]],
+                ["layout written by", f"{m.get('code', {}).get('commit', '?')[:12]} on {m.get('created', '?')}"],
+                ["pulses", "square (slew rate ∞), one TE per class"],
+                ["tiers stored", "pool, contact, field" if self.tiers else "none (bare diffusion only)"]]
+        rows += super().accuracy(res)
+        if res is not None:
+            for name in np.unique(res.meas.shape):
+                sh = m["shapes"][name]; enc = sh.get("encoding") or {}
+                first = {k: (v[0] if isinstance(v, list) and v else v) for k, v in enc.items()}
+                rows.append([f"class {name}", f"δ {first.get('delta')} / Δ {first.get('Delta')} / TE {first.get('TE')} s, "
+                                              f"built at {float(sh.get('amplitude_built') or 0) * 1e3:.0f} mT/m, pathway amplitude {sh.get('pathway') or 1}"])
+        return rows
+
+
+class Columns(Source):
+    """Full mode: the columnar replay pack (:class:`dmipy_sim.replay.columnar.ColumnarPack`) at
+    :func:`columns_uri`, read once per run: one ScannerSequence per run (one echo time, one pulse kind, square
+    pulses), the tissue and field of the run, the field along the pack's z."""
+    mode = "full"
+    RATE = {True: 45e6, False: 500e6}                # bytes/s read from the Hub, from a local disk
+
+    def __init__(self, cfg, *, uri=None):
+        from dmipy_sim.replay.columnar import ColumnarPack
+        super().__init__(cfg)
+        self.uri = uri or columns_uri(cfg)
+        self.pack = ColumnarPack(self.uri, workers=int(cfg["mode"]["workers"]))
+        self.check_grid(self.pack.grid.shape, "the pack")
+        self.remote = self.uri.startswith("hf://")
+
+    def kinds(self, meas):
+        """The pulse kinds (``pgse`` / ``pgste``) of the classes the rows play; a free timing is PGSE."""
+        return sorted({self.shapes[n].get("kind", "pgse") if n in self.shapes else "pgse" for n in np.unique(meas.shape)})
+
+    def validate(self, protocol, physics):
+        meas = measurements(protocol, self.shapes)
+        if len(np.unique(np.round(meas.TE, 9))) != 1:
+            raise ValueError("full mode replays one echo time per run")
+        if len(self.kinds(meas)) != 1:
+            raise ValueError("full mode replays one pulse kind (PGSE or stimulated echo) per run")
+        if physics and not physics.along_z:
+            raise ValueError("full mode replays the field along z only")
+        return meas
+
+    def sequence(self, meas):
+        """The one ScannerSequence of the measurements: square pulses, every row's own delta / Delta at the rows'
+        common TE; a stimulated echo stores for TM = Delta - delta between 90° pulses."""
+        import dmipy_sim as d
+        TE = float(np.unique(np.round(meas.TE, 9))[0])
+        kind, = self.kinds(meas)
+        if kind == "pgste":
+            return d.pgste(meas.dirs.tolist(), meas.delta, meas.Delta - meas.delta, bvalues=meas.bvals * 1e6, n_t=1000,
+                           slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+        return d.pgse(meas.dirs.tolist(), meas.delta, meas.Delta, bvalues=meas.bvals * 1e6, TE=TE, n_t=1000, slew_rate=np.inf)
+
+    def plan(self, meas, physics=None):
+        """What the replay will read (the pack's plan: bands, modes, tiers, rows, bytes) and ``estimated_seconds``
+        at the source's read rate."""
+        tissue, scanner = tissue_and_scanner(physics)
+        plan = self.pack.plan(self.sequence(meas), tissue=tissue, scanner=scanner, tol=BAND_TOL)
+        plan["estimated_seconds"] = plan["bytes"] / self.RATE[self.remote]
+        return plan
+
+    def replay(self, meas, physics=None, *, progress=None):
+        from dmipy_sim.replay.study import Study, Protocol as SProtocol, Acquisition
+        t0 = time.perf_counter()
+        tissue, scanner = tissue_and_scanner(physics)
+        study = Study(SProtocol([Acquisition(self.sequence(meas), name="run")]), tissues=[tissue], scanners=[scanner])
+        S, floor, plan = self.pack.image_study(study, tol=BAND_TOL, chunk_rows=1_000_000, progress=progress)
+        self.last_plan = plan
+        return s0_normalised(S[0], meas.b0), floor[0], time.perf_counter() - t0
+
+    def accuracy(self, res=None):
+        m = self.pack.meta
+        rows = [["source pack", str(m.get("id"))], ["source pack's certified median floor", f"{self.pack.floor:.4g}"],
+                ["bands kept", str(self.pack.K)], ["band tolerance (× the pack's floor)", f"{BAND_TOL:g}"],
+                ["pulses", "square (slew rate ∞), one TE and one pulse kind per run"]]
+        plan = getattr(self, "last_plan", None)
+        if plan:
+            rows.append(["last replay read", f"{plan.get('rows', 0):,} rows, {plan.get('bytes', 0) / 1e9:.1f} GB, bands {plan.get('K')}, modes {plan.get('modes')}"])
+        return rows + super().accuracy(res)
+
+
+def source(cfg, *, local=None):
+    """The replay source the config's mode names: a :class:`Layout` (``DISCO_MOMENTS`` or ``local`` for a local
+    copy) or a :class:`Columns`."""
+    return Columns(cfg) if mode(cfg) == "full" else Layout(cfg, local=local or os.environ.get("DISCO_MOMENTS"))
+
+
+# ---- the stages -------------------------------------------------------------------------------------------------
 
 def add_noise(dwi, snr, seed=0, backend="jax"):
     """Rician noise at ``snr`` (the b = 0 SNR; the DWI is S0-normalised, so sigma = 1 / snr); ``None`` leaves the
@@ -465,19 +580,21 @@ def add_noise(dwi, snr, seed=0, backend="jax"):
 
 
 def scheme(meas):
+    """The measurements as dmipy-fit's acquisition scheme (SI b-values, the same b = 0 threshold as the pipeline)."""
     from dmipy_fit.core.acquisition_scheme import acquisition_scheme_from_bvalues
-    return acquisition_scheme_from_bvalues(meas.bvals * 1e6, meas.dirs, delta=meas.delta, Delta=meas.Delta, TE=meas.TE, b0_threshold=10e6)
+    return acquisition_scheme_from_bvalues(meas.bvals * 1e6, meas.dirs, delta=meas.delta, Delta=meas.Delta, TE=meas.TE, b0_threshold=B0_MAX * 1e6)
 
 
 def csd(dwi, meas, mask, backend="jax"):
-    """``(sh, seconds)``: the FOD field ``(X, Y, Z, 45)`` in the tournier07 basis from the single-fibre response of
-    the volume, dmipy-fit's batched Tournier 2007 solver on ``backend``, fitted on ``mask`` (the voxels with signal)."""
+    """``(sh, seconds)``: the FOD field ``(X, Y, Z, 45)`` in the tournier07 basis, dmipy-fit's batched Tournier 2007
+    solver on ``backend`` with the response ``white_matter_response_tournier07`` estimates from the masked voxels,
+    fitted on ``mask`` (the voxels with signal)."""
     from dmipy_fit.core.modeling_framework import MultiCompartmentSphericalHarmonicsModel
     from dmipy_fit.tissue_response.white_matter_response import white_matter_response_tournier07
     t0 = time.perf_counter()
     data = np.nan_to_num(dwi, nan=0.0)
     sch = scheme(meas)
-    S0_wm, response, _ = white_matter_response_tournier07(sch, data[mask])
+    _, response, _ = white_matter_response_tournier07(sch, data[mask])
     mc = MultiCompartmentSphericalHarmonicsModel(models=[response], sh_order=SH_ORDER)
     fitted = mc.fit(sch, data, mask=mask, solver=f"csd_tournier07_{backend}", verbose=False)
     return np.asarray(fitted.fitted_parameters["sh_coeff"], np.float64), time.perf_counter() - t0
@@ -494,16 +611,20 @@ class Tracking:
     key: int = 0
 
 
-def track(sh, layout, settings=Tracking()):
-    """``(tractogram, seeds, seconds)``: probabilistic streamlines from ``density^3`` seeds per region voxel."""
-    from dmipy_tract import FODField, seeds_from_mask, track as _track
+def tracking_inputs(sh, source, density):
+    """``(field, seeds)``: the FOD field on the mask and the ``density^3`` seeds per region voxel, built once for
+    however many tracker keys run on them."""
+    from dmipy_tract import FODField, seeds_from_mask
+    return FODField(sh, np.eye(4), source.mask | (source.rois > 0)), seeds_from_mask(source.rois > 0, np.eye(4), density=density)
+
+
+def track(field, seeds, settings, backend):
+    """``(tractogram, seconds)``: probabilistic streamlines from ``seeds`` on ``field``."""
+    from dmipy_tract import track as _track
     t0 = time.perf_counter()
-    field = FODField(sh.astype(np.float32), np.eye(4), layout.mask | (layout.rois > 0))
-    seeds = seeds_from_mask(layout.rois > 0, np.eye(4), density=settings.density)
     tg = _track(field, seeds, rule="probabilistic", step_mm=settings.step_mm, max_angle=settings.max_angle,
-                max_steps=settings.max_steps, relative_threshold=settings.relative_threshold, key=settings.key,
-                backend=layout.backend)
-    return tg, seeds, time.perf_counter() - t0
+                max_steps=settings.max_steps, relative_threshold=settings.relative_threshold, key=settings.key, backend=backend)
+    return tg, time.perf_counter() - t0
 
 
 def peaks(sh, n_dirs=362):
@@ -520,25 +641,66 @@ def peaks(sh, n_dirs=362):
     return d.reshape(sh.shape[:-1] + (3,)), np.clip(peak, 0, None).reshape(sh.shape[:-1])
 
 
-def connectome(tg, layout):
+def connectome(tg, source):
     """The symmetrised 16 x 16 streamline-count matrix (no self-connections)."""
     from dmipy_tract import connectivity
-    matrix, _ = connectivity(tg, layout.rois, np.eye(4))
+    matrix, _ = connectivity(tg, source.rois, np.eye(4))
     M = matrix[1:N_REGIONS + 1, 1:N_REGIONS + 1].astype(np.float64)
     M = M + M.T
     np.fill_diagonal(M, 0)
     return M
 
 
-def score(M, layout):
+PAIRS = np.triu_indices(N_REGIONS, 1)                # the 120 region pairs
+
+
+def pearson(a, b):
+    """The Pearson correlation of two vectors, NaN when either is constant."""
+    a = np.asarray(a, np.float64); b = np.asarray(b, np.float64)
+    if a.std() == 0 or b.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def connected_pairs(M):
+    """How many of the 120 region pairs ``M`` connects."""
+    return int((M[PAIRS] > 0).sum())
+
+
+def score(M, source):
     """Pearson correlations over the 120 region pairs with the strand-count and area matrices, and the pair
     bookkeeping (connected, ground-truth, false, missed)."""
-    iu = np.triu_indices(N_REGIONS, 1)
-    gt = layout.gt_count
-    return dict(pearson_count=float(np.corrcoef(M[iu], gt[iu])[0, 1]),
-                pearson_area=float(np.corrcoef(M[iu], layout.gt_area[iu])[0, 1]),
-                connected_pairs=int((M[iu] > 0).sum()), gt_pairs=int((gt[iu] > 0).sum()),
-                false_pairs=int(((M[iu] > 0) & (gt[iu] == 0)).sum()), missed_pairs=int(((M[iu] == 0) & (gt[iu] > 0)).sum()))
+    gt = source.gt_count
+    return dict(pearson_count=pearson(M[PAIRS], gt[PAIRS]), pearson_area=pearson(M[PAIRS], source.gt_area[PAIRS]),
+                connected_pairs=connected_pairs(M), gt_pairs=connected_pairs(gt),
+                false_pairs=int(((M[PAIRS] > 0) & (gt[PAIRS] == 0)).sum()), missed_pairs=int(((M[PAIRS] == 0) & (gt[PAIRS] > 0)).sum()))
+
+
+def compare(a, b):
+    """A against B over the 120 region pairs: the Pearson between the two streamline-count matrices, the pairs
+    connected in one only, and B's score minus A's."""
+    ma, mb = a.matrix[PAIRS], b.matrix[PAIRS]
+    return dict(pearson_ab=pearson(ma, mb), only_a=int(((ma > 0) & (mb == 0)).sum()), only_b=int(((mb > 0) & (ma == 0)).sum()),
+                delta_count=b.score["pearson_count"] - a.score["pearson_count"], delta_area=b.score["pearson_area"] - a.score["pearson_area"])
+
+
+def pair_spread(matrices, scores):
+    """Over repeated runs: the streamline-count mean and standard deviation per region pair, the Pearson-vs-count
+    mean and standard deviation, and the median coefficient of variation over the pairs that any run connected."""
+    M = np.stack(matrices).astype(np.float64)
+    mean = M.mean(0); std = M.std(0, ddof=1) if len(M) > 1 else np.zeros_like(mean)
+    any_ = mean[PAIRS] > 0
+    cv = std[PAIRS][any_] / mean[PAIRS][any_]
+    pc = np.array([s["pearson_count"] for s in scores])
+    return dict(mean=mean, std=std, n=len(M), pearson_mean=float(pc.mean()), pearson_std=float(pc.std(ddof=1)) if len(pc) > 1 else 0.0,
+                cv_median=float(np.median(cv)) if cv.size else float("nan"), pairs_any=int(any_.sum()),
+                pairs_always=int((M[:, PAIRS[0], PAIRS[1]] > 0).all(0).sum()))
+
+
+def floor_stats(res):
+    """The run's split-half floor over the voxels with signal: ``median``, ``p99``, ``max`` and the voxel count."""
+    f = res.floor[np.isfinite(res.dwi[..., 0])]
+    return dict(median=float(np.median(f)), p99=float(np.quantile(f, 0.99)), max=float(f.max()), n=int(f.size))
 
 
 def gradient_needed(b, delta, Delta):
@@ -561,74 +723,31 @@ def scanner_classes():
 
 def playable(protocol, shapes, scanner=None):
     """Per shell, the gradient it needs and whether ``scanner`` (a catalogue class, or None for no limit) can play
-    it: rows of ``(shell, b, timing, G_needed T/m, G_max T/m or None, ok)``. A stimulated-echo class needs the same
-    amplitude as its PGSE twin (the same δ and diffusion time)."""
+    it: rows of ``(shell, b, delta, Delta, G_needed, G_max or None, ok)`` in SI. A stimulated-echo class needs the
+    same amplitude as its PGSE twin (the same δ and diffusion time)."""
     G_max = scanner_classes()[scanner][0] if scanner else None
     rows = []
     for s in protocol.shells:
         t = dict(delta=s.delta, Delta=s.Delta) if s.free_timing else shapes[s.shape]
-        G = gradient_needed(s.b, float(t["delta"]), float(t["Delta"]))
-        rows.append((s.shape, s.b, f"δ {float(t['delta']) * 1e3:g} / Δ {float(t['Delta']) * 1e3:g} ms", G, G_max, G_max is None or G <= G_max))
+        delta, Delta = float(t["delta"]), float(t["Delta"])
+        G = gradient_needed(s.b, delta, Delta)
+        rows.append((s.shape, s.b, delta, Delta, G, G_max, G_max is None or G <= G_max))
     return rows
 
 
-def repeat_tracking(res, layout, tracking, keys):
-    """The tractography of ``res`` (its FOD field) repeated over tracker ``keys``: a generator of ``(key, matrix,
-    score, seconds)``, the replay, noise and CSD kept (only the tracker's randomness varies)."""
-    from dataclasses import replace
-    for k in keys:
-        t0 = time.perf_counter()
-        tg, _, _ = track(res.sh, layout, replace(tracking, key=int(k)))
-        M = connectome(tg, layout)
-        yield int(k), M, score(M, layout), time.perf_counter() - t0
-
-
-def pair_spread(matrices, scores):
-    """Over repeated runs: the streamline-count mean and standard deviation per region pair, the Pearson-vs-count
-    mean and standard deviation, and the median coefficient of variation over the pairs that any run connected."""
-    M = np.stack(matrices).astype(np.float64)
-    mean = M.mean(0); std = M.std(0, ddof=1) if len(M) > 1 else np.zeros_like(mean)
-    iu = np.triu_indices(N_REGIONS, 1)
-    any_ = mean[iu] > 0
-    cv = std[iu][any_] / mean[iu][any_]
-    pc = np.array([s["pearson_count"] for s in scores])
-    return dict(mean=mean, std=std, n=len(M), pearson_mean=float(pc.mean()), pearson_std=float(pc.std(ddof=1)) if len(pc) > 1 else 0.0,
-                cv_median=float(np.median(cv)) if cv.size else float("nan"), pairs_any=int(any_.sum()),
-                pairs_always=int((M[:, iu[0], iu[1]] > 0).all(0).sum()))
-
-
 def sample_tractogram(tg, n, *, seed=0):
-    """A :class:`dmipy_tract.Tractogram` of ``n`` streamlines drawn without replacement from ``tg`` (all of them
-    when it has fewer), in their original order: what the page keeps and draws, while the full tractogram goes to
-    the .tck file (disco-space#4 iteration 6)."""
-    from dmipy_tract.tractogram import Tractogram
+    """``n`` streamlines drawn without replacement from ``tg`` (``tg`` itself when it has no more), in their
+    original order: what the page keeps and draws while the full tractogram goes to the .tck file."""
     if len(tg) <= n:
         return tg
-    pick = np.sort(np.random.default_rng(seed).choice(len(tg), n, replace=False))
-    counts = np.diff(tg.offsets)[pick]
-    points = np.concatenate([tg.points[tg.offsets[i]:tg.offsets[i + 1]] for i in pick])
-    return Tractogram(points, np.concatenate([[0], np.cumsum(counts)]), tg.seed_index[pick], tg.stop_reason[pick])
-
-
-def retime(protocol, shape):
-    """``protocol`` with every shell on the timing class ``shape`` (b-values, directions and counts kept): the A/B
-    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another."""
-    return Protocol(tuple(Shell(shape, s.b, s.n_dirs) for s in protocol.shells), n_b0=protocol.n_b0,
-                    directions=protocol.directions, bvals=protocol.bvals, name=f"{protocol.name} on {shape}")
-
-
-def compare(a, b):
-    """A against B over the 120 region pairs: the Pearson between the two streamline-count matrices, the pairs
-    connected in one only, and B's score minus A's."""
-    iu = np.triu_indices(N_REGIONS, 1)
-    ma, mb = a.matrix[iu], b.matrix[iu]
-    return dict(pearson_ab=float(np.corrcoef(ma, mb)[0, 1]) if ma.std() > 0 and mb.std() > 0 else float("nan"),
-                only_a=int(((ma > 0) & (mb == 0)).sum()), only_b=int(((mb > 0) & (ma == 0)).sum()),
-                delta_count=b.score["pearson_count"] - a.score["pearson_count"], delta_area=b.score["pearson_area"] - a.score["pearson_area"])
+    return tg.select(np.sort(np.random.default_rng(seed).choice(len(tg), n, replace=False)))
 
 
 @dataclass
 class Result:
+    """One run: the protocol and its rows, the DWI the CSD saw (noisy when ``snr`` is set), the replay floor per
+    voxel, the FOD SH field, the tractogram and its seeds, the connectome and its score, the stage times, and the
+    physics (None for bare diffusion)."""
     protocol: Protocol
     meas: Measurements
     dwi: np.ndarray
@@ -646,7 +765,7 @@ class Result:
 STAGES = ("replay", "noise", "csd", "track", "score")
 
 
-def run_stages(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None):
+def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None):
     """The pipeline as a generator: before each of the ``STAGES`` it yields ``(stage, k, n)`` (so a page can show
     where the run is, from inside any worker), and last the :class:`Result`. ``physics`` is the tissue and scanner
     the replay is evaluated at (None: bare diffusion)."""
@@ -655,27 +774,34 @@ def run_stages(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0,
     def at(stage):
         print(f"[pipeline] {stage} at +{time.perf_counter() - t_run:.1f} s", flush=True)      # the server log shows where a run is
         return stage, STAGES.index(stage), len(STAGES)
-    meas = measurements(protocol, layout.shapes)
-    yield at("replay")
-    if isinstance(layout, Columns):
-        dwi, floor, t_replay = replay_full(layout, meas, physics)
-    else:
-        dwi, floor, t_replay = replay(layout, meas, physics)
-    yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=layout.backend); t_noise = time.perf_counter() - t0
+    meas = source.validate(protocol, physics)
+    yield at("replay"); dwi, floor, t_replay = source.replay(meas, physics)
+    yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=source.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
-    yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=layout.backend)
-    yield at("track"); tg, seeds, t_track = track(sh, layout, tracking)
-    yield at("score"); t0 = time.perf_counter(); M = connectome(tg, layout); s = score(M, layout); t_score = time.perf_counter() - t0
+    yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=source.backend)
+    yield at("track"); t0 = time.perf_counter(); fld, seeds = tracking_inputs(sh, source, tracking.density); tg, _ = track(fld, seeds, tracking, source.backend); t_track = time.perf_counter() - t0
+    yield at("score"); t0 = time.perf_counter(); M = connectome(tg, source); s = score(M, source); t_score = time.perf_counter() - t0
     yield Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr, physics=physics,
                  seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
                               total=t_replay + t_noise + t_csd + t_track + t_score))
 
 
-def run(layout, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, progress=None):
+def run(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, progress=None):
     """The whole pipeline for one protocol: every stage's output and time. ``progress(stage, k, n)`` is called as
     each stage begins."""
-    for item in run_stages(layout, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed, physics=physics):
+    for item in run_stages(source, protocol, snr=snr, tracking=tracking, noise_seed=noise_seed, physics=physics):
         if isinstance(item, Result):
             return item
         if progress:
             progress(*item)
+
+
+def repeat_tracking(res, source, tracking, keys):
+    """The tractography of ``res`` (its FOD field, the seeds built once) repeated over tracker ``keys``: a generator
+    of ``(key, matrix, score, seconds)``; the replay, noise and CSD are kept, only the tracker's randomness varies."""
+    fld, seeds = tracking_inputs(res.sh, source, tracking.density)
+    for k in keys:
+        t0 = time.perf_counter()
+        tg, _ = track(fld, seeds, replace(tracking, key=int(k)), source.backend)
+        M = connectome(tg, source)
+        yield int(k), M, score(M, source), time.perf_counter() - t0

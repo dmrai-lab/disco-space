@@ -3,11 +3,12 @@
 [data]
 repo = "SubstrateCommons/disco-replay"          # the public replay dataset
 moments = "disco/moments"                        # the shape-moment layout written by dmipy-sim's write_shape_moments
-revision = "697981904fbc4fe324188533c54fe8bcb76ac32f"   # the dataset revision the layout is read at (set on deploy)
+revision = "697981904fbc4fe324188533c54fe8bcb76ac32f"   # the dataset revision the layout is read at
 source_manifest_sha256 = "499e411b7f7412ffa72a8885ee22a7bed9198e992a517b81c273ceeaeafd629e"   # the columnar manifest the layout was contracted from (its manifest.json names it)
 
-# The timing classes ("shapes") the layout holds: PGSE with square pulses (slew_rate = inf) at TE = 53.5 ms.
-# delta / Delta / TE in seconds; label is what the app shows.
+# The timing classes ("shapes") the layout holds: square pulses (slew_rate = inf) at TE = 53.5 ms, PGSE unless
+# kind = "pgste" (a stimulated echo storing for TM = Delta - delta). delta / Delta / TE in seconds, the same numbers the
+# layout's manifest records (checked at load); label is what the app shows.
 [shapes."d10.2-D16.7"]
 label = "DiSCo δ 10.2 / Δ 16.7 ms (shells b = 0, 1000, 1925)"
 delta = 0.0102
@@ -73,7 +74,7 @@ shells = [
 n_b0 = 2
 shells = [{ shape = "d8-D20", b = 6000, n_dirs = 60 }]
 
-# The tissue and the scanner (disco-space#4 iteration 1): the field presets the page offers (T), the default field,
+# The tissue and the scanner: the field presets the page offers (T), the default field,
 # and whether a run starts with the tiers on. Tissue defaults come from dmipy-sim's white-matter catalogue at the
 # nearest cited field (1.5 / 3 / 7 T) and are editable on the page.
 [physics]
@@ -81,7 +82,7 @@ fields = [0.064, 1.5, 3.0, 7.0, 11.7]
 default_field = 3.0
 default_on = true
 
-# The mode (disco-space#4): demo = the prebaked shape-moment layout (the hosted Spaces; seconds; the stored pulse
+# The mode: demo = the prebaked shape-moment layout (the hosted Spaces; seconds; the stored pulse
 # timings), full = the columnar replay pack itself (minutes per volume; any timing; the scheme upload), read from
 # DISCO_COLUMNS (a directory with the columns, or the Hub at 45 MB/s). DISCO_MODE in the environment overrides.
 [mode]

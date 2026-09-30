@@ -34,6 +34,7 @@ Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, commit 67de7
 |---|---|---|---|---|
 | DiSCo 364 | 31 s | 2 s | 93 s | 51 s |
 | DiSCo 364 + the explorer's ladder | 63 s | 4 s | 115 s | 91 s |
+| DiSCo 364, A + B (SNR → 10) + ladder | 79 s | 5 s | 174 s | 114 s |
 
 Before the split the device was held 77 s and 100 s for the same runs (the files, the states, the figures and a
 15 s host pass for the ingredient maps were inside the window). The reservation is 16 s + 0.065 s per measurement

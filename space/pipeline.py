@@ -572,6 +572,31 @@ def playable(protocol, shapes, scanner=None):
     return rows
 
 
+def repeat_tracking(res, layout, tracking, keys):
+    """The tractography of ``res`` (its FOD field) repeated over tracker ``keys``: a generator of ``(key, matrix,
+    score, seconds)``, the replay, noise and CSD kept (only the tracker's randomness varies)."""
+    from dataclasses import replace
+    for k in keys:
+        t0 = time.perf_counter()
+        tg, _, _ = track(res.sh, layout, replace(tracking, key=int(k)))
+        M = connectome(tg, layout)
+        yield int(k), M, score(M, layout), time.perf_counter() - t0
+
+
+def pair_spread(matrices, scores):
+    """Over repeated runs: the streamline-count mean and standard deviation per region pair, the Pearson-vs-count
+    mean and standard deviation, and the median coefficient of variation over the pairs that any run connected."""
+    M = np.stack(matrices).astype(np.float64)
+    mean = M.mean(0); std = M.std(0, ddof=1) if len(M) > 1 else np.zeros_like(mean)
+    iu = np.triu_indices(N_REGIONS, 1)
+    any_ = mean[iu] > 0
+    cv = std[iu][any_] / mean[iu][any_]
+    pc = np.array([s["pearson_count"] for s in scores])
+    return dict(mean=mean, std=std, n=len(M), pearson_mean=float(pc.mean()), pearson_std=float(pc.std(ddof=1)) if len(pc) > 1 else 0.0,
+                cv_median=float(np.median(cv)) if cv.size else float("nan"), pairs_any=int(any_.sum()),
+                pairs_always=int((M[:, iu[0], iu[1]] > 0).all(0).sum()))
+
+
 def sample_tractogram(tg, n, *, seed=0):
     """A :class:`dmipy_tract.Tractogram` of ``n`` streamlines drawn without replacement from ``tg`` (all of them
     when it has fewer), in their original order: what the page keeps and draws, while the full tractogram goes to

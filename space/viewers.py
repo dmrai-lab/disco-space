@@ -166,3 +166,18 @@ def floor_slice(floor, z, *, label=""):
     ax.set_title(f"{label}split-half floor, slice z = {z} (median {np.nanmedian(floor[floor > 0]) if (floor > 0).any() else float('nan'):.4f})", fontsize=9)
     ax.set_xticks([]); ax.set_yticks([])
     return _image(fig)
+
+
+def spread_matrices(spread):
+    """The mean streamline count per pair beside its standard deviation over the repeated runs."""
+    plt = _mpl()
+    from matplotlib.colors import LogNorm
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3.8))
+    for ax, (title, A) in zip(axes, ((f"mean count over {spread['n']} keys", spread["mean"]), ("standard deviation over the keys", spread["std"]))):
+        im = ax.imshow(np.where(A > 0, A, np.nan), norm=LogNorm(vmin=1, vmax=max(float(A.max()), 2)), cmap="viridis")
+        ax.set_title(title, fontsize=9); ax.set_xticks(range(0, 16, 3)); ax.set_yticks(range(0, 16, 3))
+        ax.set_xticklabels(range(1, 17, 3)); ax.set_yticklabels(range(1, 17, 3))
+        fig.colorbar(im, ax=ax, fraction=0.046)
+    fig.suptitle(f"Pearson vs count {spread['pearson_mean']:.3f} ± {spread['pearson_std']:.3f}; median pair CV {spread['cv_median']:.2f}; "
+                 f"{spread['pairs_always']} pairs in every run, {spread['pairs_any']} in any", fontsize=9)
+    return _image(fig)

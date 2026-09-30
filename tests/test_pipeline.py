@@ -203,3 +203,13 @@ def test_the_gradient_a_shell_needs_and_the_scanners_that_can_play_it():
     assert all(r[-1] for r in rows) and not all(r[-1] for r in P.playable(disco, CFG["shapes"], "prisma"))
     free = P.Protocol((P.Shell("mine", 1000, 30, delta=0.012, Delta=0.024, TE=0.06),), n_b0=1)
     assert abs(P.playable(free, CFG["shapes"], None)[0][3] - G) < 1e-12
+
+
+def test_the_pair_spread_over_repeated_runs():
+    M1 = np.zeros((16, 16)); M1[0, 1] = M1[1, 0] = 10; M1[2, 3] = M1[3, 2] = 4
+    M2 = M1.copy(); M2[0, 1] = M2[1, 0] = 14; M2[2, 3] = M2[3, 2] = 0; M2[4, 5] = M2[5, 4] = 2
+    sp = P.pair_spread([M1, M2], [dict(pearson_count=0.8), dict(pearson_count=0.9)])
+    assert sp["n"] == 2 and abs(sp["pearson_mean"] - 0.85) < 1e-12 and abs(sp["pearson_std"] - np.std([0.8, 0.9], ddof=1)) < 1e-12
+    assert sp["pairs_any"] == 3 and sp["pairs_always"] == 1 and sp["mean"][0, 1] == 12 and abs(sp["std"][0, 1] - np.std([10, 14], ddof=1)) < 1e-12
+    one = P.pair_spread([M1], [dict(pearson_count=0.8)])
+    assert one["pearson_std"] == 0.0 and one["std"].max() == 0.0

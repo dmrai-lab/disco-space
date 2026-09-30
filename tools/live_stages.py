@@ -11,7 +11,7 @@ physics = [True, 3.0, "along z (the strands' frame)", 0, 0, 50.0, 55.0, 10.0, 12
 shells = [True, "d12-D24", 1000, 30, 12.0, 24.0, 53.5, True, "d8-D20", 3000, 45, 8.0, 20.0, 53.5,
           False, "d17-D30", 3000, 90, 17.0, 30.0, 53.5, False, "d17-D30", 6000, 60, 17.0, 30.0, 53.5]
 t0 = time.perf_counter()
-job = c.submit(preset, 2, True, 30, 2, 30.0, 0.5, 0, None, "none: run A only", "none: any gradient amplitude", *physics, *shells, api_name="/run_pipeline")
+job = c.submit(preset, 2, True, 30, 2, 30.0, 0.5, 0, None, "none: run A only", "none: any gradient amplitude", 1, *physics, *shells, api_name="/run_pipeline")
 seen = 0
 while not job.done():
     outs = job.outputs()

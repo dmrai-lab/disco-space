@@ -191,14 +191,14 @@ def gradient_text(protocol, shapes, scanner):
     return "\n".join(lines), all(r[-1] for r in rows)
 
 
-def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, *rest, progress=None):
+def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, *rest, progress=None):
     """The run button, a generator: while a stage runs it yields the stage's name into the headline (the other
     outputs untouched), and last the results: A, and B when ``knob`` changes one thing (the same tracker key, so
     the difference is the knob's). A generator reaches the page from inside any worker, where a progress object
     does not."""
     import gradio as gr
     keep = gr.update()
-    n_out = 14
+    n_out = 15
     if progress:
         progress(0.0, desc="starting")
     state = _load()
@@ -235,6 +235,14 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
                 results[tag], files[tag] = item
             else:
                 yield item
+    spread = None
+    if int(n_keys) > 1:                                     # A's tracking repeated over further keys: the tractogram's own spread
+        keys = [int(key) + 1 + i for i in range(int(n_keys) - 1)]
+        mats = [results["A"].matrix]; scores = [results["A"].score]
+        for i, (k, M, sc, secs) in enumerate(P.repeat_tracking(results["A"], layout, tracking, keys)):
+            mats.append(M); scores.append(sc)
+            yield (keep, f"**A · tracking again with key {k} ({i + 2}/{int(n_keys)})** … ({time.perf_counter() - t0:.0f} s so far)") + (keep,) * (n_out - 1)
+        spread = P.pair_spread(mats, scores)
     yield (keep, f"**drawing** … ({time.perf_counter() - t0:.0f} s so far)") + (keep,) * (n_out - 1)
     rs = {tag: _result_state(r, layout, state) for tag, r in results.items()}
     ra = rs["A"]; rb = rs.get("B")
@@ -244,6 +252,9 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
         headline += ("<br>" + _score_text("B", results["B"], layout)
                      + f"<br>**A vs B: connectome Pearson {c['pearson_ab']:.3f}**, {c['only_a']} pairs in A only, {c['only_b']} in B only, "
                        f"B − A {c['delta_count']:+.3f} vs count, {c['delta_area']:+.3f} vs area; B = A with {knob}.")
+    if spread:
+        headline += (f"<br>**A over {spread['n']} tracker keys: Pearson vs count {spread['pearson_mean']:.3f} ± {spread['pearson_std']:.3f}**, "
+                     f"median pair count CV {spread['cv_median']:.2f}, {spread['pairs_always']} pairs in every run, {spread['pairs_any']} in any.")
     headline += " Results are in the third tab."
     z0 = ra["dwi"].shape[2] // 2
     m0 = int(np.flatnonzero(~ra["meas"].b0)[0]) if (~ra["meas"].b0).any() else 0
@@ -255,7 +266,8 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
            V.tractogram3d(rb["tractogram"], rb["rois"], rb["shape"], total=rb["n_streamlines"]) if rb else None,
            V.matrices(rb["matrix"], rb["score"], layout.gt_count) if rb else None,
            gr.update(visible=rb is not None),
-           V.floor_slice(ra["floor"], z0, label="A: "), accuracy_rows(layout, results["A"]))
+           V.floor_slice(ra["floor"], z0, label="A: "), accuracy_rows(layout, results["A"]),
+           V.spread_matrices(spread) if spread else None)
 
 
 def accuracy_rows(layout, res):
@@ -376,6 +388,7 @@ def build(runner=None):
                         scanner = gr.Dropdown([NO_SCANNER] + [f"{c}" for c in P.scanner_classes()], value=NO_SCANNER,
                                               label="scanner gradient limit (the catalogue's classes): a shell it cannot play refuses the run")
                         gradients = gr.Markdown()
+                        n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
                         go = gr.Button("replay → CSD → track → score", variant="primary")
                         headline = gr.Markdown()
             with gr.Tab("2 · ground truth") as gt_tab:
@@ -396,6 +409,7 @@ def build(runner=None):
                 with gr.Row(visible=False) as b_row:
                     tract_view_b = gr.Plot(label="tractogram B")
                     mats_b = gr.Image(label="connectome B vs ground truth", type="pil")
+                spread_view = gr.Image(label="A over N tracker keys: mean and spread per pair", type="pil")
                 with gr.Accordion("accuracy: what this replay is an approximation of", open=False):
                     gr.Markdown("A replay is a measured approximation of the stored walk, not a rendering: the walk's two halves are replayed "
                                 "separately and their disagreement per voxel is the **floor** below which a signal difference means nothing; "
@@ -425,8 +439,8 @@ def build(runner=None):
             return table
         for ctl in (preset, scanner, *shell_inputs):
             ctl.change(show_gradients, inputs=[preset, n_b0, scanner, *shell_inputs], outputs=gradients, show_progress="hidden")
-        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, *physics_inputs, *shell_inputs],
-                 outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider, tract_view_b, mats_b, b_row, floor_view, accuracy], concurrency_limit=1,
+        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, *physics_inputs, *shell_inputs],
+                 outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider, tract_view_b, mats_b, b_row, floor_view, accuracy, spread_view], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay, which):
             ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view], show_progress="hidden")

@@ -119,8 +119,9 @@ draw comes from numpy there; a JAX call in the forked worker aborts the task). M
 on the tiered layout (3 T, every tier on, SNR 30): the container built and started in 364 s (the 31.6 GB layout
 downloaded from the Hub and preloaded in 55 s of that); DiSCo 364 in 84 s wall, 30 s in the pipeline (replay 22.8 s
 with the per-call transfer of the moment and tier columns, noise 0.5, CSD 3.3, tracking 3.3), Pearson 0.924; a
-custom two-shell protocol (77 measurements) in 54 s wall, 9.6 s in the pipeline. No idle cost, no sleep; per-visitor
-quotas instead of a queue on one card.
+custom two-shell protocol (77 measurements) in 54 s wall, 9.6 s in the pipeline; DiSCo 364 with B (the transverse
+field), the tier ladder and the ingredient maps in 240 s wall. No idle cost, no sleep; per-visitor quotas instead of
+a queue on one card.
 
 **The SNR is defined at M0**, the bare signal of the fullest water voxel, and each voxel's noise follows its own
 b = 0 signal: on DiSCo 364 at 3 T with every tier the b = 0 signal is 0.32–0.38 of M0 (T2 near TE, the walls'

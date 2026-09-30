@@ -42,7 +42,7 @@ def main():
             time.sleep(1)
         out = job.result()
         print(f"{preset}: {time.perf_counter() - t0:.1f} s wall", flush=True)
-        named = dict(zip(A.OUTPUTS[1:], out))                     # the API returns every output but the gr.State
+        named = dict(zip([n for n in A.OUTPUTS if n not in ("result", "b_row")], out))   # the API returns neither the gr.State nor the gr.Row
         print(named["headline"]); print(named["timings"])
         print("tck", named["tck"], "volumes", named["volumes"], flush=True)
 

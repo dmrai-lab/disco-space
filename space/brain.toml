@@ -9,7 +9,7 @@ source = "brain"                                 # space/sources/brain.py
 # DISCO_BRAIN_ASSET in the environment) reads a directory instead.
 [asset]
 hub = "SubstrateCommons/masivar-brain"
-revision = "e264042fad25323bab82ad5e8806ff3b36fce77c"     # MASiVar sub-cIs1 ses-s1Ax1, dmipy-fit f6741c3 csd_cvxpy, 2026-09-30
+revision = "6f75d8bd657f9732afdec2eae9e5abf33f683972"     # MASiVar sub-cIs1 ses-s1Ax1, dmipy-fit 7f25074 csd_msmt_torch, 2026-09-30 (revision 2)
 
 [describe]
 title = "Brain replay: MASiVar"

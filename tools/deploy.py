@@ -26,9 +26,9 @@ def retire_bucket(api, space):
         print("DISCO_MOMENTS variable:", repr(e)[:120])
     try:
         api.delete_space_volumes(space)
-        print("no volumes mounted")
-    except Exception as e:
-        print("volumes:", repr(e)[:160])
+        print("volumes removed")
+    except Exception as e:                                  # "has no attached volumes" is the state we want
+        print("no volumes mounted" if "no attached" in str(e) else f"volumes: {e!r}"[:160])
 
 
 def main():

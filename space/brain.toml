@@ -1,0 +1,119 @@
+# The brain Space: what is pinned. Every number the app shows comes from pipeline.py and sources/brain.py on this
+# configuration. DISCO_CONFIG=brain.toml selects it (the entry app.py, tools/deploy.py --config, tools/live.py --config).
+
+source = "brain"                                 # space/sources/brain.py
+
+# The asset: the multi-tissue CSD of the subject's scan (WM FOD, WM/GM/CSF fractions, mask), its parcellation
+# (labels, regions.json, stop mask) and a mean b = 0, made once offline (disco-space#8 steps 2-4). A public Hub
+# dataset at a revision, downloaded into the Hub cache when the container starts; `local = "/dir"` (or
+# DISCO_BRAIN_ASSET in the environment) reads a directory instead.
+[asset]
+hub = "SubstrateCommons/masivar-brain"
+revision = "main"
+
+[describe]
+title = "Brain replay: MASiVar"
+subject = "MASiVar sub-cIs1 (OpenNeuro ds003416, Cai et al. MRM 2021, CC0)"
+heading = """A real brain as a compositional replay phantom: the multi-tissue CSD of one scan (its white-matter FOD field and \
+WM / GM / CSF fractions) composed with replay packs, one Monte-Carlo walk per tissue. Choose an acquisition, the tissue and the \
+scanner; the Space replays every brain voxel from the packs' responses, adds noise, estimates the tissue responses from the \
+replayed data, fits multi-tissue CSD, tracks from the white matter and scores the 84-region connectome against the connectome of \
+the input FOD tracked the same way. The progress bar names each stage."""
+scan_preset = "the scan's own protocol"
+
+# The pulse timing the scan's own protocol plays when the asset's manifest states none (MASiVar's sidecars carry no
+# EchoTime, delta or Delta): the BATMAN capstone's square pulses, which the 100 ms packs play; the page says it is assumed.
+[scan]
+delta = 0.025
+Delta = 0.055
+TE = 0.100
+
+# The timing classes a shell plays (square pulses; delta / Delta / TE in seconds, kind = "pgste" a stimulated echo
+# storing for TM = Delta - delta). The packs are 100 ms walks: a class whose echo lies beyond a pack's walk is refused
+# by name. The scan's own class (`scan`) comes from the asset's manifest.
+[shapes."d12-D24"]
+label = "clinical δ 12 / Δ 24 ms, TE 60 ms"
+delta = 0.012
+Delta = 0.024
+TE = 0.060
+[shapes."d17-D30"]
+label = "research δ 17 / Δ 30 ms, TE 70 ms"
+delta = 0.017
+Delta = 0.030
+TE = 0.070
+[shapes."d25-D55"]
+label = "long δ 25 / Δ 55 ms, TE 100 ms (the BATMAN capstone's)"
+delta = 0.025
+Delta = 0.055
+TE = 0.100
+[shapes."ste-d12-TM36"]
+label = "stimulated echo δ 12 / TM 36 ms (Δ 48 ms), TE 70 ms"
+delta = 0.012
+Delta = 0.048
+TE = 0.070
+kind = "pgste"
+
+# Presets besides the scan's own protocol (which comes from the asset). b in s/mm^2.
+[presets."clinical b1000 x 30"]
+n_b0 = 1
+shells = [{ shape = "d12-D24", b = 1000, n_dirs = 30 }]
+[presets."research 3-shell x 90"]
+n_b0 = 3
+shells = [
+  { shape = "d17-D30", b = 1000, n_dirs = 90 },
+  { shape = "d17-D30", b = 2000, n_dirs = 90 },
+  { shape = "d17-D30", b = 3000, n_dirs = 90 },
+]
+
+# The tissue and the scanner: the field presets (T), the default field, whether a run starts with the tiers on, and
+# the values the "M0 of GM" knob offers B. The tissue's numbers come from dmipy-sim's biophysical constants by key.
+[physics]
+fields = [0.064, 1.5, 3.0, 7.0, 11.7]
+default_field = 3.0
+default_on = true
+m0_gm_knob = [0.7, 1.0]
+
+# The pack menu per tissue (the first is the default): a label and a pack URI (hf:// or a local path, as
+# dmipy_sim.phantom.PackSubstrate resolves it). SubstrateCommons family records feed this later (disco-space#8, decision 5).
+[packs]
+wm = [
+  { label = "CACTUS single bundle, 100 ms", uri = "hf://SubstrateCommons/cactus-axons/packs/single_bundle_100ms_xframe.rpk" },
+  { label = "canonical cylinder, 2 µm, 100 ms", uri = "hf://SubstrateCommons/canonical-pores/packs/cylinder/d02.00um.rpk" },
+]
+gm = [
+  { label = "grey-matter spheres, 100 ms", uri = "hf://SubstrateCommons/grey-matter-spheres/packs/gm_spheres_100ms.rpk" },
+]
+
+# The compute backend: the brain's replay contraction is torch on the device; the CSD solver and the tracker follow
+# this backend. DISCO_BACKEND overrides.
+[compute]
+backend = "torch"
+resident = false
+
+# The reconstruction: msmt (three-tissue responses from the data + multi-shell multi-tissue CSD, dmipy-fit#39) or
+# tournier07 (single-fibre response + single-tissue CSD). DISCO_RECONSTRUCTION overrides.
+[reconstruction]
+method = "msmt"
+
+[tracking]
+density = 2          # seeds per WM voxel = density^3
+step_mm = 1.25
+max_angle = 45.0
+
+# The GPU reservation model (Brain.estimated_seconds): a run = fixed + per_meas x n + track[d] (A's tracking), plus
+# track[d] for the truth (the input FOD tracked the same way, shared by B), per_meas_ladder x n for the ladder, B = a
+# run without the worker's start, track[d] per extra key; times margin. Refit from tools/measure_brain.py on the L40S
+# with the BATMAN fixture (90,205 voxels, 36,605 WM seeds per density^3; README-brain-zero.md has the table), each
+# device stage x 1.5 for the pool (DiSCo's CSD and tracking ran 1.1-1.3x slower on the pool than on the L40S), the
+# worker's start and a multi-GB payload's handoff 12 s. The single-tissue reconstruction's cost is in per_meas
+# (8.0 s at 495 measurements); refit when dmipy-fit#39's multi-tissue path runs. Seconds.
+[budget]
+worker = 12.0                 # the worker's start and the payload's handoff
+fixed = 16.0                  # worker + noise, the round trip, the scoring and the explorer's maps (L40S 2.5 s x 1.5)
+per_meas = 0.03               # the contraction and the reconstruction per measurement (L40S 8.9 s at 495 x 1.5 / 495)
+ladder_per_meas = 0.002       # the ladder's rungs of contraction (L40S 0.5 s at 495 x 1.5 / 495)
+margin = 1.3
+[budget.track]                # one tracking of the WM at density d, the run's or the truth's (L40S steady x 1.5)
+1 = 1.5                       # 36,605 seeds: 0.7 s
+2 = 3.5                       # 292,840 seeds: 1.9-2.1 s
+4 = 35.0                      # 2,342,720 seeds: 13.6-23.2 s

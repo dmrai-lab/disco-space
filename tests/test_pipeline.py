@@ -71,6 +71,24 @@ def test_noise_is_rician_at_the_given_snr_and_leaves_nan_alone():
     assert np.isnan(out_t[0, 0, 0]).all() and abs(out_t[1:].std() - 0.05) < 0.005 and not np.array_equal(out_t[1:], out[1:])
 
 
+def test_the_snr_is_at_m0_and_each_voxels_b0_snr_follows_its_s0_factor():
+    """A voxel whose b = 0 signal is half of M0 gets twice the sigma on its normalised signal (SNR 20 at M0 is SNR 10
+    there); the factor map must cover the voxels and be positive; the b = 0 SNR summary reads it back."""
+    dwi = np.full((2, 1, 1, 4000), 0.5); factor = np.array([[[1.0]], [[0.5]]])
+    out = P.add_noise(dwi, 20.0, factor, seed=3)
+    assert abs(out[0].std() - 0.05) < 0.004 and abs(out[1].std() - 0.10) < 0.008
+    with pytest.raises(ValueError, match="positive map"):
+        P.add_noise(dwi, 20.0, np.array([[[1.0]], [[0.0]]]))
+    with pytest.raises(ValueError, match="positive map"):
+        P.add_noise(dwi, 20.0, np.ones((3, 1, 1)))
+    S = np.ones((2, 1, 1, 3)); S[1] *= 0.4; M0 = np.array([[[1.0]], [[1.0]]])
+    norm, f = P.s0_normalised(S, np.array([True, False, False]), M0)
+    np.testing.assert_allclose(norm, 1.0); np.testing.assert_allclose(f.ravel(), [1.0, 0.4])
+    res = P.Result(None, None, norm, None, f, None, None, None, None, {}, snr=30.0)
+    assert P.b0_snr(res) == dict(median=21.0, min=12.0, max=30.0)
+    assert P.b0_snr(P.Result(None, None, norm, None, f, None, None, None, None, {})) is None
+
+
 class _Source(P.Source):
     """The ground truth and the config without any replay data (P.Source loads the files, nothing else)."""
     mode = "test"
@@ -93,7 +111,7 @@ def test_the_volumes_round_trip(tmp_path):
     m = P.measurements(p, CFG["shapes"])
     dwi = np.random.default_rng(0).random((4, 4, 4, 7)); dwi[0, 0, 0] = np.nan
     sh = np.random.default_rng(1).random((4, 4, 4, 45))
-    res = P.Result(p, m, dwi, np.zeros((4, 4, 4)), sh, None, None, None, {}, {})
+    res = P.Result(p, m, dwi, np.zeros((4, 4, 4)), np.ones((4, 4, 4)), sh, None, None, None, {}, {})
     paths = P.write_volumes(res, str(tmp_path), prefix="t")
     back = np.asarray(nib.load(paths["dwi"]).dataobj)
     np.testing.assert_allclose(back, np.nan_to_num(dwi).astype(np.float32))
@@ -244,7 +262,7 @@ def test_the_pair_spread_over_repeated_runs():
 def test_floor_stats_are_over_the_voxels_with_signal():
     dwi = np.ones((3, 3, 3, 2)); dwi[0, 0, 0] = np.nan
     floor = np.arange(27, dtype=float).reshape(3, 3, 3) / 27
-    res = P.Result(None, None, dwi, floor, None, None, None, None, {})
+    res = P.Result(None, None, dwi, floor, None, None, None, None, None, {})
     f = P.floor_stats(res)
     assert f["n"] == 26 and f["max"] == floor[2, 2, 2] and f["median"] == np.median(floor.ravel()[1:])
 

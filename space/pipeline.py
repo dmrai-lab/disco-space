@@ -395,8 +395,10 @@ class Source:
         return measurements(protocol, self.shapes)
 
     def replay(self, meas, physics=None):
-        """``(dwi, floor, seconds)``: the S0-normalised signal of every voxel per measurement (NaN outside the
-        pack's rows), the split-half floor per voxel, and the time; at ``physics`` else bare diffusion."""
+        """``(dwi, floor, s0_factor, seconds)``: the S0-normalised signal of every voxel per measurement (NaN
+        outside the pack's rows), the split-half floor per voxel, the voxel's raw b = 0 signal as a fraction of M0
+        (the bare signal of the fullest water voxel: what relaxation, contact and the field took, 1 when the source
+        cannot tell), and the time; at ``physics`` else bare diffusion."""
         raise NotImplementedError
 
     def plan(self, meas, physics=None):
@@ -413,11 +415,20 @@ class Source:
         if res is not None:
             f = floor_stats(res)
             rows.append(["this run's floor: median / 99 % / max over voxels with signal", f"{f['median']:.4f} / {f['p99']:.4f} / {f['max']:.4f}"])
+            sf = res.s0_factor[np.isfinite(res.dwi[..., 0])]
+            rows.append(["this run's b = 0 signal over M0: min / median / max", f"{np.nanmin(sf):.3f} / {np.nanmedian(sf):.3f} / {np.nanmax(sf):.3f}"])
+            snr = b0_snr(res)
+            if snr:
+                rows.append([f"b = 0 SNR at SNR {res.snr:g} at M0: min / median / max", f"{snr['min']:.1f} / {snr['median']:.1f} / {snr['max']:.1f}"])
         return rows
 
 
-def s0_normalised(S, b0):
-    return S / np.nanmean(S[..., b0], axis=-1, keepdims=True)
+def s0_normalised(S, b0, M0=None):
+    """``(S / S0, S0 / M0_max)``: every voxel's signal over its own b = 0 mean, and that b = 0 mean over the largest
+    M0 (the bare signal of the fullest water voxel: ``M0`` is the bare b = 0 map, None gives a factor of 1)."""
+    S0 = np.nanmean(S[..., b0], axis=-1)
+    factor = S0 / np.nanmax(M0) if M0 is not None else np.where(np.isfinite(S0), 1.0, np.nan)
+    return S / S0[..., None], factor
 
 
 class Layout(Source):
@@ -447,6 +458,7 @@ class Layout(Source):
                 if v is not None and abs(float(v) - float(t[k])) > 1e-9:
                     raise ValueError(f"class {name}: the layout's {k} is {v} s, the config's {t[k]} s")
         self.tiers = bool(self.moments.manifest.get("tiers"))
+        self.M0 = None                                   # the bare b = 0 map (every voxel's walker weight): set by warm()
         if self.tiers:                                   # the pools with walkers are the spec's first n_pools ids
             t = self.moments.manifest["tiers"]
             spec_pools = sorted(t["substrate"]["pools"], key=lambda q: q["id"]) if t.get("substrate") else []
@@ -475,7 +487,10 @@ class Layout(Source):
             S[..., rows], f = self.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=self.backend,
                                                  resident=self.resident, tissue=tissue, scanner=scanner, b0_direction=b0)
             floor = np.fmax(floor, f)
-        return s0_normalised(S, meas.b0), floor, time.perf_counter() - t0
+        if self.M0 is None:                              # the bare b = 0 map: the walker weight of every voxel
+            self.M0 = self.moments.image(meas.shape[0], np.zeros(1), np.array([B0_ALONG_Z]), backend=self.backend, resident=self.resident)[0][..., 0]
+        dwi, factor = s0_normalised(S, meas.b0, self.M0)
+        return dwi, floor, factor, time.perf_counter() - t0
 
     def default_physics(self):
         """The tissue panel's default (``[physics]``), or None when it starts off or the layout has no tiers."""
@@ -574,7 +589,8 @@ class Columns(Source):
         study = Study(SProtocol([Acquisition(self.sequence(meas), name="run")]), tissues=[tissue], scanners=[scanner])
         S, floor, plan = self.pack.image_study(study, tol=BAND_TOL, chunk_rows=1_000_000, progress=progress)
         self.last_plan = plan
-        return s0_normalised(S[0], meas.b0), floor[0], time.perf_counter() - t0
+        dwi, factor = s0_normalised(S[0], meas.b0)      # the pack's bare weights are not read here: the factor is 1
+        return dwi, floor[0], factor, time.perf_counter() - t0
 
     def accuracy(self, res=None):
         m = self.pack.meta
@@ -595,19 +611,24 @@ def source(cfg, *, local=None):
 
 # ---- the stages -------------------------------------------------------------------------------------------------
 
-def add_noise(dwi, snr, seed=0, backend="jax"):
-    """Rician noise at ``snr`` (the b = 0 SNR; the DWI is S0-normalised, so sigma = 1 / snr); ``None`` leaves the
-    signal noiseless. NaN voxels stay NaN. The draw comes from JAX's generator on the jax backend and from numpy's
-    on the torch backend (a forked GPU worker must not touch JAX); the two streams differ, the distribution is the
-    same."""
+def add_noise(dwi, snr, s0_factor=None, seed=0, backend="jax"):
+    """Rician noise at ``snr`` defined at M0, the bare signal of the fullest water voxel: sigma is M0 / snr in
+    absolute units, so on the S0-normalised DWI it is ``1 / (snr * s0_factor)`` per voxel (``s0_factor`` the voxel's
+    raw b = 0 over M0; None means 1 everywhere, the b = 0 SNR itself). ``None`` for ``snr`` leaves the signal
+    noiseless. NaN voxels stay NaN. The draw comes from JAX's generator on the jax backend and from numpy's on the
+    torch backend (a forked GPU worker must not touch JAX); the two streams differ, the distribution is the same."""
     if snr is None:
         return dwi
     if snr <= 0:
         raise ValueError("SNR is positive, or None for no noise")
     from dmipy_sim.acquisition.noise import add_rician_noise
     valid = np.isfinite(dwi)
-    out = np.array(dwi)
-    out[valid] = np.asarray(add_rician_noise(dwi[valid], 1.0 / snr, seed=seed, rng="numpy" if backend == "torch" else "jax"))
+    factor = np.ones(dwi.shape[:-1]) if s0_factor is None else np.asarray(s0_factor, np.float64)
+    if factor.shape != dwi.shape[:-1] or np.any(factor[np.isfinite(factor)] <= 0):
+        raise ValueError("s0_factor is a positive map over the DWI's voxels")
+    sigma = np.broadcast_to((1.0 / (snr * factor))[..., None], dwi.shape)[valid]
+    out = np.array(dwi)                                  # Rice(nu, sigma) = sigma * Rice(nu / sigma, 1): one unit-sigma draw
+    out[valid] = sigma * np.asarray(add_rician_noise(dwi[valid] / sigma, 1.0, seed=seed, rng="numpy" if backend == "torch" else "jax"))
     return out
 
 
@@ -735,6 +756,15 @@ def floor_stats(res):
     return dict(median=float(np.median(f)), p99=float(np.quantile(f, 0.99)), max=float(f.max()), n=int(f.size))
 
 
+def b0_snr(res):
+    """The b = 0 SNR of the run's voxels with signal (``snr`` at M0 times each voxel's S0 factor): ``median``,
+    ``min``, ``max``; None for a noiseless run."""
+    if res.snr is None:
+        return None
+    f = res.s0_factor[np.isfinite(res.dwi[..., 0])] * res.snr
+    return dict(median=float(np.nanmedian(f)), min=float(np.nanmin(f)), max=float(np.nanmax(f)))
+
+
 def gradient_needed(b, delta, Delta):
     """The square-pulse PGSE amplitude (T/m) that gives ``b`` (s/mm^2) at ``delta`` / ``Delta`` (s):
     b = γ² G² δ² (Δ − δ/3)."""
@@ -778,12 +808,14 @@ def sample_tractogram(tg, n, *, seed=0):
 @dataclass
 class Result:
     """One run: the protocol and its rows, the DWI the CSD saw (noisy when ``snr`` is set), the replay floor per
-    voxel, the FOD SH field, the tractogram and its seeds, the connectome and its score, the stage times, and the
-    physics (None for bare diffusion)."""
+    voxel, the voxel's b = 0 signal over M0 (what the physics took, the b = 0 SNR is ``snr`` times it), the FOD SH
+    field, the tractogram and its seeds, the connectome and its score, the stage times, and the physics (None for
+    bare diffusion)."""
     protocol: Protocol
     meas: Measurements
     dwi: np.ndarray
     floor: np.ndarray
+    s0_factor: np.ndarray
     sh: np.ndarray
     tractogram: object
     seeds: np.ndarray
@@ -807,13 +839,13 @@ def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0,
         print(f"[pipeline] {stage} at +{time.perf_counter() - t_run:.1f} s", flush=True)      # the server log shows where a run is
         return stage, STAGES.index(stage), len(STAGES)
     meas = source.validate(protocol, physics)
-    yield at("replay"); dwi, floor, t_replay = source.replay(meas, physics)
-    yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, seed=noise_seed, backend=source.backend); t_noise = time.perf_counter() - t0
+    yield at("replay"); dwi, floor, s0_factor, t_replay = source.replay(meas, physics)
+    yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, s0_factor, seed=noise_seed, backend=source.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
     yield at("csd"); sh, t_csd = csd(noisy, meas, signal, backend=source.backend)
     yield at("track"); t0 = time.perf_counter(); fld, seeds = tracking_inputs(sh, source, tracking.density); tg, _ = track(fld, seeds, tracking, source.backend); t_track = time.perf_counter() - t0
     yield at("score"); t0 = time.perf_counter(); M = connectome(tg, source); s = score(M, source); t_score = time.perf_counter() - t0
-    yield Result(protocol, meas, noisy, floor, sh, tg, seeds, M, s, snr=snr, physics=physics,
+    yield Result(protocol, meas, noisy, floor, s0_factor, sh, tg, seeds, M, s, snr=snr, physics=physics,
                  seconds=dict(replay=t_replay, noise=t_noise, csd=t_csd, track=t_track, score=t_score,
                               total=t_replay + t_noise + t_csd + t_track + t_score))
 

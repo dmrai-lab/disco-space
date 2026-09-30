@@ -41,7 +41,7 @@ def test_discos_protocol_from_the_layout_is_the_published_reference_volume(layou
     p, order = P.disco_protocol(CFG)                                   # order: the table's rows in the protocol's order
     physics = None if run == "bare" else P.Physics.at(float(run[:-1]))
     m = layout.validate(p, physics)
-    dwi, floor, secs = layout.replay(m, physics)
+    dwi, floor, factor, secs = layout.replay(m, physics)
     ref_path = hf_hub_download(CFG["data"]["repo"], f"disco/reference/disco_replay_{run}.nii.gz", repo_type="dataset", revision=CFG["data"]["revision"])
     ref = np.asarray(nib.load(ref_path).dataobj, np.float64)[..., order]
     both = np.isfinite(dwi) & (ref != 0)

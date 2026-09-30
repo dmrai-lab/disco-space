@@ -232,9 +232,11 @@ def _one_run(tag, source, protocol, snr_on, snr, tracking, physics, t0, progress
 
 def _score_text(tag, res):
     s = res.score; physics = res.physics
+    snr = P.b0_snr(res)
+    noise = "" if snr is None else f", SNR {res.snr:g} at M0 = {snr['median']:.1f} at b = 0 in the median voxel"
     return (f"**{tag}: Pearson vs strand count {s['pearson_count']:.3f}, vs area {s['pearson_area']:.3f}** "
             f"({res.protocol.n_meas} measurements, {physics.label() if physics else 'bare diffusion'}"
-            f"{'' if res.snr is None else f', SNR {res.snr:g}'}, {len(res.tractogram):,} streamlines, {res.seconds['total']:.1f} s; "
+            f"{noise}, {len(res.tractogram):,} streamlines, {res.seconds['total']:.1f} s; "
             f"replay floor median {P.floor_stats(res)['median']:.4f})")
 
 
@@ -420,7 +422,7 @@ def build(runner=None):
                         assert len(physics_inputs) == len(PHYSICS_FIELDS)
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
-                            snr = gr.Slider(5, 100, value=30, step=1, label="SNR at b = 0")
+                            snr = gr.Slider(5, 100, value=30, step=1, label="SNR at M0 (a full water voxel before relaxation; each voxel's b = 0 SNR follows its tissue)")
                         density = gr.Slider(1, 4, value=cfg["tracking"]["density"], step=1, label="seeds per region voxel (density³)")
                         max_angle = gr.Slider(10, 60, value=cfg["tracking"]["max_angle"], step=1, label="max angle (°)")
                         step_mm = gr.Slider(0.25, 1.0, value=cfg["tracking"]["step_mm"], step=0.05, label="step (voxels; the grid is the mm frame)")

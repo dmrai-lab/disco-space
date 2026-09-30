@@ -184,3 +184,22 @@ def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():
     assert A._layer_labels(P.Physics.at(3.0, contact=False), "SNR → 10") == ("A = bare + relaxation + field", "B = A with SNR → 10")
     assert A._layer_labels(None, A.NO_KNOB)[0] == "A = bare diffusion"
     assert A.explore(None, "A", "signal", A.METRICS[0], 0, 0) is None and A.ingredient_views(None, 0) == (None, None, None) and A.layer_table(None) == []
+
+
+def test_the_run_button_chains_the_devices_texts_into_the_headline_then_the_pages_outputs(monkeypatch):
+    """run_pipeline: every (text, fraction) of the compute function becomes a headline-only update (the progress bar
+    following), the payload goes to present once the device part has ended, and its outputs are the last yield."""
+    pytest.importorskip("gradio")
+    monkeypatch.setattr(A, "_load", lambda: dict(error=None, load_seconds=1.0, regions=None, source=type("S", (), {"gt_count": None, "accuracy": None})()))
+    seen = []
+    monkeypatch.setattr(A, "present", lambda payload, *rest: seen.append(payload) or ("drawn",) * len(A.OUTPUTS))
+
+    def fake_compute(*args):
+        yield ("**A · 1/5 replay** …", 0.1)
+        yield ("**A · 2/5 noise** …", 0.3)
+        yield dict(results={}, compute_seconds=12.0)
+    bars = []
+    out = list(A.run_pipeline(fake_compute, "x", 1, progress=lambda f, desc: bars.append((f, desc))))
+    assert [o[1] for o in out[:2]] == ["**A · 1/5 replay** …", "**A · 2/5 noise** …"] and all(len(o) == len(A.OUTPUTS) for o in out[:3])
+    assert "drawing" in out[2][1] and out[3] == ("drawn",) * len(A.OUTPUTS)
+    assert bars == [(0.0, "starting"), (0.1, "A · 1/5 replay"), (0.3, "A · 2/5 noise")] and seen[0]["compute_seconds"] == 12.0

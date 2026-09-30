@@ -200,12 +200,12 @@ def plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner
     return runs
 
 
-def _result_state(res, sample, source, load_seconds):
+def _result_state(res, sample, load_seconds):
     """What the results tab needs, kept per session: float32 volumes, the peaks, the streamline sample, the numbers."""
     pk, amp = P.peaks(res.sh)
     return dict(dwi=res.dwi.astype(np.float32), floor=res.floor.astype(np.float32), floor_median=P.floor_stats(res)["median"], meas=res.meas,
                 peaks=pk.astype(np.float32), peak_amp=amp.astype(np.float32), matrix=res.matrix, score=res.score, seconds=res.seconds,
-                load_seconds=load_seconds, tractogram=sample, n_streamlines=len(res.tractogram), shape=source.mask.shape, name=res.protocol.name)
+                load_seconds=load_seconds, tractogram=sample, n_streamlines=len(res.tractogram), shape=res.dwi.shape[:3], name=res.protocol.name)
 
 
 def _layer_labels(physics, knob):
@@ -216,7 +216,7 @@ def _layer_labels(physics, knob):
     return a, f"B = A with {knob}"
 
 
-def _explorer_state(results, ladder, ingredients, source, knob):
+def _explorer_state(results, ladder, ingredients, knob):
     """What the Replay DWI Explorer keeps per session: the noise-free layers (the ladder, then A, then B) as float16
     volumes with their tensor maps, the replay floor, the ingredient maps, the per-shell layer differences."""
     ra = results["A"]; mask = np.isfinite(ra.clean[..., 0])
@@ -240,25 +240,27 @@ def _status(text):
     return (keep, text) + (keep,) * (len(OUTPUTS) - 2)
 
 
-def _one_run(tag, source, protocol, snr_on, snr, tracking, physics, t0, progress):
-    """One pipeline run as a generator of page updates, then ``(Result, sample, files)`` last: ``tag`` is A or B
-    in the stage text; the run's files replace the previous run's under the same tag."""
-    res = None
+def _one_run(tag, source, protocol, snr_on, snr, tracking, physics, t0):
+    """One pipeline run as a generator of ``(text, fraction)`` stage updates, then the :class:`Result` last: ``tag``
+    is A or B in the stage text."""
     for item in P.run_stages(source, protocol, snr=(float(snr) if snr_on else None), tracking=tracking, physics=physics):
         if isinstance(item, P.Result):
-            res = item
-            break
+            yield item
+            return
         stage, k, n = item
-        if progress:
-            progress((k + 0.5) / (n + 1), desc=f"{tag} {k + 1}/{n} {STAGE_TEXT[stage]}")
-        yield _status(f"**{tag} · {k + 1}/{n} {STAGE_TEXT[stage]}** … ({protocol.n_meas} measurements, {time.perf_counter() - t0:.0f} s so far)")
+        yield (f"**{tag} · {k + 1}/{n} {STAGE_TEXT[stage]}** … ({protocol.n_meas} measurements, {time.perf_counter() - t0:.0f} s so far)", (k + 0.5) / (n + 1))
+
+
+def _write_files(tag, res):
+    """The run's files under its tag (the previous run's under the same tag replaced): the full tractogram and a
+    sample as .tck, the DWI and FOD volumes; ``(sample, {"tck": [...], "volumes": [...]})``."""
     out = os.path.join(_RUNS, tag); shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
-    stem = f"disco_{tag}_{protocol.name.replace(' ', '_')}"
+    stem = f"disco_{tag}_{res.protocol.name.replace(' ', '_')}"
     tck = os.path.join(out, f"{stem}.tck"); res.tractogram.to_tck(tck)
     sample = P.sample_tractogram(res.tractogram, SAMPLE)
     sample_path = os.path.join(out, f"{stem}_sample{SAMPLE // 1000}k.tck"); sample.to_tck(sample_path)
     vols = P.write_volumes(res, out, prefix=stem)
-    yield res, sample, dict(tck=[tck, sample_path], volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]])
+    return sample, dict(tck=[tck, sample_path], volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]])
 
 
 def _score_text(tag, res):
@@ -335,58 +337,69 @@ def layer_table(ex):
     return rows
 
 
-def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest, progress=None):
-    """The run button, a generator: while a stage runs it yields the stage's name into the headline (the other
-    outputs untouched), and last the results: A, and B when ``knob`` changes one thing (the same tracker key, so
-    the difference is the knob's); ``rest`` is the physics panel then the shell rows. A generator's yields reach
-    the page from inside a GPU worker."""
-    import gradio as gr
-    if progress:
-        progress(0.0, desc="starting")
+def compute(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
+    """Everything a run needs the device for, a generator: ``(text, fraction)`` stage updates while it works, then
+    the payload last, a dict of plain data (:class:`P.Result` per tag, the explorer's ladder and ingredient maps, the
+    tracker-key spread, the seconds of each step, the clock at the handoff). ``rest`` is the physics panel then the
+    shell rows. On a shared GPU pool this runs in the forked worker and its yields cross to the page's process;
+    nothing here draws or writes a file, so the device is held for the compute alone."""
     state = _load()
     if state["error"]:
-        raise gr.Error(f"the source did not load: {state['error']}")
+        raise ValueError(f"the source did not load: {state['error']}")
     source, cfg = state["source"], state["cfg"]
     values = physics_values(*rest[:len(PHYSICS_FIELDS)]); shell_inputs = rest[len(PHYSICS_FIELDS):]
-    try:
-        runs = plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner, values, shell_inputs)
-    except (ValueError, KeyError) as e:
-        raise gr.Error(str(e))
+    runs = plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner, values, shell_inputs)
     for tag, prot, _, _, physics in runs:                # full mode: what each run reads, before any byte moves
         plan = source.plan(P.measurements(prot, cfg["shapes"]), physics)
         if plan:
-            yield _status(f"**{tag}: full replay of {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
-                          f"{plan['estimated_seconds'] / 60:.0f} min** (bands {plan['K']}, field modes {plan['modes']})")
+            yield (f"**{tag}: full replay of {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
+                   f"{plan['estimated_seconds'] / 60:.0f} min** (bands {plan['K']}, field modes {plan['modes']})", 0.0)
     tracking = P.Tracking(density=int(density), step_mm=float(step_mm), max_angle=float(max_angle), key=int(key))
     t0 = time.perf_counter()
-    results = {}; samples = {}; files = {}
+    results = {}; seconds = {}
     try:
         for tag, prot, on, s_, ph in runs:
-            for item in _one_run(tag, source, prot, on, s_, tracking, ph, t0, progress):
-                if isinstance(item, tuple) and len(item) == 3 and isinstance(item[0], P.Result):
-                    results[tag], samples[tag], files[tag] = item
+            for item in _one_run(tag, source, prot, on, s_, tracking, ph, t0):
+                if isinstance(item, P.Result):
+                    results[tag] = item
                 else:
                     yield item
         meas_a = results["A"].meas; physics_a = runs[0][4]
         ladder = []
         if ladder_on and physics_a is not None and not physics_a.bare:
-            yield _status(f"**Replay DWI Explorer · the tier ladder of A, noise-free** … ({time.perf_counter() - t0:.0f} s so far)")
-            ladder = source.ladder(meas_a, physics_a)
-        yield _status(f"**Replay DWI Explorer · the ingredient maps** … ({time.perf_counter() - t0:.0f} s so far)")
-        ingredients = source.ingredients(meas_a, physics_a)
+            yield (f"**Replay DWI Explorer · the tier ladder of A, noise-free** … ({time.perf_counter() - t0:.0f} s so far)", 0.8)
+            t = time.perf_counter(); ladder = source.ladder(meas_a, physics_a); seconds["explorer · ladder"] = time.perf_counter() - t
+        yield (f"**Replay DWI Explorer · the ingredient maps** … ({time.perf_counter() - t0:.0f} s so far)", 0.85)
+        t = time.perf_counter(); ingredients = source.ingredients(meas_a, physics_a); seconds["explorer · ingredients"] = time.perf_counter() - t
+        spread = None
+        if int(n_keys) > 1:                                 # A's tracking repeated over further keys: the tractogram's own spread
+            keys = [int(key) + 1 + i for i in range(int(n_keys) - 1)]
+            mats = [results["A"].matrix]; scores = [results["A"].score]
+            for i, (k, M, sc, secs) in enumerate(P.repeat_tracking(results["A"], source, tracking, keys)):
+                mats.append(M); scores.append(sc)
+                yield (f"**A · tracking again with key {k} ({i + 2}/{int(n_keys)})** … ({time.perf_counter() - t0:.0f} s so far)", 0.9)
+            spread = P.pair_spread(mats, scores)
     finally:
         source.release()
-    spread = None
-    if int(n_keys) > 1:                                     # A's tracking repeated over further keys: the tractogram's own spread
-        keys = [int(key) + 1 + i for i in range(int(n_keys) - 1)]
-        mats = [results["A"].matrix]; scores = [results["A"].score]
-        for i, (k, M, sc, secs) in enumerate(P.repeat_tracking(results["A"], source, tracking, keys)):
-            mats.append(M); scores.append(sc)
-            yield _status(f"**A · tracking again with key {k} ({i + 2}/{int(n_keys)})** … ({time.perf_counter() - t0:.0f} s so far)")
-        spread = P.pair_spread(mats, scores)
-    yield _status(f"**drawing** … ({time.perf_counter() - t0:.0f} s so far)")
-    rs = {tag: _result_state(r, samples[tag], source, state["load_seconds"]) for tag, r in results.items()}
-    ex = _explorer_state(results, ladder, ingredients, source, knob)
+    yield dict(results=results, ladder=ladder, ingredients=ingredients, spread=spread, knob=knob, seconds=seconds,
+               compute_seconds=time.perf_counter() - t0, handed_off_at=time.time())
+
+
+def present(payload, load_seconds, regions, gt_count, accuracy):
+    """The page's outputs (:data:`OUTPUTS`, in order) from a compute payload: the files, the per-session states, the
+    headline and the figures. Runs where the page runs, never on the device."""
+    import gradio as gr
+    received = time.time()
+    results = payload["results"]; ladder = payload["ladder"]; ingredients = payload["ingredients"]; spread = payload["spread"]; knob = payload["knob"]
+    post = dict(payload["seconds"])
+    t = time.perf_counter()
+    samples = {}; files = {}
+    for tag, r in results.items():
+        samples[tag], files[tag] = _write_files(tag, r)
+    post["page · files"] = time.perf_counter() - t; t = time.perf_counter()
+    rs = {tag: _result_state(r, samples[tag], load_seconds) for tag, r in results.items()}
+    ex = _explorer_state(results, ladder, ingredients, knob)
+    post["page · states"] = time.perf_counter() - t; t = time.perf_counter()
     labels = [l for l, _ in ex["layers"]]; name_a = labels[-2] if "B" in results else labels[-1]
     ra = rs["A"]; rb = rs.get("B")
     headline = _score_text("A", results["A"])
@@ -401,21 +414,50 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
     headline += " The Replay DWI Explorer is the third tab, the DiSCo results the fourth."
     z0 = ra["dwi"].shape[2] // 2
     m0 = int(np.flatnonzero(~ra["meas"].b0)[0]) if (~ra["meas"].b0).any() else 0
-    timings = [[f"{tag} · {r}", t] for tag in rs for r, t in V.timings_rows(rs[tag]["seconds"], rs[tag]["load_seconds"])] if rb else V.timings_rows(ra["seconds"], ra["load_seconds"])
-    regions = state["regions"]
+    timings = [[f"{tag} · {r}", t_] for tag in rs for r, t_ in V.timings_rows(rs[tag]["seconds"], rs[tag]["load_seconds"])] if rb else V.timings_rows(ra["seconds"], ra["load_seconds"])
+    timings += [["device held (compute)", f"{payload['compute_seconds']:.2f}"], ["handoff to the page", f"{received - payload['handed_off_at']:.2f}"]]
+    timings += [[k, f"{v:.2f}"] for k, v in post.items()]
     rs["explorer"] = ex                                  # the page state: A, B and the explorer's layers
-    yield (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=True, label="A: "),
-           V.tractogram3d(ra["tractogram"], regions, ra["shape"], total=ra["n_streamlines"]), V.matrices(ra["matrix"], ra["score"], source.gt_count),
-           timings, [t for f in files.values() for t in f["tck"]], [v for f in files.values() for v in f["volumes"]],
+    out = (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=True, label="A: "),
+           V.tractogram3d(ra["tractogram"], regions, ra["shape"], total=ra["n_streamlines"]), V.matrices(ra["matrix"], ra["score"], gt_count),
+           timings, [t_ for f in files.values() for t_ in f["tck"]], [v for f in files.values() for v in f["volumes"]],
            _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1),
            V.tractogram3d(rb["tractogram"], regions, rb["shape"], total=rb["n_streamlines"]) if rb else None,
-           V.matrices(rb["matrix"], rb["score"], source.gt_count) if rb else None,
+           V.matrices(rb["matrix"], rb["score"], gt_count) if rb else None,
            gr.update(visible=rb is not None),
-           V.floor_slice(ra["floor"], z0, ra["floor_median"], label="A: "), source.accuracy(results["A"]),
+           V.floor_slice(ra["floor"], z0, ra["floor_median"], label="A: "), accuracy(results["A"]),
            V.spread_matrices(spread) if spread else None,
            explore(ex, name_a, "minus the previous layer" if len(labels) > 1 else "signal", METRICS[0], z0, m0),
            explore(ex, name_a, "signal", METRICS[2], z0, m0), *ingredient_views(ex, z0), layer_table(ex),
            gr.update(choices=labels, value=name_a), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1))
+    timings.append(["page · figures", f"{time.perf_counter() - t:.2f}"])
+    return out
+
+
+def run_pipeline(compute_fn, *args, progress=None):
+    """The run button, a generator: the stage texts of ``compute_fn`` (:func:`compute`, or it wrapped for a GPU
+    pool) into the headline as they arrive (the other outputs untouched, the progress bar following), then the
+    page's outputs from its payload (:func:`present`)."""
+    import gradio as gr
+    state = _load()
+    if state["error"]:
+        raise gr.Error(f"the source did not load: {state['error']}")
+    if progress:
+        progress(0.0, desc="starting")
+    payload = None
+    try:
+        for item in compute_fn(*args):
+            if isinstance(item, dict):
+                payload = item
+            else:
+                text, fraction = item
+                if progress:
+                    progress(fraction, desc=text.split("**")[1] if "**" in text else text)
+                yield _status(text)
+    except (ValueError, KeyError) as e:
+        raise gr.Error(str(e))
+    yield _status(f"**drawing** … (device held {payload['compute_seconds']:.0f} s)")
+    yield present(payload, state["load_seconds"], state["regions"], state["source"].gt_count, state["source"].accuracy)
 
 
 GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # ZeroGPU's daily quota per visitor tier, seconds
@@ -481,8 +523,8 @@ def ground_truth_views():
 
 
 def build(runner=None):
-    """The Blocks. ``runner`` wraps :func:`run_pipeline` for the run button (the ZeroGPU entry passes
-    ``spaces.GPU(...)``); the wrapper receives the same positional inputs and Gradio's progress."""
+    """The Blocks. ``runner`` wraps :func:`compute` for the run button (the ZeroGPU entry passes ``spaces.GPU(...)``):
+    the device part of a run; the page draws from its payload in this process."""
     import gradio as gr
     cfg = P.config()
     full = P.mode(cfg) == "full"
@@ -624,8 +666,10 @@ def build(runner=None):
                     with gr.Column():
                         tck = gr.File(label="tractograms (.tck, MRtrix): every streamline, and a 10k sample", file_count="multiple")
                         volumes = gr.File(label="DWI (.nii.gz) with bvals/bvecs, and the FOD SH field (.nii.gz, tournier07 order 8)", file_count="multiple")
+        compute_fn = compute if runner is None else runner(compute)      # the device part alone runs under a pool's GPU
+
         def run_with_progress(*args, progress=gr.Progress()):
-            yield from run_pipeline(*args, progress=progress)
+            yield from run_pipeline(compute_fn, *args, progress=progress)
         tissue_numbers = [*T2s, *T1s, rho, chi_iso, chi_aniso, catalogue_note]
         field_preset.change(lambda name: [field_presets[name]] + catalogue_numbers(field_presets[name]), inputs=field_preset,
                             outputs=[field_T] + tissue_numbers, show_progress="hidden")
@@ -649,9 +693,7 @@ def build(runner=None):
         run_inputs = [preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *physics_inputs, *shell_inputs]
         if runner is not None:                                   # the pool: what the run reserves, live as the inputs change
             gr.on([c.change for c in run_inputs] + [demo.load], gpu_seconds_text, inputs=run_inputs, outputs=gpu_text, show_progress="hidden")
-        # a runner (the ZeroGPU entry) owns the call and its progress object: Gradio hands it the inputs only
-        go.click(run_with_progress if runner is None else runner(run_pipeline),
-                 inputs=run_inputs,
+        go.click(run_with_progress, inputs=run_inputs,
                  outputs=[outputs[name] for name in OUTPUTS], concurrency_limit=1, api_name="run_pipeline")   # the endpoint tools/live.py drives
         for ctl in (z_slider, m_slider, overlay, which):
             ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view], show_progress="hidden")

@@ -1,5 +1,6 @@
 """The ZeroGPU entry (disco-space#2): the same page as ``space/app.py`` on Hugging Face's shared GPU pool, which runs
-PyTorch only and gives a GPU to a call decorated with ``spaces.GPU`` for its duration. The compute backend is torch
+PyTorch only and gives a GPU to a call decorated with ``spaces.GPU`` for its duration: here the compute alone, the
+page's drawing and files stay in this process (disco-space#7). The compute backend is torch
 (``DISCO_BACKEND=torch``), the layout's tiles are rebuilt on the device inside every call (``resident = false``:
 nothing survives between calls), deterministic algorithms are on and TF32 off inside the call. The layout comes from
 the Hub at the config's revision, downloaded once when the container starts (the parent process loads it before the
@@ -16,20 +17,19 @@ import torch                                            # noqa: E402
 from space import app as A                              # noqa: E402
 
 def gpu_runner(fn):
-    """``fn`` under the GPU for the seconds :func:`space.app.estimated_seconds` reads off the inputs (``DISCO_GPU_SECONDS``
-    overrides with a fixed number), deterministic, full precision. The progress bar is declared on the decorated
-    function itself, the one way a progress object reaches the GPU worker; the stage names reach the page through
-    the generator's yields."""
-    import gradio as gr
+    """``fn`` (:func:`space.app.compute`) under the GPU for the seconds :func:`space.app.estimated_seconds` reads off
+    the inputs (``DISCO_GPU_SECONDS`` overrides with a fixed number), deterministic, full precision. A generator: its
+    stage texts and its payload cross from the worker to the page's process, where the page draws and writes files
+    after the device is released."""
     fixed = os.environ.get("DISCO_GPU_SECONDS")
     duration = (lambda *args, **kw: int(fixed)) if fixed else (lambda *args, **kw: A.estimated_seconds(*args))
 
     @spaces.GPU(duration=duration)
-    def run(*args, progress=gr.Progress()):
+    def run(*args):
         torch.use_deterministic_algorithms(True)
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        yield from fn(*args, progress=progress)                # a generator: the stage names reach the page
+        yield from fn(*args)
     return run
 
 

@@ -317,14 +317,27 @@ def test_layer_differences_are_per_shell_between_consecutive_layers():
     np.testing.assert_allclose([r[3] for r in rows], [0.01, 0.05, 0.0, 0.02], atol=1e-12)
 
 
-def test_a_voxel_mean_is_the_weighted_mean_over_the_voxels_tiles():
-    """voxel_mean on a stand-in layout: two voxels, both halves, tiles of two lanes; the NaN voxel has no tiles."""
+def test_the_ingredients_are_the_layouts_tier_maps_in_the_pages_units():
+    """The ingredient maps on a stand-in layout: the intra fraction as is, the wall contact as +l in micrometres from
+    the stored -l, the survival and the field spread only with their tiers on, the maps asked at the run's tissue,
+    field and direction on the layout's backend."""
+    calls = []
     class _M:
-        n_vox = 3; grid = type("G", (), {"shape": (3, 1, 1)})()
-        cols = {"tiles": np.array([0, 1, 2, 2]), "w": np.array([[1.0, 1.0], [2.0, 0.0], [1.0, 1.0], [1.0, 1.0]])}
-        def _column(self, name):
-            return self.cols[name]
-    lay = P.Layout.__new__(P.Layout); lay.moments = _M()
-    x = np.array([[1.0, 3.0], [5.0, 100.0], [2.0, 2.0], [4.0, 4.0]])
-    out = P.Layout.voxel_mean(lay, x)
-    np.testing.assert_allclose(out.ravel(), [(1 + 3 + 10) / 4, 3.0, np.nan])
+        manifest = {"tiers": {"D_walk": 6e-10}}
+        def tier_maps(self, shape, tissue=None, scanner=None, *, backend, resident, b0_direction):
+            calls.append((shape, tissue is not None, scanner, backend, resident, tuple(b0_direction)))
+            return dict(pool={"intra": np.full((2, 1, 1), 0.4), "extra": np.full((2, 1, 1), 0.6)}, contact=np.array([[[-2e-5]], [[np.nan]]]),
+                        contact_weight=np.full((2, 1, 1), 0.9), phase=np.zeros((2, 1, 1)), phase_std=np.full((2, 1, 1), 0.1))
+    lay = P.Layout.__new__(P.Layout); lay.moments = _M(); lay.tiers = True; lay.backend = "torch"; lay.unseeded = ("myelin",)
+    meas = P.measurements(P.Protocol((P.Shell("d12-D24", 1000, 6),), n_b0=1), P.config()["shapes"])
+    ph = P.Physics.at(3.0)
+    out = P.Layout.ingredients(lay, meas, ph)
+    assert out["D_walk"] == 6e-10 and out["intra_fraction"][0, 0, 0] == 0.4
+    np.testing.assert_allclose(out["wall_contact_um"].ravel(), [20.0, np.nan])
+    assert out["contact_survival"][0, 0, 0] == 0.9 and out["field_rad"][0, 0, 0] == 0.1
+    assert calls[-1] == ("d12-D24", True, 3.0, "torch", True, (0.0, 0.0, 1.0))
+    bare = P.Layout.ingredients(lay, meas, None)
+    assert bare["contact_survival"] is None and bare["field_rad"] is None and bare["wall_contact_um"][0, 0, 0] == 20.0
+    assert calls[-1][1:3] == (False, None)
+    lay.tiers = False
+    assert P.Layout.ingredients(lay, meas, ph) is None

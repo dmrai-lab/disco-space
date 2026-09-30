@@ -1,9 +1,10 @@
 """The DiSCo Space's page: three tabs over :mod:`space.pipeline` -- the acquisition (a preset, DiSCo's own table, custom
-shells on the layout's timing classes, or an uploaded bvals/bvecs table; SNR; the tracker's settings; the run button,
-whose progress bar names the stage it is in), the ground truth (the strands in a rotatable 3-D view, the two matrices),
-and the results (a DWI slice viewer with the FODs' principal directions over it, the tractogram in 3-D, the connectome
-beside the ground truth, the timings, the downloads). Nothing scientific lives here: every number comes from the
-pipeline, every figure from :mod:`space.viewers`."""
+shells; SNR; the tracker's settings; the run button, whose progress bar names the stage it is in), the ground truth
+(the strands in a rotatable 3-D view, the two matrices), and the results (a DWI slice viewer with the FODs' principal
+directions over it, the tractogram in 3-D, the connectome beside the ground truth, the timings, the downloads). In
+demo mode (the hosted Spaces) a shell plays one of the layout's stored pulse timings; in full mode (``DISCO_MODE=full``,
+the columnar pack at ``DISCO_COLUMNS``) a shell has its own delta / Delta / TE and a Camino scheme file can be uploaded.
+Nothing scientific lives here: every number comes from the pipeline, every figure from :mod:`space.viewers`."""
 from __future__ import annotations
 
 import os
@@ -18,7 +19,8 @@ from . import viewers as V
 
 MAX_SHELLS = 4
 CUSTOM = "custom shells"
-UPLOADED = "uploaded table"
+UPLOADED = "uploaded scheme"
+PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
 STAGE_TEXT = {"replay": "replaying the grid from the stored walk", "noise": "adding Rician noise", "csd": "fitting CSD (order 8)",
               "track": "tracking from the sixteen regions", "score": "scoring the connectome"}
 _state = {"layout": None, "error": None}
@@ -32,7 +34,10 @@ def _load():
             try:
                 t0 = time.perf_counter()
                 cfg = P.config()
-                layout = P.Layout(cfg, local=os.environ.get("DISCO_MOMENTS"))
+                if P.mode(cfg) == "full":
+                    layout = P.Columns(cfg)
+                else:
+                    layout = P.Layout(cfg, local=os.environ.get("DISCO_MOMENTS"))
                 layout.warm()
                 from dmipy_sim.io.strands import read_tck, read_diameters
                 _state["strands"] = read_tck(os.path.join(P.DATA_DIR, "DiSCo_Strands_Trajectories.tck"), coordinate_unit_m=1.0)
@@ -43,15 +48,17 @@ def _load():
         return _state
 
 
-def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, table=None):
-    """The acquisition the page asks for: DiSCo's own table, a config preset, the shell rows, or an uploaded table
-    (``table`` = (bvals path, bvecs path, timing class))."""
+def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=None, full=False):
+    """The acquisition the page asks for: DiSCo's own table, a config preset, the shell rows (in full mode each with
+    its own delta / Delta / TE in ms, else on a stored timing class), or in full mode an uploaded Camino scheme."""
     if preset == "DiSCo 364":
         return P.disco_protocol(cfg)[0]
     if preset == UPLOADED:
-        if table is None or not table[0] or not table[1]:
-            raise ValueError("upload a bvals and a bvecs file for the uploaded table")
-        return P.protocol_from_table(table[0], table[1], table[2], cfg["shapes"])
+        if not full:
+            raise ValueError("a scheme upload needs full mode (DISCO_MODE=full with the columnar pack)")
+        if not scheme:
+            raise ValueError("upload a Camino .scheme file")
+        return P.protocol_from_scheme(scheme)
     if preset in cfg["presets"]:
         p = cfg["presets"][preset]
         return P.Protocol(tuple(P.Shell(s["shape"], float(s["b"]), int(s["n_dirs"])) for s in p["shells"]), n_b0=int(p["n_b0"]), name=preset)
@@ -59,8 +66,11 @@ def _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, table=None):
         raise ValueError(f"unknown acquisition {preset!r}")
     shells = []
     for k in range(MAX_SHELLS):
-        on, shape, b, n = shell_inputs[4 * k: 4 * k + 4]
-        if on:
+        on, shape, b, n, delta, Delta, TE = shell_inputs[PER_SHELL * k: PER_SHELL * (k + 1)]
+        if on and full:
+            shells.append(P.Shell(f"d{float(delta):g}-D{float(Delta):g}-TE{float(TE):g}", float(b), int(n),
+                                  delta=float(delta) * 1e-3, Delta=float(Delta) * 1e-3, TE=float(TE) * 1e-3))
+        elif on:
             shells.append(P.Shell(str(shape), float(b), int(n)))
     return P.Protocol(tuple(shells), n_b0=int(n_b0), name=CUSTOM)
 
@@ -73,8 +83,7 @@ def _result_state(res, layout, state):
                 tractogram=res.tractogram, rois=layout.rois, shape=layout.mask.shape, name=res.protocol.name)
 
 
-def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs,
-                 progress=None):
+def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, *shell_inputs, progress=None):
     """The run button, a generator: while a stage runs it yields the stage's name into the headline (the other
     outputs untouched), and last the results. A generator reaches the page from inside any worker, where a progress
     object does not."""
@@ -87,8 +96,13 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bv
     if state["error"]:
         raise gr.Error(f"the layout did not load: {state['error']}")
     layout, cfg = state["layout"], state["cfg"]
+    full = isinstance(layout, P.Columns)
     try:
-        protocol = _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, table=(bvals_file, bvecs_file, table_shape))
+        protocol = _protocol_from_inputs(cfg, preset, n_b0, *shell_inputs, scheme=scheme_file, full=full)
+        if full:                                             # the plan before any byte moves: what it reads, how long
+            plan = layout.plan(P.measurements(protocol, cfg["shapes"]))
+            yield (keep, f"**full replay: {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
+                         f"{plan['estimated_seconds'] / 60:.0f} min** (bands {plan['K']}, modes {plan['M']})") + (keep,) * (n_out - 1)
     except (ValueError, KeyError) as e:
         raise gr.Error(str(e))
     tracking = P.Tracking(density=int(density), step_mm=float(step_mm), max_angle=float(max_angle), key=int(key))
@@ -145,7 +159,8 @@ def build(runner=None):
     ``spaces.GPU(...)``); the wrapper receives the same positional inputs and Gradio's progress."""
     import gradio as gr
     cfg = P.config()
-    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM, UPLOADED]
+    full = P.mode(cfg) == "full"
+    shapes = cfg["shapes"]; presets = ["DiSCo 364"] + list(cfg["presets"]) + [CUSTOM] + ([UPLOADED] if full else [])
     shape_names = list(shapes); labels = {n: shapes[n]["label"] for n in shape_names}
     with gr.Blocks(title="DiSCo replay to tractogram") as demo:
         gr.Markdown(
@@ -164,17 +179,23 @@ def build(runner=None):
                         for k in range(MAX_SHELLS):
                             with gr.Row():
                                 on = gr.Checkbox(value=(k == 0), label=f"shell {k + 1}")
-                                shape = gr.Dropdown(shape_names, value=shape_names[0], label="pulse timing δ / Δ")
+                                shape = gr.Dropdown(shape_names, value=shape_names[0], label="pulse timing δ / Δ", visible=not full)
                                 b = gr.Number(value=[1000, 2000, 3000, 6000][k], label="b (s/mm²)")
                                 n = gr.Slider(6, 128, value=[30, 60, 90, 60][k], step=1, label="directions")
-                            shell_inputs += [on, shape, b, n]
-                        gr.Markdown("A shell's **pulse timing** (δ, Δ; TE 53.5 ms, square pulses) is one of the stored classes, because the "
-                                    "replay layout holds each walker's response to that pulse shape; the b-value, the directions and their "
-                                    "number, the SNR and the tracker are free. Stored: " + "; ".join(f"`{n}` = {labels[n]}" for n in shape_names))
-                        with gr.Row():
-                            bvals_file = gr.File(label="uploaded table: bvals (s/mm²)", file_count="single", type="filepath")
-                            bvecs_file = gr.File(label="uploaded table: bvecs", file_count="single", type="filepath")
-                            table_shape = gr.Dropdown(shape_names, value=shape_names[0], label="its pulse timing (every row)")
+                                delta = gr.Number(value=10.2, label="δ (ms)", visible=full)
+                                Delta = gr.Number(value=16.7, label="Δ (ms)", visible=full)
+                                TE = gr.Number(value=53.5, label="TE (ms)", visible=full)
+                            shell_inputs += [on, shape, b, n, delta, Delta, TE]
+                        if full:
+                            gr.Markdown("**Full mode**: the columnar replay pack is read for every run, so a shell's δ / Δ / TE are free "
+                                        "(one TE per run, square pulses) and a Camino `.scheme` file can be uploaded; a run takes minutes, "
+                                        "the plan shown first says how many.")
+                        else:
+                            gr.Markdown("**Demo mode**: a shell's **pulse timing** (δ, Δ; TE 53.5 ms, square pulses) is one of the stored classes, "
+                                        "because the layout holds each walker's response to that pulse shape; the b-value, the directions and their "
+                                        "number, the SNR and the tracker are free. Stored: " + "; ".join(f"`{n}` = {labels[n]}" for n in shape_names)
+                                        + ". The same image beside the columnar pack (`DISCO_MODE=full`) replays any timing, in minutes.")
+                        scheme_file = gr.File(label="uploaded scheme: Camino STEJSKALTANNER (.scheme)", file_count="single", type="filepath", visible=full)
                     with gr.Column(scale=1):
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
@@ -207,7 +228,7 @@ def build(runner=None):
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(*args, progress=progress)
         # a runner (the ZeroGPU entry) owns the call and its progress object: Gradio hands it the inputs only
-        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, bvals_file, bvecs_file, table_shape, *shell_inputs],
+        go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, *shell_inputs],
                  outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay):

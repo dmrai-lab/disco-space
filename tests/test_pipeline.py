@@ -87,27 +87,6 @@ def test_the_score_of_the_ground_truth_is_one_and_the_pairs_add_up():
     assert empty["missed_pairs"] == 25 and empty["connected_pairs"] == 0
 
 
-def test_an_uploaded_table_is_a_protocol_on_one_timing_class(tmp_path):
-    """DiSCo's own bvals/bvecs uploaded on one class: every row's b and direction, b = 0 first, shells by rounded b;
-    the refusals: a transposed-wrong table, a missing b = 0, an unknown class."""
-    import os
-    p = P.protocol_from_table(os.path.join(P.DATA_DIR, "DiSCo_gradients.bvals"), os.path.join(P.DATA_DIR, "DiSCo_gradients_dipy.bvecs"),
-                              "d12-D24", CFG["shapes"])
-    m = P.measurements(p, CFG["shapes"])
-    assert p.n_meas == 364 and p.n_b0 == 4 and [s.b for s in p.shells] == [1000, 1925, 3094, 13192]
-    assert (m.shape == "d12-D24").all() and m.b0[:4].all()
-    np.testing.assert_allclose(np.linalg.norm(m.dirs, axis=1), 1.0, atol=1e-12)
-    np.savetxt(tmp_path / "b.bvals", [[1000, 1000]]); np.savetxt(tmp_path / "b.bvecs", np.eye(3)[:2].T)
-    with pytest.raises(ValueError, match="b = 0"):
-        P.protocol_from_table(tmp_path / "b.bvals", tmp_path / "b.bvecs", "d12-D24", CFG["shapes"])
-    np.savetxt(tmp_path / "c.bvals", [[0, 1000]]); np.savetxt(tmp_path / "c.bvecs", np.eye(3)[:2])
-    with pytest.raises(KeyError, match="no timing class"):
-        P.protocol_from_table(tmp_path / "c.bvals", tmp_path / "c.bvecs", "d99", CFG["shapes"])
-    np.savetxt(tmp_path / "d.bvecs", np.zeros((4, 3)))
-    with pytest.raises(ValueError, match="bvecs must be"):
-        P.protocol_from_table(tmp_path / "c.bvals", tmp_path / "d.bvecs", "d12-D24", CFG["shapes"])
-
-
 def test_the_volumes_round_trip(tmp_path):
     """The DWI and FOD written as NIfTI read back with the table beside them."""
     import nibabel as nib
@@ -131,3 +110,41 @@ def test_the_backend_and_residency_come_from_the_config_or_the_environment(monke
     monkeypatch.setenv("DISCO_BACKEND", "numpy")
     with pytest.raises(ValueError, match="backend"):
         P.backend(CFG)
+
+
+def test_the_mode_and_the_columns_come_from_the_config_or_the_environment(monkeypatch):
+    monkeypatch.delenv("DISCO_MODE", raising=False); monkeypatch.delenv("DISCO_COLUMNS", raising=False)
+    assert P.mode(CFG) == "demo" and P.columns_uri(CFG).startswith("hf://")
+    monkeypatch.setenv("DISCO_MODE", "full"); monkeypatch.setenv("DISCO_COLUMNS", "/columns")
+    assert P.mode(CFG) == "full" and P.columns_uri(CFG) == "/columns"
+    monkeypatch.setenv("DISCO_MODE", "fast")
+    with pytest.raises(ValueError, match="mode"):
+        P.mode(CFG)
+
+
+def test_a_free_pulse_timing_is_the_shells_own_in_full_mode():
+    p = P.Protocol((P.Shell("mine", 2000, 12, delta=0.02, Delta=0.05, TE=0.09),), n_b0=1)
+    m = P.measurements(p, CFG["shapes"])
+    np.testing.assert_allclose(m.delta, 0.02); np.testing.assert_allclose(m.Delta, 0.05); np.testing.assert_allclose(m.TE, 0.09)
+    with pytest.raises(ValueError, match="delta < Delta < TE"):
+        P.measurements(P.Protocol((P.Shell("bad", 2000, 12, delta=0.06, Delta=0.05, TE=0.09),)), CFG["shapes"])
+
+
+def test_a_camino_scheme_becomes_a_protocol_with_every_rows_timing(tmp_path):
+    """Two shells with their own delta / Delta at one TE plus a b = 0 row, written as Camino STEJSKALTANNER rows
+    (|G| in T/m, times in s): one shell per distinct timing, the rows' own b-values and directions, b = 0 first."""
+    import dmipy_sim as d
+    rows = ["VERSION: STEJSKALTANNER"]
+    rng = np.random.default_rng(0)
+    rows.append("0 0 0 0 0.0300 0.0100 0.0800")
+    for delta, Delta, G in ((0.0100, 0.0300, 0.0400), (0.0150, 0.0400, 0.0500)):
+        for _ in range(4):
+            u = rng.normal(size=3); u /= np.linalg.norm(u)
+            rows.append(f"{u[0]:.6f} {u[1]:.6f} {u[2]:.6f} {G:.4f} {Delta:.4f} {delta:.4f} 0.0800")
+    path = tmp_path / "t.scheme"; path.write_text("\n".join(rows) + "\n")
+    p = P.protocol_from_scheme(str(path))
+    assert p.n_meas == 9 and p.n_b0 == 1 and len(p.shells) == 2 and all(s.free_timing for s in p.shells)
+    m = P.measurements(p, CFG["shapes"])
+    assert m.b0[0] and (m.delta[1:5] == 0.0100).all() and (m.delta[5:] == 0.0150).all() and np.allclose(m.TE, 0.08)
+    assert np.allclose(np.linalg.norm(m.dirs, axis=1), 1.0)
+    np.testing.assert_allclose(sorted(s.b for s in p.shells), [305, 1409], atol=1)   # Stejskal-Tanner b of 40 and 50 mT/m

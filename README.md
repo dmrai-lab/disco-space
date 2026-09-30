@@ -19,10 +19,24 @@ image, the pinned dependency stack, the Gradio page, the acceptance gate, and th
 
 **What it does.** The DiSCo phantom's walkers were simulated once and published as a replay pack
 ([SubstrateCommons/disco-replay](https://huggingface.co/datasets/SubstrateCommons/disco-replay)). A user picks an
-acquisition (DiSCo's own 364-measurement protocol, a preset, or their own shells on the stored timing classes), an
-SNR and the tracker's settings; the Space replays the whole 40³ grid from the stored walk, adds Rician noise, fits
-CSD (order 8, the single-fibre response from the volume), tracks probabilistically from the sixteen regions and
-scores the 16 × 16 connectome against the dataset's strand-count and area matrices. Every stage's time is on screen.
+acquisition, an SNR and the tracker's settings; the Space replays the whole 40³ grid from the stored walk, adds
+Rician noise, fits CSD (order 8, the single-fibre response from the volume), tracks probabilistically from the
+sixteen regions and scores the 16 × 16 connectome against the dataset's strand-count and area matrices. Every
+stage's time is on screen.
+
+**Two modes, one image.** The hosted Spaces run in *demo* mode: the acquisition's pulse timing is one of a few
+stored classes (the shape-moment layout, `disco/moments/` of the dataset, one pass over the pack per class), so a
+run takes seconds and the b-values, directions, SNR, tissue and scanner stay free. The same image beside the
+columnar pack runs in *full* mode: every run reads the pack, so δ, Δ, TE and a Camino `.scheme` upload are free,
+and a run takes minutes (the plan on screen says how many). The mode is the container's configuration:
+
+```bash
+docker run -p 7860:7860 ghcr.io/dmrai-lab/disco-space                                   # demo: the stored classes
+docker run -p 7860:7860 -e DISCO_MODE=full -e DISCO_COLUMNS=hf://SubstrateCommons/disco-replay/disco \
+    ghcr.io/dmrai-lab/disco-space                                                        # full: the pack from the Hub
+docker run -p 7860:7860 -e DISCO_MODE=full -e DISCO_COLUMNS=/columns -v /path/to/disco:/columns:ro \
+    ghcr.io/dmrai-lab/disco-space                                                        # full: the pack on disk
+```
 
 **The data path.** `disco/moments/` on the dataset is dmipy-sim's *shape-moment layout*: the replay pack contracted
 once against each PGSE timing class (δ/Δ at TE 53.5 ms, square pulses), so that any b-value and direction on a

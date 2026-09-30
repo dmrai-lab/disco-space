@@ -1,12 +1,14 @@
-"""The page's acquisition choice without a browser: DiSCo's table, a config preset, the shell rows; an unknown
-choice refused (no Gradio needed: the mapping lives beside the page, not in a widget)."""
+"""The page's acquisition choice without a browser: DiSCo's table, a config preset, the shell rows (a stored class in
+demo mode, the row's own delta / Delta / TE in full mode), a scheme upload only in full mode; an unknown choice
+refused (no Gradio needed: the mapping lives beside the page, not in a widget)."""
 import pytest
 
 from space import app as A
 from space import pipeline as P
 
 CFG = P.config()
-ROWS = [True, "d12-D24", 1000, 30, True, "d8-D20", 3000, 45, False, "d17-D30", 3000, 90, False, "d17-D30", 6000, 60]
+ROWS = [True, "d12-D24", 1000, 30, 10.0, 20.0, 60.0, True, "d8-D20", 3000, 45, 8.0, 20.0, 60.0,
+        False, "d17-D30", 3000, 90, 17.0, 30.0, 60.0, False, "d17-D30", 6000, 60, 17.0, 30.0, 60.0]
 
 
 def test_the_three_kinds_of_acquisition():
@@ -18,7 +20,18 @@ def test_the_three_kinds_of_acquisition():
     assert [s.shape for s in preset.shells] == [s["shape"] for s in CFG["presets"][name]["shells"]]
     custom = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS)
     assert custom.n_b0 == 2 and [(s.shape, s.b, s.n_dirs) for s in custom.shells] == [("d12-D24", 1000.0, 30), ("d8-D20", 3000.0, 45)]
+    assert not any(s.free_timing for s in custom.shells)
     with pytest.raises(ValueError, match="unknown acquisition"):
         A._protocol_from_inputs(CFG, "something else", 2, *ROWS)
     with pytest.raises(ValueError, match="at least one shell"):
-        A._protocol_from_inputs(CFG, A.CUSTOM, 2, *([False] + ROWS[1:4] + [False] + ROWS[5:8] + ROWS[8:]))
+        A._protocol_from_inputs(CFG, A.CUSTOM, 2, *([False] + ROWS[1:7] + [False] + ROWS[8:14] + ROWS[14:]))
+
+
+def test_full_mode_takes_the_rows_own_timing_and_demo_mode_refuses_the_upload():
+    full = A._protocol_from_inputs(CFG, A.CUSTOM, 2, *ROWS, full=True)
+    assert all(s.free_timing for s in full.shells)
+    assert [(s.delta, s.Delta, s.TE) for s in full.shells] == [(0.010, 0.020, 0.060), (0.008, 0.020, 0.060)]
+    with pytest.raises(ValueError, match="full mode"):
+        A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme="x.scheme")
+    with pytest.raises(ValueError, match="upload"):
+        A._protocol_from_inputs(CFG, A.UPLOADED, 2, *ROWS, scheme=None, full=True)

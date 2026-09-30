@@ -7,9 +7,10 @@ from huggingface_hub import get_token
 space = sys.argv[1] if len(sys.argv) > 1 else "rfick/disco"
 preset = sys.argv[2] if len(sys.argv) > 2 else "clinical b1000 x 30"
 c = Client(space, token=get_token(), verbose=False, download_files=os.environ.get("LIVE_OUT", "/tmp/disco-live"), httpx_kwargs={"timeout": 900})
-shells = [True, "d12-D24", 1000, 30, True, "d8-D20", 3000, 45, False, "d17-D30", 3000, 90, False, "d17-D30", 6000, 60]
+shells = [True, "d12-D24", 1000, 30, 12.0, 24.0, 53.5, True, "d8-D20", 3000, 45, 8.0, 20.0, 53.5,
+          False, "d17-D30", 3000, 90, 17.0, 30.0, 53.5, False, "d17-D30", 6000, 60, 17.0, 30.0, 53.5]
 t0 = time.perf_counter()
-job = c.submit(preset, 2, True, 30, 2, 30.0, 0.5, 0, None, None, "d12-D24", *shells, api_name="/run_pipeline")
+job = c.submit(preset, 2, True, 30, 2, 30.0, 0.5, 0, None, *shells, api_name="/run_pipeline")
 seen = 0
 while not job.done():
     outs = job.outputs()

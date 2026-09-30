@@ -65,6 +65,14 @@ shells = [
 n_b0 = 2
 shells = [{ shape = "d8-D20", b = 6000, n_dirs = 60 }]
 
+# The mode (disco-space#4): demo = the prebaked shape-moment layout (the hosted Spaces; seconds; the stored pulse
+# timings), full = the columnar replay pack itself (minutes per volume; any timing; the scheme upload), read from
+# DISCO_COLUMNS (a directory with the columns, or the Hub at 45 MB/s). DISCO_MODE in the environment overrides.
+[mode]
+mode = "demo"
+columns = "hf://SubstrateCommons/disco-replay/disco"
+workers = 16
+
 # The compute backend: jax (the reference; the Docker Space) or torch (Hugging Face's shared GPU pool, disco-space#2);
 # DISCO_BACKEND in the environment overrides. resident = false rebuilds the layout's device tensors on every call
 # (a pool that drops the device between calls).

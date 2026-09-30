@@ -144,7 +144,7 @@ def catalogue_numbers(field_T):
 def _result_state(res, layout, state):
     """What the results tab needs, kept per session: float32 volumes, the peaks, a streamline sample, the numbers."""
     peaks, amp = P.peaks(res.sh)
-    return dict(dwi=res.dwi.astype(np.float32), meas=res.meas, peaks=peaks.astype(np.float32), peak_amp=amp.astype(np.float32),
+    return dict(dwi=res.dwi.astype(np.float32), floor=res.floor.astype(np.float32), meas=res.meas, peaks=peaks.astype(np.float32), peak_amp=amp.astype(np.float32),
                 matrix=res.matrix, score=res.score, seconds=res.seconds, load_seconds=state.get("load_seconds", float("nan")),
                 tractogram=res.tractogram, rois=layout.rois, shape=layout.mask.shape, name=res.protocol.name)
 
@@ -183,7 +183,7 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
     does not."""
     import gradio as gr
     keep = gr.update()
-    n_out = 12
+    n_out = 14
     if progress:
         progress(0.0, desc="starting")
     state = _load()
@@ -235,7 +235,22 @@ def run_pipeline(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, sc
            _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, protocol.n_meas - 1),
            V.tractogram3d(rb["tractogram"], rb["rois"], rb["shape"]) if rb else None,
            V.matrices(rb["matrix"], rb["score"], layout.gt_count) if rb else None,
-           gr.update(visible=rb is not None))
+           gr.update(visible=rb is not None),
+           V.floor_slice(ra["floor"], z0, label="A: "), accuracy_rows(layout, results["A"]))
+
+
+def accuracy_rows(layout, res):
+    """The accuracy table of a run: the layout's manifest facts plus this run's floor statistics and the classes it
+    played (with their encoding at the built amplitude)."""
+    rows = list(layout.accuracy()) if hasattr(layout, "accuracy") else [["source", getattr(layout, "uri", "?")]]
+    f = res.floor[np.isfinite(res.dwi[..., 0])]
+    rows.append(["this run's floor: median / 99 % / max over voxels with signal", f"{np.median(f):.4f} / {np.quantile(f, 0.99):.4f} / {f.max():.4f}"])
+    for name in np.unique(res.meas.shape):
+        sh = getattr(layout, "moments", None) and layout.moments.manifest["shapes"].get(name, {})
+        if sh:
+            enc = sh.get("encoding", {})
+            rows.append([f"class {name}", f"δ {enc.get('delta')} / Δ {enc.get('Delta')} / TE {enc.get('TE')} s, built at {sh.get('amplitude_built')} T/m, pathway {sh.get('pathway')}"])
+    return rows
 
 
 def _slider_update(value, maximum):
@@ -245,9 +260,10 @@ def _slider_update(value, maximum):
 
 def redraw_slice(rs, z, m, overlay, which):
     if not rs or which not in rs:
-        return None
+        return None, None
     r = rs[which]
-    return V.dwi_slice(r["dwi"], r["meas"], int(z), int(m), peaks=r["peaks"], peak_amp=r["peak_amp"], overlay=bool(overlay))
+    return (V.dwi_slice(r["dwi"], r["meas"], int(z), int(m), peaks=r["peaks"], peak_amp=r["peak_amp"], overlay=bool(overlay), label=f"{which}: "),
+            V.floor_slice(r["floor"], int(z), label=f"{which}: "))
 
 
 def ground_truth_views():
@@ -356,6 +372,14 @@ def build(runner=None):
                 with gr.Row(visible=False) as b_row:
                     tract_view_b = gr.Plot(label="tractogram B")
                     mats_b = gr.Image(label="connectome B vs ground truth", type="pil")
+                with gr.Accordion("accuracy: what this replay is an approximation of", open=False):
+                    gr.Markdown("A replay is a measured approximation of the stored walk, not a rendering: the walk's two halves are replayed "
+                                "separately and their disagreement per voxel is the **floor** below which a signal difference means nothing; "
+                                "the layout keeps K temporal bands of each walker's path and the **band error** is what the dropped bands "
+                                "would have added at the built gradient amplitude.")
+                    with gr.Row():
+                        floor_view = gr.Image(label="split-half floor (this run, the slice above)", type="pil")
+                        accuracy = gr.Dataframe(headers=["what", "value"], label="the layout and this run", interactive=False, wrap=True)
                 with gr.Row():
                     timings = gr.Dataframe(headers=["stage", "seconds"], label="timings", interactive=False)
                     with gr.Column():
@@ -369,10 +393,10 @@ def build(runner=None):
                             outputs=[field_T] + tissue_numbers, show_progress="hidden")
         reset.click(catalogue_numbers, inputs=field_T, outputs=tissue_numbers, show_progress="hidden")
         go.click(run_with_progress if runner is None else runner(run_pipeline), inputs=[preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, *physics_inputs, *shell_inputs],
-                 outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider, tract_view_b, mats_b, b_row], concurrency_limit=1,
+                 outputs=[result, headline, dwi_view, tract_view, mats, timings, tck, volumes, z_slider, m_slider, tract_view_b, mats_b, b_row, floor_view, accuracy], concurrency_limit=1,
                  api_name="run_pipeline")                                       # the endpoint tools/live_check.py drives
         for ctl in (z_slider, m_slider, overlay, which):
-            ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=dwi_view, show_progress="hidden")
+            ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view], show_progress="hidden")
         gt_tab.select(ground_truth_views, outputs=[strands_view, gt_matrix])
         demo.load(lambda: (_load().get("error") and f"**the layout did not load:** {_load()['error']}") or "", outputs=headline)
     return demo

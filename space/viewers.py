@@ -153,3 +153,16 @@ def ground_truth_matrix(gt_count, gt_area):
 def timings_rows(seconds, load_seconds):
     rows = [["layout on device (once per process)", f"{load_seconds:.1f}"]]
     return rows + [[k, f"{v:.2f}"] for k, v in seconds.items()]
+
+
+def floor_slice(floor, z, *, label=""):
+    """Axial slice ``z`` of the replay's split-half floor per voxel (the disagreement of the two walker halves,
+    the largest over the classes played): what the replay is accurate to, voxel by voxel."""
+    plt = _mpl()
+    fig, ax = plt.subplots(figsize=(5.2, 5.2))
+    sl = floor[:, :, z]
+    im = ax.imshow(np.where(sl > 0, sl, np.nan).T, origin="lower", cmap="magma", vmin=0, vmax=max(float(np.nanmax(floor)), 1e-6))
+    fig.colorbar(im, ax=ax, fraction=0.046)
+    ax.set_title(f"{label}split-half floor, slice z = {z} (median {np.nanmedian(floor[floor > 0]) if (floor > 0).any() else float('nan'):.4f})", fontsize=9)
+    ax.set_xticks([]); ax.set_yticks([])
+    return _image(fig)

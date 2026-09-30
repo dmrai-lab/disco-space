@@ -57,3 +57,9 @@ def test_the_3d_views_hold_their_sample():
 def test_the_timings_rows_are_the_stages():
     rows = V.timings_rows(dict(replay=1.0, csd=2.0, total=3.0), 10.0)
     assert rows[0][0].startswith("layout") and [r[0] for r in rows[1:]] == ["replay", "csd", "total"]
+
+
+def test_the_floor_slice_draws_the_positive_voxels():
+    floor = np.zeros((8, 8, 4), np.float32); floor[2:6, 2:6, :] = 0.01; floor[3, 3, 1] = 0.05
+    img = V.floor_slice(floor, 1, label="A: ")
+    assert img.size[0] > 100 and img.size[1] > 100

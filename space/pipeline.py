@@ -259,6 +259,22 @@ class Layout:
         if tuple(self.moments.grid.shape) != self.mask.shape:
             raise ValueError(f"the layout's grid {tuple(self.moments.grid.shape)} is not the mask's {self.mask.shape}")
 
+    def accuracy(self):
+        """What the layout is an approximation of, from its manifest (iteration 3 of disco-space#4): the band count
+        and the band error at the built amplitude, the tolerance, the source pack (id, its certificate's median
+        floor, its manifest sha) and the layout's code commit; rows of ``(what, value)`` for the page."""
+        m = self.moments.manifest; src = m["source"]
+        rows = [["temporal bands kept (K)", str(m["K"])],
+                ["band error at the built amplitude (worst class)", f"{m['band_error']:.2e}"],
+                ["band tolerance (× the pack's floor)", f"{m['tol']:g}"],
+                ["source pack", str(src.get("pack"))],
+                ["source pack's certified median floor", f"{src['floor']:.4g}"],
+                ["source manifest sha256", src["manifest_sha256"][:16]],
+                ["layout written by", f"{m.get('code', {}).get('commit', '?')[:12]} on {m.get('created', '?')}"],
+                ["pulses", "square (slew rate ∞), one TE per class; see the class table"],
+                ["tiers stored", "pool, contact, field" if m.get("tiers") else "none (bare diffusion only)"]]
+        return rows
+
     def warm(self):
         """Every timing class on the device (the first call to each compiles and transfers); when the tiles are not
         kept resident (a pool that drops the device between calls), the padded host arrays are loaded into this

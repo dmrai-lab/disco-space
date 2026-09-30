@@ -83,35 +83,6 @@ def brain_mask(mean_b0_volume):
     return mask.astype(bool)
 
 
-def _tissue_scheme_check_workaround(self, acquisition_scheme):
-    """Replaces ``MultiCompartmentModelProperties._check_tissue_model_acquisition_scheme`` (works around a
-    dmipy-fit gap, as of commit f6741c3, no issue filed yet -- flag for dmipy-fit#39): the original builds
-    ``np.testing.assert_array_almost_equal([bvalues, delta, Delta, gradient_strengths], ...)`` over two schemes, but
-    when timing is unmeasured (``delta``/``Delta`` unset, as in this dataset -- see the manifest's
-    ``protocol.delta_s``/``Delta_s`` = null) ``shell_delta``/``shell_Delta``/``shell_gradient_strengths`` are
-    ``None`` and stacking ``[array, None, None, None]`` raises ``ValueError`` in current numpy before the intended
-    comparison ever runs -- on *any* scheme missing timing, matching or not. This compares field by field instead
-    (``None`` equal to ``None``). A module-level function (not a closure) so the patched instance stays picklable
-    (the CSD fit can be process-parallel; see :func:`fit_msmt_csd`'s docstring for why it is not, regardless)."""
-    for model in self.models:
-        if model._model_type != "TissueResponseModel":
-            continue
-        for a, b in ((acquisition_scheme.shell_bvalues, model.acquisition_scheme.shell_bvalues),
-                     (acquisition_scheme.shell_delta, model.acquisition_scheme.shell_delta),
-                     (acquisition_scheme.shell_Delta, model.acquisition_scheme.shell_Delta),
-                     (acquisition_scheme.shell_gradient_strengths, model.acquisition_scheme.shell_gradient_strengths)):
-            if a is None or b is None:
-                if a is not b:
-                    raise ValueError("Acquisition scheme of MC-model and tissue response model are not the same.")
-            else:
-                np.testing.assert_array_almost_equal(a, b)
-
-
-def _patch_tissue_scheme_check(mc_model):
-    import types
-    mc_model._check_tissue_model_acquisition_scheme = types.MethodType(_tissue_scheme_check_workaround, mc_model)
-
-
 def fit_msmt_csd(data, bvals, bvecs, mask, sh_order=SH_ORDER, solver="csd_cvxpy", voxel_positions=None):
     """dmipy-fit end to end: :func:`three_tissue_response_dhollander16` estimates the WM / GM / CSF response
     kernels from the data itself, then ``MultiCompartmentSphericalHarmonicsModel`` (``S0_tissue_responses`` set,
@@ -120,11 +91,9 @@ def fit_msmt_csd(data, bvals, bvecs, mask, sh_order=SH_ORDER, solver="csd_cvxpy"
     those voxels are fit; the rest of ``mask`` is still used to estimate the responses.
 
     Always fits serially (``use_parallel_processing=False``): dmipy-fit's parallel path forks a
-    ``ProcessPoolExecutor``, which the JAX import this fit chain pulls in (``dmipy_sim.replay.so3``, for the SH
-    basis) explicitly warns is unsafe to fork after (JAX is itself multithreaded) -- and separately, the picked-up
-    ``mc`` instance carries the bound-method workaround above, which is not guaranteed picklable to a worker
-    process either. Thread-level parallelism (BLAS/OSQP) is still capped by ``OMP_NUM_THREADS``/``MKL_NUM_THREADS``
-    in the environment, per this lab's shared-box rule.
+    ``ProcessPoolExecutor`` after the JAX import this fit chain pulls in (``dmipy_sim.replay.so3``, for the SH
+    basis), which JAX warns is unsafe. Thread-level parallelism (BLAS/OSQP) is capped by
+    ``OMP_NUM_THREADS``/``MKL_NUM_THREADS`` in the environment, per this lab's shared-box rule.
 
     Returns ``(sh, fractions, S0_responses, response_models, scheme, seconds)``: ``sh`` is ``(X, Y, Z, n_coef)`` (the
     WM FOD, zero outside the fitted voxels), ``fractions`` is ``(X, Y, Z, 3)`` (wm, gm, csf, zero outside), the rest
@@ -137,17 +106,13 @@ def fit_msmt_csd(data, bvals, bvecs, mask, sh_order=SH_ORDER, solver="csd_cvxpy"
     data = np.nan_to_num(np.asarray(data, dtype=np.float64), nan=0.0)
 
     t0 = time.perf_counter()
-    # wm_algorithm='tournier07' (not the default 'tournier13'): tournier13's internal SH-model refit compares its
-    # own re-derived acquisition scheme against the caller's and fails when delta/Delta are unknown (no timing in
-    # this dataset's sidecars, see the manifest's protocol.delta_s/Delta_s = null); tournier07 is FA-based and
-    # avoids that path. It is also what the rest of this codebase's CSD call (space/pipeline.py::csd) already uses.
+    # wm_algorithm='tournier07': the FA-selected single-fibre response (the Space's own single-tissue path uses it too).
     (s0_wm, s0_gm, s0_csf), (tr2_wm, tr1_gm, tr1_csf), _selection = three_tissue_response_dhollander16(
-        scheme, data, wm_algorithm="tournier07")
+        scheme, data, mask=mask, wm_algorithm="tournier07")
     response_seconds = time.perf_counter() - t0
 
     mc = MultiCompartmentSphericalHarmonicsModel(
         models=[tr2_wm, tr1_gm, tr1_csf], S0_tissue_responses=[s0_wm, s0_gm, s0_csf], sh_order=sh_order)
-    _patch_tissue_scheme_check(mc)
 
     fit_mask = mask if voxel_positions is None else voxel_positions
     t0 = time.perf_counter()

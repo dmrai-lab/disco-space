@@ -64,7 +64,7 @@ s, A + B + ladder 79 s, so every default configuration with one B fits a logged-
 reserves 131 s for A alone and is for logged-in visitors.
 
 **Measured on the pool** (`tools/live.py rfick/brain-zero --config brain.toml`, 2026-10-01, the MASiVar asset at
-revision 2: 71,052 brain voxels, the scan's own protocol of 485 measurements, density 2, 3 T along the bore, every
+revision 2 unless the row says revision 3: 71,052 brain voxels, the scan's own protocol of 485 measurements, density 2, 3 T along the bore, every
 tier, SNR 30 at M0 = 1, the multi-tissue reconstruction; the packs' responses cached on the page):
 
 | run | reserved | device held | handoff to the page | wall through the API | connectome Pearson log(1 + count) vs the input's |
@@ -73,6 +73,7 @@ tier, SNR 30 at M0 = 1, the multi-tissue reconstruction; the packs' responses ca
 | A + B (field → 7 T) + ladder | 78 s | 22.1 s | 6.6 s | 149 s | A 0.903, B 0.889, A vs B 0.962 |
 | A + ladder, the windowed WM pack (`single_bundle_1s_c3_seg125ms`, window 0 of 8; 2026-10-01 13:10, logged out) | 50 s | 13.9 s | 4.7 s | 96 s | 0.893 (lobar 0.975); the container served after 22 s, its warm-up in a process beside the page |
 | A + B (every shell's pulse timing → long-TE δ 30 / Δ 120 ms, TE 160 ms: two windows of both packs) + ladder (2026-10-01 14:55, logged out, the responses cached by the warm-up) | 78 s | 22.8 s | 6.8 s | 362 s (the pool's queue included) | A 0.893, B 0.839 (lobar 0.949; the median voxel's b = 0 SNR falls from 7.0 to 3.7 at TE 160 ms), A vs B 0.943 |
+| A + ladder on **revision 3** of the asset (the responses from the eroded mask, Tournier 2013; 2026-10-01 16:20, with an account token: a logged-out address has two runs a day) | 50 s | 13.4 s | 4.5 s | 81 s | 0.932 (lobar 0.981); the FOD round trip against the new truth: principal peak 46.5° median, AFD r 0.826 (the truth now holds 5,498 two-peak WM voxels against 2,272) |
 
 **The warm-up's timeline** (the same container, 44 entries before the set was trimmed to one per response, 192 CPUs and
 104 GB in the container, RSS 4-15 GB): the default run's responses 48 s after the process started, every preset with its

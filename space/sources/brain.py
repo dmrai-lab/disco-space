@@ -358,11 +358,13 @@ class Brain(P.Source):
         return cls(cfg, asset=local)
 
     def warm_entries(self):
-        """The ``(meas, physics)`` a run can ask for without a custom acquisition, in the order the warm-up
-        computes them: every preset at the panel's defaults with its ladder rungs, then B of every knob on the
-        default protocol, the field presets along both B0 directions, the pulse-timing knobs last (each a band of
-        its own to compile, the longest reaching a second window of the packs). An entry the packs cannot play is
-        left out (a run asking for it is refused by name)."""
+        """The ``(meas, physics)`` a run can ask for without a custom acquisition, one per response key, in the order
+        the warm-up computes them: every preset at the panel's defaults with its ladder rungs, then B of every knob
+        on the default protocol, the field presets last in ascending field along both B0 directions (the band to
+        compile grows with the field: 7 T and 11.7 T cost minutes each, so they follow everything cheaper, the
+        pulse-timing classes among it). A knob that leaves the response unchanged (noise, M0, the default pack or
+        direction) repeats no entry; an entry the packs cannot play is left out (a run asking for it is refused by
+        name)."""
         cfg = self.cfg
         panel = self.panel(cfg)
         values = {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields}
@@ -373,25 +375,22 @@ class Brain(P.Source):
             entries += [(prot, physics)] + [(prot, rung) for _, rung in self.ladder_steps(physics)]
         scan = self.protocol(cfg, self.presets(cfg)[0])
         knobs = [c for c in self.knobs(cfg).values() if c is not None]
-        for change in [c for c in knobs if c[0] != "shape"] + [c for c in knobs if c[0] == "shape"]:
+        fields = sorted((c for c in knobs if c[0] == "field"), key=lambda c: c[1])
+        for change in [c for c in knobs if c[0] != "field"] + fields:
             prot, _, _, v = self.apply_knob(cfg, change, scan, True, None, values)
             modes = list(B0_MODES) if change[0] == "field" else [v["b0_mode"]]
             entries += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]
-        out = []
+        out = []; keys = set()
         for prot, ph in entries:
             try:
-                out.append((self.validate(prot, ph), ph))
+                meas = self.validate(prot, ph)
             except ValueError:
                 continue
+            key = self.response_key(meas, ph)
+            if key not in keys:
+                keys.add(key)
+                out.append((meas, ph))
         return out
-
-    def warm(self):
-        """The packs loaded (the windows :meth:`warm_entries` reach, downloaded once per container) and every entry's
-        pose responses computed and kept in this process, in order: what a visitor would otherwise pay inside the
-        GPU reservation. The bands it compiles stay compiled in this process and in every worker forked from it."""
-        for meas, ph in self.warm_entries():
-            if self.cached(meas, ph) is None:
-                self.prepare(meas, ph)
 
     def warm_in_background(self):
         """:meth:`warm` in a process of its own while this one serves: the entries' responses arrive one by one and

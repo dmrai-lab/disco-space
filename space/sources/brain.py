@@ -83,6 +83,27 @@ def manifest(where):
         return json.load(f)
 
 
+@functools.lru_cache(maxsize=16)
+def declared_segments(uri):
+    """The segment table ``{n, n_t, T}`` (RPK.md 4.3) a pack declares, read without its arrays: a Hub pack's
+    record in its dataset's ``manifest.json`` (``hf://owner/name/path``), a local pack's header."""
+    from dmipy_sim.replay.publish import MANIFEST, header_of, is_hub_uri, parse_uri
+    if is_hub_uri(uri):
+        from huggingface_hub import hf_hub_download
+        repo, path = parse_uri(uri)
+        with open(hf_hub_download(repo, MANIFEST, repo_type="dataset")) as f:
+            rows = [r for r in json.load(f).get("packs") or [] if r.get("path") == path]
+        if not rows:
+            raise ValueError(f"{uri}: the dataset {repo} holds no record of this pack (its manifest.json)")
+        seg = rows[0].get("segments")
+    else:
+        seg = header_of(uri)["walk_params"].get("segments")
+    if not seg:
+        raise ValueError(f"{uri}: no declared segment table (walk_params.segments, RPK.md 4.3) in its "
+                         f"{'record' if is_hub_uri(uri) else 'header'}")
+    return dict(n=int(seg["n"]), n_t=int(seg["n_t"]), T=float(seg["T"]))
+
+
 def image_rotation(man):
     """``R`` (image -> scanner) of the asset's grid (:meth:`dmipy_sim.phantom.Grid.from_oblique_affine`)."""
     from dmipy_sim.phantom import Grid
@@ -337,8 +358,9 @@ class Brain(P.Source):
         return cls(cfg, asset=local)
 
     def warm(self):
-        """The packs loaded (downloaded once per container) and the pose responses a run can ask for without a custom
-        acquisition computed and kept, at container start where no visitor pays: every preset at the panel's defaults
+        """The packs loaded (the windows the entries below reach, downloaded once per container) and the pose
+        responses a run can ask for without a custom acquisition computed and kept, at container start where no
+        visitor pays: every preset at the panel's defaults
         with its ladder rungs, and B of every knob on the default protocol but the pulse-timing ones (a new band each,
         about 10 s apiece: their runs reserve them), the field presets along both B0 directions. An entry the packs
         cannot play is skipped (a run asking for it is refused). The bands they compile stay compiled in this process
@@ -372,17 +394,72 @@ class Brain(P.Source):
         """The configuration's packs for ``tissue`` (``wm`` / ``gm``): ``{label: uri}`` in the menu's order."""
         return {p["label"]: p["uri"] for p in cfg["packs"][tissue]}
 
-    def pack(self, tissue, label):
-        """The pack ``label`` of ``tissue``'s menu, loaded once (a local path or ``hf://``, as
-        :class:`dmipy_sim.phantom.PackSubstrate` resolves it)."""
+    def segments(self, tissue, label):
+        """The declared segment table ``{n, n_t, T}`` of the pack ``label`` of ``tissue``'s menu
+        (:func:`declared_segments`: read without the pack's arrays)."""
+        menu = self.pack_menu(self.cfg, tissue)
+        if label not in menu:
+            raise ValueError(f"no {tissue.upper()} pack {label!r}; the menu is {list(menu)}")
+        return declared_segments(menu[label])
+
+    def windows_reached(self, segments, meas):
+        """``{class: k}``: per timing class of ``meas``, the number of the pack's windows its acquisition reaches.
+        ``segments`` is a declared table ``{n, n_t, T}`` (:func:`declared_segments`) or a pack's meta (its
+        ``walk_params.segments``). The acquisition lasts ``T_acq = (G.shape[1] - 1) dt`` of the class's sequence,
+        as :meth:`dmipy_sim.replay.ReplayPack._compile` reads it, and window ``i`` starts at ``i T``; a window whose
+        first save sits at or beyond ``T_acq`` is not reached, so the save at a window's end belongs to that window
+        alone. A pack of one window (``n = 1``) is reached as one window whatever the class; ``k``
+        above ``n`` is an acquisition beyond the walk (:meth:`windows_needed` refuses it)."""
+        seg = (segments.get("walk_params") or {}).get("segments") if "walk_params" in segments else segments
+        out = {}
+        for name in map(str, np.unique(meas.shape)):
+            if int(seg["n"]) <= 1:
+                out[name] = 1
+                continue
+            s = self._b0_sequence(name, np.eye(3))
+            T_acq = (np.shape(s.G)[1] - 1) * float(s.dt)
+            out[name] = max(1, int(np.ceil(T_acq * (1.0 - 1e-12) / float(seg["T"]))))
+        return out
+
+    def windows_needed(self, tissue, label, meas):
+        """The windows of the pack ``label`` of ``tissue``'s menu the classes of ``meas`` reach (the largest
+        :meth:`windows_reached`), refused by name for a class that reaches beyond the windows the pack declares."""
+        seg = self.segments(tissue, label)
+        reach = self.windows_reached(seg, meas)
+        for name, k in reach.items():
+            if k > int(seg["n"]):
+                raise ValueError(f"the {tissue.upper()} pack {label!r} declares {seg['n']} window(s) of {float(seg['T']) * 1e3:g} ms: "
+                                 f"the class {name!r} (TE {float(self.shapes[name]['TE']) * 1e3:g} ms) reaches window {k - 1}")
+        return max(reach.values())
+
+    @staticmethod
+    def saves_spanned(segments, k):
+        """The saves of the first ``k`` windows of a declared table: ``k (n_t - 1) + 1`` (consecutive windows share
+        their boundary save; one window is its ``n_t``)."""
+        return int(k) * (int(segments["n_t"]) - 1) + 1
+
+    def pack(self, tissue, label, k):
+        """The pack ``label`` of ``tissue``'s menu holding at least its first ``k`` windows: a Hub URI whose
+        declared table has ``n > 1`` loads ``windows=range(k)`` (:class:`dmipy_sim.phantom.PackSubstrate`; the pack
+        records them as ``windows_present``); a local path or a one-window pack loads whole. A later request for
+        more windows than it holds reloads with the larger range (the library fetches only the new ranges) and
+        replaces the cached pack."""
+        from dmipy_sim.phantom import PackSubstrate
+        from dmipy_sim.replay.publish import is_hub_uri
         key = (tissue, label)
-        if key not in self.packs:
-            from dmipy_sim.phantom import PackSubstrate
-            menu = self.pack_menu(self.cfg, tissue)
-            if label not in menu:
-                raise ValueError(f"no {tissue.upper()} pack {label!r}; the menu is {list(menu)}")
-            self.packs[key] = PackSubstrate(menu[label], m0=1.0, name=f"{tissue}:{label}").pack
+        seg = self.segments(tissue, label)
+        if key in self.packs and self.windows_held(self.packs[key], seg) >= int(k):
+            return self.packs[key]
+        uri = self.pack_menu(self.cfg, tissue)[label]
+        windows = {"windows": range(int(k))} if is_hub_uri(uri) and int(seg["n"]) > 1 else {}
+        self.packs[key] = PackSubstrate(uri, m0=1.0, name=f"{tissue}:{label}", **windows).pack
         return self.packs[key]
+
+    @staticmethod
+    def windows_held(pack, segments):
+        """The windows ``pack`` holds: its ``windows_present`` when loaded by window, else every window ``segments``
+        declares."""
+        return int(segments["n"]) if pack.windows_present is None else int(pack.windows_present)
 
     @staticmethod
     def pools(pack):
@@ -414,7 +491,8 @@ class Brain(P.Source):
             title=d["title"],
             heading=(f"# {d['title']}\n" + d["heading"]),
             acquisition=("A shell's **pulse timing** (δ, Δ, TE; square pulses) is one of the classes below, each played by the packs' "
-                         "100 ms walks (a timing beyond the walk is refused by name); the b-values, the directions and their number, the "
+                         "walks, stored in windows of 100 ms: a class reads the windows its acquisition reaches, and a timing beyond the "
+                         "walk is refused by name; the b-values, the directions and their number, the "
                          "tissue, the proton densities, the packs, the SNR and the tracker are free. The first preset is the scan's own "
                          "protocol, its directions turned into the image frame. Timing classes: "
                          + "; ".join(f"`{n}` = {t['label']}" for n, t in cls.shape_table(cfg).items()) + "."),
@@ -601,24 +679,28 @@ class Brain(P.Source):
         handoff), a part per measurement (the contraction and the reconstruction scale with the rows), the tracking
         and the truth's tracking per density, the ladder's two rungs of contraction, B (a second run whose truth is A's),
         each further tracker key, and the pose responses the worker computes because the page has them not cached
-        (``responses``: ``(state, n_meas)`` per entry, :meth:`responses`); times the margin, within 30 and 480 s."""
+        (``responses``: ``(state, n_meas, saves)`` per entry, :meth:`responses`, each priced ``fixed + per_meas x n_meas +
+        per_save x saves``); times the margin, within 30 and 480 s."""
         b = cfg["budget"]
         n = protocol.n_meas; d = str(int(density))
         track = float(b["track"][d])
         run = b["fixed"] + b["per_meas"] * n + track
         secs = run + track + (b["ladder_per_meas"] * n if ladder else 0.0) + ((run - b["worker"]) if knob != P.NO_KNOB else 0.0) + track * (int(n_keys) - 1)
-        secs += sum(b[f"response_{state}"]["fixed"] + b[f"response_{state}"]["per_meas"] * m for state, m in responses)
+        secs += sum(b[f"response_{state}"]["fixed"] + b[f"response_{state}"]["per_meas"] * m + b[f"response_{state}"]["per_save"] * saves
+                    for state, m, saves in responses)
         return int(min(480, max(30, b["margin"] * secs)))
 
     # ---- the run's side ----
     def validate(self, protocol, physics):
-        """The measurements, refused by name when a class's echo lies beyond a pack's walk (packs loaded in this
-        process are checked; :meth:`prepare` loads the chosen ones) or the WM pack cannot carry the relaxation tier
-        (a pack without a spec has no pool names to give T2 by)."""
+        """The measurements, refused by name when a class reaches beyond the windows a pack declares
+        (:meth:`windows_needed`, from the declared table, loaded or not), when a class's echo lies beyond a loaded
+        pack's walk (:meth:`prepare` loads the chosen ones), or when the WM pack cannot carry the relaxation tier (a
+        pack without a spec has no pool names to give T2 by)."""
         meas = P.measurements(protocol, self.shapes)
         if physics is None:
             raise ValueError("a brain replay needs its physics (the proton densities and the packs), even for bare diffusion")
         for tissue, label in (("wm", physics.wm_pack), ("gm", physics.gm_pack)):
+            self.windows_needed(tissue, label, meas)
             pk = self.packs.get((tissue, label))
             if pk is None:
                 continue
@@ -649,6 +731,12 @@ class Brain(P.Source):
             return d.pgste(dirs, float(t["delta"]), float(t["Delta"]) - float(t["delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000,
                            slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
         return d.pgse(dirs, float(t["delta"]), float(t["Delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000, slew_rate=np.inf)
+
+    def _b0_sequence(self, name, pose):
+        """The class ``name``'s b = 0 measurement as a sequence at ``pose`` (:meth:`sequence`): what the b = 0 signal
+        and the acquisition's duration are read from."""
+        one = P.Measurements(np.zeros(1), np.array([[0.0, 0.0, 1.0]]), np.array([name]), np.zeros(1), np.zeros(1), np.zeros(1))
+        return self.sequence(one, np.arange(1), pose)
 
     def response_key(self, meas, physics=None):
         """The key of :meth:`prepare`'s result in this process's cache: the measurements (b-values, directions,
@@ -687,9 +775,10 @@ class Brain(P.Source):
 
     def responses(self, entries):
         """What :meth:`prepare` costs for a run's ``entries`` ``[(meas, physics)]`` in a process forked from this one,
-        in order: ``(state, n_meas)`` for each entry not cached here, once per key; ``state`` is ``no_field`` (the
-        field tier off: nothing to compile), ``warm`` (a band compiled here, or by an earlier entry of the run) or
-        ``cold`` (a band to compile first). ``[budget]`` prices them (``response_<state>``)."""
+        in order: ``(state, n_meas, saves)`` for each entry not cached here, once per key; ``state`` is ``no_field``
+        (the field tier off: nothing to compile), ``warm`` (a band compiled here, or by an earlier entry of the run)
+        or ``cold`` (a band to compile first); ``saves`` the WM pack's saves the entry's classes span
+        (:meth:`saves_spanned` of :meth:`windows_needed`). ``[budget]`` prices them (``response_<state>``)."""
         out = []; keys = set(); bands = set(self._compiled)
         for meas, ph in entries:
             key = self.response_key(meas, ph)
@@ -697,7 +786,8 @@ class Brain(P.Source):
                 continue
             keys.add(key)
             band = self._band(meas, ph)
-            out.append(("no_field" if not ph.field else "warm" if band in bands else "cold", len(meas.bvals)))
+            saves = self.saves_spanned(self.segments("wm", ph.wm_pack), self.windows_needed("wm", ph.wm_pack, meas))
+            out.append(("no_field" if not ph.field else "warm" if band in bands else "cold", len(meas.bvals), saves))
             bands.add(band)
         return out
 
@@ -705,12 +795,14 @@ class Brain(P.Source):
         """The pose responses of a replay, on the CPU: per timing class of ``meas``, the WM and GM packs' pose
         responses at the run's tissue, field and specimen pose (dmipy-sim's closed form) contracted to the FOD's
         harmonics, free water's closed form; the true response curves for the explorer and the b = 0 weight of each
-        tier alone. Loads the chosen packs; computed every call and kept in this process's cache under
-        :meth:`response_key` (:meth:`cached` reads it)."""
+        tier alone (both at the first class's shells, within the windows ``meas`` reaches). Loads the windows of the
+        chosen packs the classes reach (:meth:`windows_needed`, :meth:`pack`); computed every call and kept in this
+        process's cache under :meth:`response_key` (:meth:`cached` reads it)."""
         from dmipy_sim.phantom import FreeWater
         from dmipy_sim.replay import so3
         t0 = time.perf_counter()
-        wm_pack, gm_pack = self.pack("wm", physics.wm_pack), self.pack("gm", physics.gm_pack)
+        wm_pack = self.pack("wm", physics.wm_pack, self.windows_needed("wm", physics.wm_pack, meas))
+        gm_pack = self.pack("gm", physics.gm_pack, self.windows_needed("gm", physics.gm_pack, meas))
         for name in np.unique(meas.shape):                                  # the walks and the WM pack's tiers, now loaded
             self.validate(P.Protocol((P.Shell(str(name), 1.0, 1),), name="check"), physics)
         t_wm, t_gm, t_csf = physics.tissues(self.pools(wm_pack), self.pools(gm_pack))
@@ -763,8 +855,7 @@ class Brain(P.Source):
         stimulated echo's storage) per tissue, ``contact`` (the WM walls' survival) for WM; a tier that is off is
         absent. The b = 0 signal has no orientation, so one pose of the pack answers it."""
         from dmipy_sim.phantom import FreeWater
-        prof = P.Measurements(np.zeros(1), np.array([[0.0, 0.0, 1.0]]), meas.shape[rows[:1]], np.zeros(1), np.zeros(1), np.zeros(1))
-        seq = self.sequence(prof, np.arange(1), pose)
+        seq = self._b0_sequence(str(meas.shape[rows[0]]), pose)
         out = {}
         alone = dict(relaxation=False, contact=False, field=False)
         if physics.relaxation:
@@ -943,8 +1034,11 @@ class Brain(P.Source):
                 ["replay", "exact composition of the packs' pose responses (dmipy-sim's phantom route), float32 on the device"],
                 ["per-voxel split-half floor", "none: every voxel reads the same two walks; the packs' certified floors below are the accuracy"]]
         for (tissue, label), pk in self.packs.items():
+            seg = self.segments(tissue, label); held = self.windows_held(pk, seg)
             rows.append([f"{tissue.upper()} pack {label}", f"{pk.meta.get('id')}, {pk.n_walkers:,} walkers, {self.walk_seconds(pk) * 1e3:g} ms walk, "
-                                                          f"certified floor (max) {_floor(pk):.4g}"])
+                                                          f"windows held / declared {held} / {seg['n']} of {float(seg['T']) * 1e3:g} ms "
+                                                          f"({self.saves_spanned(seg, held):,} of {self.saves_spanned(seg, seg['n']):,} saves at "
+                                                          f"{float(seg['T']) / (int(seg['n_t']) - 1) * 1e6:.4g} µs), certified floor (max) {_floor(pk):.4g}"])
         return rows + super().accuracy(res)
 
     def score_text(self, tag, res):

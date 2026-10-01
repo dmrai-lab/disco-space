@@ -1178,13 +1178,21 @@ class Brain(P.Source):
 def _warm_worker(cfg, where, entries, queue):
     """The warm-up's process (:meth:`Brain.warm_in_background`): its own :class:`Brain` on the same configuration
     and asset, every ``(meas, physics)`` of ``entries`` computed on the CPU and put on ``queue`` as
-    ``(response_key, Kernels)``, then ``None``."""
+    ``(response_key, Kernels)``, then ``None``. One line per entry on stdout (the Space's run log) with its index,
+    the seconds it took and the seconds since the start, so the warm-up's progress is observable."""
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
+    t0 = time.perf_counter()
     try:
         src = Brain(cfg, asset=where)
-        for meas, ph in entries:
+        for i, (meas, ph) in enumerate(entries, 1):
+            t = time.perf_counter()
             kernels = src.prepare(meas, ph)
             queue.put((src.response_key(meas, ph), kernels))
+            windows = {t: src.windows_needed(t, label, meas) for t, label in (("wm", ph.wm_pack), ("gm", ph.gm_pack))}
+            print(f"warm-up {i}/{len(entries)}: {len(meas.bvals)} measurements, WM {ph.wm_pack!r} ({windows['wm']} window(s)), "
+                  f"GM {ph.gm_pack!r} ({windows['gm']} window(s)), {ph.field_T:g} T along {ph.b0_direction}, "
+                  f"tiers {'on' if ph.field else 'off'}: {time.perf_counter() - t:.1f} s "
+                  f"({time.perf_counter() - t0:.0f} s since the start)", flush=True)
     finally:
         queue.put(None)
 

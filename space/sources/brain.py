@@ -1196,7 +1196,9 @@ def _warm_worker(cfg, where, entries, queue):
     the seconds it took and the seconds since the start, so the warm-up's progress is observable."""
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     t0 = time.perf_counter()
-    print(f"warm-up: process {os.getpid()} starts on {len(entries)} entries, {len(os.sched_getaffinity(0))} CPUs, "
+    from ..limits import cpu_quota, THREAD_VARS
+    print(f"warm-up: process {os.getpid()} starts on {len(entries)} entries, {len(os.sched_getaffinity(0))} CPUs visible, "
+          f"cgroup CPU quota {cpu_quota()}, threads {os.environ.get(THREAD_VARS[0], 'unset')}, "
           f"memory limit {_cgroup_memory_limit()}", flush=True)
     try:
         src = Brain(cfg, asset=where)

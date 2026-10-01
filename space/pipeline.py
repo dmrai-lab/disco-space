@@ -504,9 +504,15 @@ class Source:
         """The panel's :attr:`Panel.catalogue` numbers at ``field_T`` in the page's units, a note last."""
         raise NotImplementedError
 
+    #: Whether the source plays its pulses at the page's scanner gradient class's slew (:meth:`physics_from` takes
+    #: ``gradient``); a source that does not plays ideal pulses and the class only checks what it can play.
+    plays_slew = False
+
     @classmethod
-    def physics_from(cls, cfg, values):
-        """The panel (a dict by :attr:`Panel.fields`, page units) as the source's physics, or None when it is off."""
+    def physics_from(cls, cfg, values, gradient=None):
+        """The panel (a dict by :attr:`Panel.fields`, page units) as the source's physics, or None when it is off;
+        ``gradient`` the page's scanner gradient class (a catalogue name) for a source with :attr:`plays_slew`, None
+        for ideal pulses."""
         raise NotImplementedError
 
     @classmethod

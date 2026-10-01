@@ -223,8 +223,9 @@ class BrainPhysics:
     ``T2`` / ``T1`` as ``{"wm": {pool: s}, "gm": s, "csf": s}``, ``rho`` the WM walls' surface relaxivity (m/s),
     ``chi_iso`` / ``chi_aniso`` the myelin sheath's susceptibility (SI, the WM pack's field source), ``D_csf`` free
     water's diffusivity (m^2/s), ``m0`` the proton density per tissue relative to CSF, ``wm_pack`` / ``gm_pack`` the
-    packs by their configuration label; ``relaxation``, ``contact`` and ``field`` switch the three tiers. All off is
-    bare diffusion at the same proton densities and packs."""
+    packs by their configuration label; ``relaxation``, ``contact`` and ``field`` switch the three tiers; ``gradient``
+    the scanner's gradient system as a class of dmipy-sim's catalogue (its slew rate shapes every pulse's ramps;
+    None plays ideal pulses with vertical ramps). All off is bare diffusion at the same proton densities and packs."""
     field_T: float
     T2: dict
     T1: dict
@@ -239,8 +240,11 @@ class BrainPhysics:
     relaxation: bool = True
     contact: bool = True
     field: bool = True
+    gradient: Optional[str] = None
 
     def __post_init__(self):
+        if self.gradient is not None and self.gradient not in P.scanner_classes():
+            raise ValueError(f"the gradient system is a class of the scanner catalogue {sorted(P.scanner_classes())}, not {self.gradient!r}")
         if not (0 < self.field_T < 30):
             raise ValueError(f"the field is in tesla, got {self.field_T}")
         if set(self.m0) != set(TISSUES) or any(float(v) < 0 for v in self.m0.values()):
@@ -261,12 +265,22 @@ class BrainPhysics:
         already in T2 and T1)."""
         return self.field_T if self.field else None
 
+    @property
+    def slew_rate(self):
+        """The slew rate every pulse's ramps are played at (T/m/s): the catalogue class's ``slew_max``, infinite
+        (vertical ramps) without a gradient system."""
+        if self.gradient is None:
+            return np.inf
+        from dmipy_sim.acquisition.scanners import ScannerLimits
+        return float(ScannerLimits.of(self.gradient).slew_max)
+
     def label(self):
         if self.bare:
             return "bare diffusion"
         tiers = "+".join(t for t in ("relaxation", "contact", "field") if getattr(self, t))
         u = self.b0_direction
-        return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {tiers}"
+        grad = f", {self.gradient} gradients ({self.slew_rate:g} T/m/s)" if self.gradient else ""
+        return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {tiers}{grad}"
 
     def tissues(self, wm_pools, gm_pools):
         """``(wm, gm, csf)`` :class:`dmipy_sim.spec.Tissue`: the WM pack's pools ``wm_pools`` with their T2 / T1, the
@@ -334,6 +348,7 @@ class Brain(P.Source):
     """A brain from its asset: the regions of its parcellation, the tracker seeded in its white matter and stopped
     where the white matter and the regions end, the connectome scored against the connectome of the asset's own FOD
     tracked with the same settings, seeds and key."""
+    plays_slew = True
     TIERS = ("relaxation", "contact", "field")
     STAGES = ("replay", "noise", "csd", "track", "truth", "score")
 
@@ -365,9 +380,10 @@ class Brain(P.Source):
         the warm-up computes them: every preset at the panel's defaults with its ladder rungs, then B of every knob
         on the default protocol, the field presets last in ascending field along both B0 directions (the band to
         compile grows with the field: 7 T and 11.7 T cost minutes each, so they follow everything cheaper, the
-        pulse-timing classes among it). A knob that leaves the response unchanged (noise, M0, the default pack or
-        direction) repeats no entry; an entry the packs cannot play is left out (a run asking for it is refused by
-        name)."""
+        pulse-timing classes among it), with the scan's protocol on each catalogue gradient system that can play it,
+        at the system's field, with its slew, before the field presets. A knob that leaves the response unchanged (noise, M0, the default pack
+        or direction) repeats no entry; an entry the packs cannot play is left out (a run asking for it is refused
+        by name)."""
         cfg = self.cfg
         panel = self.panel(cfg)
         values = {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields}
@@ -379,10 +395,20 @@ class Brain(P.Source):
         scan = self.protocol(cfg, self.presets(cfg)[0])
         knobs = [c for c in self.knobs(cfg).values() if c is not None]
         fields = sorted((c for c in knobs if c[0] == "field"), key=lambda c: c[1])
-        for change in [c for c in knobs if c[0] != "field"] + fields:
-            prot, _, _, v = self.apply_knob(cfg, change, scan, True, None, values)
-            modes = list(B0_MODES) if change[0] == "field" else [v["b0_mode"]]
-            entries += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]
+        def knob_entries(changes):
+            out = []
+            for change in changes:
+                prot, _, _, v = self.apply_knob(cfg, change, scan, True, None, values)
+                modes = list(B0_MODES) if change[0] == "field" else [v["b0_mode"]]
+                out += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]
+            return out
+        entries += knob_entries([c for c in knobs if c[0] != "field"])
+        for name, (G_max, field_T) in P.scanner_classes().items():     # the gradient systems that can play the scan, at their field
+            if field_T is None or not all(r[-1] for r in P.playable(scan, self.shapes, name)):
+                continue
+            _, _, _, v = self.apply_knob(cfg, ("field", float(field_T)), scan, True, None, values)
+            entries.append((scan, self.physics_from(cfg, v, gradient=name)))
+        entries += knob_entries(fields)
         out = []; keys = set()
         for prot, ph in entries:
             try:
@@ -643,9 +669,10 @@ class Brain(P.Source):
                                                           c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note]
 
     @classmethod
-    def physics_from(cls, cfg, values):
+    def physics_from(cls, cfg, values, gradient=None):
         """The panel (page units: ms, µm/s, ppm) as a :class:`BrainPhysics`: T1 and free water's D from the catalogue at
-        the panel's field, the tiers off (bare diffusion at the same M0 and packs) when the panel is off."""
+        the panel's field, the tiers off (bare diffusion at the same M0 and packs) when the panel is off; ``gradient``
+        the page's scanner gradient class, whose slew shapes every pulse (None: ideal pulses)."""
         on = bool(values["on"])
         c = catalogue(float(values["field_T"]))
         u = B0_MODES[values["b0_mode"]] if values["b0_mode"] in B0_MODES else P.b0_direction(values["theta"], values["phi"])
@@ -653,7 +680,8 @@ class Brain(P.Source):
                             T2={"wm": {p: float(values[f"T2_wm_{p}"]) * 1e-3 for p in WM_POOLS}, "gm": float(values["T2_gm"]) * 1e-3, "csf": float(values["T2_csf"]) * 1e-3},
                             T1=c["T1"], rho=float(values["rho"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
                             D_csf=c["D_csf"], m0={t: float(values[f"m0_{t}"]) for t in TISSUES}, wm_pack=str(values["wm_pack"]), gm_pack=str(values["gm_pack"]),
-                            relaxation=on and bool(values["relaxation"]), contact=on and bool(values["contact"]), field=on and bool(values["field"]))
+                            relaxation=on and bool(values["relaxation"]), contact=on and bool(values["contact"]), field=on and bool(values["field"]),
+                            gradient=gradient)
 
     @classmethod
     def knobs(cls, cfg):
@@ -771,10 +799,11 @@ class Brain(P.Source):
                 raise ValueError(f"the WM pack {label!r} stores no field channel: switch the field tier off or choose another WM pack")
         return meas
 
-    def sequence(self, meas, rows, pose):
+    def sequence(self, meas, rows, pose, slew_rate=np.inf):
         """The ScannerSequence of the measurement rows ``rows`` (one timing class) played at the specimen's ``pose``:
-        the image-frame directions turned by ``pose``, square pulses at the class's delta / Delta / TE, a stimulated
-        echo storing for TM = Delta - delta when the class is one."""
+        the image-frame directions turned by ``pose``, trapezoid pulses at the class's delta / Delta / TE with ramps at
+        ``slew_rate`` (vertical at the default, infinite), a stimulated echo storing for TM = Delta - delta when the
+        class is one."""
         import dmipy_sim as d
         names = np.unique(meas.shape[rows])
         if len(names) != 1:
@@ -783,14 +812,14 @@ class Brain(P.Source):
         dirs = (meas.dirs[rows] @ np.asarray(pose).T).tolist(); b = meas.bvals[rows] * 1e6
         if t.get("kind", "pgse") == "pgste":
             return d.pgste(dirs, float(t["delta"]), float(t["Delta"]) - float(t["delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000,
-                           slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-        return d.pgse(dirs, float(t["delta"]), float(t["Delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000, slew_rate=np.inf)
+                           slew_rate=float(slew_rate), ste_flip_angles=(90.0, 90.0, 90.0))
+        return d.pgse(dirs, float(t["delta"]), float(t["Delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000, slew_rate=float(slew_rate))
 
-    def _b0_sequence(self, name, pose):
+    def _b0_sequence(self, name, pose, slew_rate=np.inf):
         """The class ``name``'s b = 0 measurement as a sequence at ``pose`` (:meth:`sequence`): what the b = 0 signal
         and the acquisition's duration are read from."""
         one = P.Measurements(np.zeros(1), np.array([[0.0, 0.0, 1.0]]), np.array([name]), np.zeros(1), np.zeros(1), np.zeros(1))
-        return self.sequence(one, np.arange(1), pose)
+        return self.sequence(one, np.arange(1), pose, slew_rate)
 
     def response_key(self, meas, physics=None):
         """The key of :meth:`prepare`'s result in this process's cache: the measurements (b-values, directions,
@@ -867,8 +896,8 @@ class Brain(P.Source):
         n = len(meas.bvals)
         C_wm = np.zeros((n, N_COEF), np.complex128); e_gm = np.zeros(n, np.complex128); e_csf = np.zeros(n, np.complex128)
         classes = [np.flatnonzero(meas.shape == name) for name in np.unique(meas.shape)]
-        seqs = [self.sequence(meas, rows, pose) for rows in classes]
-        prof = self._profile_sequence(meas, classes[0], pose)             # the explorer's curves ride in the same pass
+        seqs = [self.sequence(meas, rows, pose, physics.slew_rate) for rows in classes]
+        prof = self._profile_sequence(meas, classes[0], pose, physics.slew_rate)   # the explorer's curves ride in the same pass
         batch = seqs + ([prof[0]] if prof is not None else [])
         t = time.perf_counter()
         r_wm = wm_pack.pose_responses(batch, tissue=t_wm, scanner=physics.scanner, pose=pose, keep=(LMAX, 0))
@@ -897,7 +926,7 @@ class Brain(P.Source):
         self._compiled.add(self._band(meas, physics))
         return k
 
-    def _profile_sequence(self, meas, rows, pose):
+    def _profile_sequence(self, meas, rows, pose, slew_rate=np.inf):
         """``(seq, shells)``: the explorer's profile at the shells of ``meas``'s first class (``rows``): b = 0, then
         per shell a gradient at each of :data:`PROFILE_ANGLES` from the image's z, where the profile's fibre lies; None
         without a diffusion-weighted shell."""
@@ -909,14 +938,14 @@ class Brain(P.Source):
         b = np.concatenate([[0.0], np.repeat(shells, len(th))])
         g = np.concatenate([[[0.0, 0.0, 1.0]], np.tile(dirs, (len(shells), 1))])
         prof = P.Measurements(b, g, np.full(len(b), meas.shape[rows[0]]), np.zeros(len(b)), np.zeros(len(b)), np.zeros(len(b)))
-        return self.sequence(prof, np.arange(len(b)), pose), shells
+        return self.sequence(prof, np.arange(len(b)), pose, slew_rate), shells
 
     def _tier_weights(self, meas, physics, wm_pack, gm_pack, pose, rows):
         """The b = 0 signal per tissue with each tier alone, over bare: ``relaxation`` (T2 at the echo, T1 over a
         stimulated echo's storage) per tissue, ``contact`` (the WM walls' survival) for WM; a tier that is off is
         absent. The b = 0 signal has no orientation, so one pose of the pack answers it."""
         from dmipy_sim.phantom import FreeWater
-        seq = self._b0_sequence(str(meas.shape[rows[0]]), pose)
+        seq = self._b0_sequence(str(meas.shape[rows[0]]), pose, physics.slew_rate)
         out = {}
         alone = dict(relaxation=False, contact=False, field=False)
         if physics.relaxation:

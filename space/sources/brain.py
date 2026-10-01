@@ -1210,7 +1210,7 @@ def _warm_worker(cfg, where, entries, queue):
     from ..limits import cpu_quota, THREAD_VARS
     print(f"warm-up: process {os.getpid()} starts on {len(entries)} entries, {len(os.sched_getaffinity(0))} CPUs visible, "
           f"cgroup CPU quota {cpu_quota()}, cpuset {_cgroup_cpuset()}, threads {os.environ.get(THREAD_VARS[0], 'unset')}, "
-          f"memory limit {_cgroup_memory_limit()}", flush=True)
+          f"memory limit {_cgroup_memory_limit()}, memory.high {_cgroup_memory_high()}, memory.events {_cgroup_memory_events()}", flush=True)
     try:
         src = Brain(cfg, asset=where)
         print(f"warm-up: the source loaded, RSS {_rss_gb():.1f} GB ({time.perf_counter() - t0:.0f} s since the start)", flush=True)
@@ -1225,8 +1225,8 @@ def _warm_worker(cfg, where, entries, queue):
             print(f"warm-up {i}/{len(entries)}: {len(meas.bvals)} measurements, WM {ph.wm_pack!r} ({windows['wm']} window(s)), "
                   f"GM {ph.gm_pack!r} ({windows['gm']} window(s)), {ph.field_T:g} T along {ph.b0_direction}, "
                   f"tiers {'on' if ph.field else 'off'}: {time.perf_counter() - t:.1f} s "
-                  f"({', '.join(f'{n} {v:.1f}' for n, v in (kernels.stages or {}).items())}; phases {phases}), RSS {_rss_gb():.1f} GB "
-                  f"({time.perf_counter() - t0:.0f} s since the start)", flush=True)
+                  f"({', '.join(f'{n} {v:.1f}' for n, v in (kernels.stages or {}).items())}; phases {phases}), RSS {_rss_gb():.1f} GB, "
+                  f"memory.events {_cgroup_memory_events()} ({time.perf_counter() - t0:.0f} s since the start)", flush=True)
     finally:
         queue.put(None)
 
@@ -1251,6 +1251,27 @@ def _cgroup_cpuset():
             return f.read().strip() or "unknown"
     except OSError:
         return "unknown"
+
+
+def _cgroup_memory_high():
+    """The cgroup's memory.high (v2), the throttling threshold below memory.max: ``'max'`` when unset, in GB
+    otherwise, ``'unknown'`` where the file does not exist."""
+    try:
+        with open("/sys/fs/cgroup/memory.high") as f:
+            v = f.read().strip()
+        return v if v == "max" else f"{int(v) / 1e9:.1f} GB"
+    except OSError:
+        return "unknown"
+
+
+def _cgroup_memory_events():
+    """The cgroup's memory.events (v2) as ``{name: count}`` (``high`` counts the times memory.high throttled the
+    group, ``max`` the times memory.max was hit); empty where the file does not exist."""
+    try:
+        with open("/sys/fs/cgroup/memory.events") as f:
+            return {k: int(v) for k, v in (line.split() for line in f if line.strip())}
+    except OSError:
+        return {}
 
 
 def _cgroup_memory_limit():

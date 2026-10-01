@@ -17,6 +17,6 @@ matplotlib>=3.8
 plotly>=5.20
 pillow>=10
 dipy>=1.9
-dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@bf72a5ffb984e5f484fc01a36dc879bda5e57193
+dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@062c3ce98ea4cf3f1cbb9e8627fe004e30a70a0d
 dmipy-fit @ git+https://github.com/dmrai-lab/dmipy-fit@c3dcc546595cbde8e8e7c7bb2ff4e87f099d5dab
 dmipy-tract @ git+https://github.com/dmrai-lab/dmipy-tract@7da22c3a9473c50a08cc7c6246ec16b68a64d877

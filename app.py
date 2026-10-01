@@ -1,7 +1,8 @@
 """The ZeroGPU entry (disco-space#2): the same page as ``space/app.py`` on Hugging Face's shared GPU pool, which runs
-PyTorch only and gives a GPU to a call decorated with ``spaces.GPU`` for its duration: here the compute alone; the
-host's share of a run (a brain's pack responses) before it and the page's drawing and files after it stay in this
-process (disco-space#7). The configuration is ``DISCO_CONFIG`` (``space/config.toml``, the DiSCo Space, unless the
+PyTorch only and gives a GPU to a call decorated with ``spaces.GPU`` for its duration: here the compute alone (with
+the source's share a run needs that the page has not cached, a brain's pack responses, so the call is entered as soon
+as the request arrives); the cache lookup before it and the page's drawing and files after it stay in this process
+(disco-space#7). The configuration is ``DISCO_CONFIG`` (``space/config.toml``, the DiSCo Space, unless the
 Space sets another: ``brain.toml`` for the brain Space). The compute backend is torch (``DISCO_BACKEND=torch``), the
 layout's tiles are rebuilt on the device inside every call (``resident = false``: nothing survives between calls),
 deterministic algorithms are on and TF32 off inside the call. The source's data come from the Hub at the config's
@@ -21,7 +22,7 @@ from space import app as A                              # noqa: E402
 def gpu_runner(fn):
     """``fn`` (:func:`space.app.compute`) under the GPU for the seconds :func:`space.app.estimated_seconds` reads off
     the inputs (``DISCO_GPU_SECONDS`` overrides with a fixed number), deterministic, full precision. Its first
-    argument is the host's share of the run (:func:`space.app.prepare_runs`, done in the page's process before), the
+    argument is the source's share of the run the page has cached (:func:`space.app.prepare_runs`, a lookup), the
     page's inputs follow. A generator: its stage texts and its payload cross from the worker to the page's process,
     where the page draws and writes files after the device is released."""
     fixed = os.environ.get("DISCO_GPU_SECONDS")

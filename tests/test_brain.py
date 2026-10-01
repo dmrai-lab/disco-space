@@ -100,18 +100,19 @@ def test_the_replay_is_dmipy_sims_phantom_composition(brain):
 @has_fixture
 @has_packs
 def test_prepare_is_kept_per_tissue_and_field_and_the_m0_is_the_devices(brain):
-    """The host share is computed once per (packs, protocol, tissue, field): a second call with other proton densities
-    reuses it (zero seconds) and the replay follows the new M0 linearly per tissue."""
+    """The pose responses are kept per (packs, protocol, tissue, field): the cache has them for other proton densities
+    (zero seconds), not for another tissue, and the replay follows the new M0 linearly per tissue."""
     cfg = brain.cfg
     v = default_values(cfg)
     ph = B.Brain.physics_from(cfg, v)
     meas = brain.validate(P.preset_protocol(cfg, "clinical b1000 x 30"), ph)
     k1 = brain.prepare(meas, ph)
-    k2 = brain.prepare(meas, B.Brain.physics_from(cfg, {**v, "m0_gm": 0.5}))
+    k2 = brain.cached(meas, B.Brain.physics_from(cfg, {**v, "m0_gm": 0.5}))
     assert k2.seconds == 0.0 and k2.m0["gm"] == 0.5 and k1.m0["gm"] == v["m0_gm"] and k2.wm is k1.wm
+    assert brain.cached(meas, B.Brain.physics_from(cfg, {**v, "rho": 2 * v["rho"]})) is None
     only_gm = {**v, "m0_wm": 0.0, "m0_csf": 0.0}
-    a = brain.replay(meas, B.Brain.physics_from(cfg, only_gm), brain.prepare(meas, B.Brain.physics_from(cfg, only_gm)))
-    b = brain.replay(meas, B.Brain.physics_from(cfg, {**only_gm, "m0_gm": 0.5 * v["m0_gm"]}), brain.prepare(meas, B.Brain.physics_from(cfg, {**only_gm, "m0_gm": 0.5 * v["m0_gm"]})))
+    a = brain.replay(meas, B.Brain.physics_from(cfg, only_gm), brain.cached(meas, B.Brain.physics_from(cfg, only_gm)))
+    b = brain.replay(meas, B.Brain.physics_from(cfg, {**only_gm, "m0_gm": 0.5 * v["m0_gm"]}), brain.cached(meas, B.Brain.physics_from(cfg, {**only_gm, "m0_gm": 0.5 * v["m0_gm"]})))
     ok = np.isfinite(a[2])
     np.testing.assert_allclose(b[2][ok], 0.5 * a[2][ok], rtol=1e-5)                       # the b = 0 signal halves
     np.testing.assert_allclose(b[0][ok], a[0][ok], atol=1e-5)                              # the normalised signal does not move
@@ -235,8 +236,8 @@ def mini_asset(tmp_path, size=(18, 18, 10)):
 @has_fixture
 @has_packs
 def test_the_brain_page_runs_a_to_b_on_a_small_crop(tmp_path, monkeypatch):
-    """The page's chain on a crop of the fixture (single-tissue reconstruction, the torch backend on the CPU): the host
-    share, the device part (A, B = A with the field off, the ladder), the drawing; every output there, the headline
+    """The page's chain on a crop of the fixture (single-tissue reconstruction, the torch backend on the CPU): the cache
+    lookup, the device part (the packs' responses, A, B = A with the field off, the ladder), the drawing; every output there, the headline
     against the input's connectome, the round trip and the timings naming the reconstruction path, the files."""
     pytest.importorskip("gradio")
     from space import app as A
@@ -257,7 +258,7 @@ def test_the_brain_page_runs_a_to_b_on_a_small_crop(tmp_path, monkeypatch):
     named = dict(zip(A.OUTPUTS, final))
     assert "connectome vs the input's" in named["headline"] and "A vs B" in named["headline"] and "tracker keys" in named["headline"]
     rows = dict((r[0], r[1]) for r in named["timings"])
-    assert any("tournier07" in k for k in rows) and any(k.startswith("A · truth") for k in rows) and any(k.startswith("host") for k in rows)
+    assert any("tournier07" in k for k in rows) and any(k.startswith("A · truth") for k in rows) and float(rows[A.RESPONSES_ROW]) > 0
     assert any(r[0] == "reconstruction" and "tournier07" in r[1] for r in named["roundtrip"])
     for key in ("dwi_view", "mats", "lobar_view", "truth_view", "fractions_view", "response_view", "ingredient_pool", "explore_view"):
         assert named[key] is not None, key
@@ -269,6 +270,86 @@ def test_the_brain_page_runs_a_to_b_on_a_small_crop(tmp_path, monkeypatch):
     assert len(fig.data) == 1 and img.size[0] > 100
     demo = A.build(cfg=cfg)                                   # the page itself builds from the brain's class alone
     assert demo.title == cfg["describe"]["title"]
+
+
+@has_fixture
+@has_packs
+def test_the_worker_computes_what_the_page_has_not_cached_and_the_page_keeps_it(monkeypatch):
+    """prepare_runs is a lookup: None for every entry the page has not cached (A, B, the ladder's rungs). The worker
+    (another process: here another Brain) computes exactly those inside the call, says so in a stage text, and hands
+    them over by key; the page keeps them, after which the same run finds every entry cached and equal."""
+    pytest.importorskip("gradio")
+    from space import app as A
+    cfg = brain_cfg()
+    page, worker = B.Brain(cfg), B.Brain(cfg)
+    monkeypatch.setattr(A, "_load", lambda: dict(error=None, source=page, cfg=cfg))
+    v = default_values(cfg)
+    physics = [v[k] for k in B.Brain.panel(cfg).fields]
+    args = ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, "B0 direction → " + list(B.B0_MODES)[1], A.NO_SCANNER, 1, True, *physics] + [False] * 28
+    prepared = A.prepare_runs(*args)
+    assert set(prepared["runs"]) == {"A", "B"} and all(k is None for k in [*prepared["runs"].values(), *prepared["ladder"]]) and len(prepared["ladder"]) == 3
+    runs = A.plan_runs(cfg, page, *args[:4], args[8], args[9], args[10], v, [False] * 28)
+    gen = A._fill(worker, runs, True, prepared)
+    texts = []
+    try:
+        while True:
+            texts.append(next(gen))
+    except StopIteration as stop:
+        filled, computed, seconds = stop.value
+    assert len(texts) == 1 and "computing the packs' responses on the worker" in texts[0][0] and seconds > 0
+    assert len(computed) == 5 and all(k is not None for k in [*filled["runs"].values(), *filled["ladder"]])
+    assert page.cached(P.measurements(runs[0][1], page.shapes), runs[0][4]) is None      # the worker's work is not the page's yet
+    page.keep(computed)
+    again = A.prepare_runs(*args)
+    for got, want in zip([*again["runs"].values(), *again["ladder"]], [*filled["runs"].values(), *filled["ladder"]]):
+        assert got.seconds == 0.0 and np.array_equal(got.wm, want.wm) and np.array_equal(got.csf, want.csf)
+    gen = A._fill(worker, runs, True, again)                  # nothing missing: no stage text, nothing computed
+    try:
+        next(gen); raise AssertionError("a stage text with nothing to compute")
+    except StopIteration as stop:
+        assert stop.value[1] == {} and stop.value[2] < 0.01
+
+
+@has_fixture
+@has_packs
+def test_the_reservation_prices_the_responses_the_page_has_not_cached(monkeypatch):
+    """Nothing cached: A is a band to compile (cold), the ladder's rungs compile nothing (no field tier). With A's
+    entries cached on the page, B's knob decides the extra: a new field is a band to compile (cold), a new field
+    direction at A's band is warm, the field tier off is the ladder's top rung, cached; the reservation rises by the priced
+    entry and falls back once the page keeps B's responses (as after a run). Another band compiled by an earlier
+    entry of the same run is warm."""
+    from space import app as A
+    cfg = brain_cfg()
+    page = B.Brain(cfg)
+    monkeypatch.setitem(A._state, "source", page); monkeypatch.setitem(A._state, "cfg", cfg)
+    monkeypatch.setattr(A, "_load", lambda: dict(error=None, source=page, cfg=cfg))
+    monkeypatch.setattr(A.P, "config", lambda path=None: cfg)
+    v = default_values(cfg)
+    physics = [v[k] for k in B.Brain.panel(cfg).fields]
+    args = lambda knob, ladder=True: ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, knob, A.NO_SCANNER, 1, ladder, *physics] + [False] * 28
+    seven = "field → 7 T (catalogue tissue at that field)"
+    cold = A.uncached_responses(*args(P.NO_KNOB))
+    assert cold == [("cold", 31), ("no_field", 31), ("no_field", 31), ("no_field", 31)]
+    prot = P.preset_protocol(cfg, "clinical b1000 x 30")
+    for (_, meas, ph) in A.response_entries(page, A.plan_runs(cfg, page, *args(P.NO_KNOB)[:4], None, P.NO_KNOB, A.NO_SCANNER, v, [False] * 28), True):
+        page.prepare(meas, ph)
+    assert A.uncached_responses(*args(P.NO_KNOB)) == []
+    assert A.uncached_responses(*args(seven)) == [("cold", 31)]
+    assert A.uncached_responses(*args("B0 direction → " + list(B.B0_MODES)[1])) == [("warm", 31)]
+    assert A.uncached_responses(*args("field tier → off")) == []                    # A's top rung of the ladder
+    b = cfg["budget"]
+    base = B.Brain.estimated_seconds(cfg, prot, density=1, knob=seven, n_keys=1, ladder=True)
+    before = A.estimated_seconds(*args(seven))
+    assert abs((before - base) - b["margin"] * (b["response_cold"]["fixed"] + 31 * b["response_cold"]["per_meas"])) <= 1
+    runs = A.plan_runs(cfg, page, *args(seven)[:4], None, seven, A.NO_SCANNER, v, [False] * 28)
+    meas_b, ph_b = A.response_entries(page, runs, False)[1][1:]
+    worker = B.Brain(cfg)
+    page.keep({page.response_key(meas_b, ph_b): worker.prepare(meas_b, ph_b)})
+    assert A.uncached_responses(*args(seven)) == [] and A.estimated_seconds(*args(seven)) == base < before
+    seven_both = dict(v, field_T=7.0)                         # A at 7 T (cold), B its other direction: warm after A
+    physics7 = [seven_both[k] for k in B.Brain.panel(cfg).fields]
+    a7 = ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, "B0 direction → " + list(B.B0_MODES)[1], A.NO_SCANNER, 1, False, *physics7] + [False] * 28
+    assert A.uncached_responses(*a7) == [("cold", 31), ("warm", 31)]
 
 
 @has_fixture

@@ -11,9 +11,11 @@ the tractograms and connectomes of A and B against the source's truth, the sprea
 trip tables, the timings, the downloads.
 
 The page is built from the source's class (:meth:`space.pipeline.Source.describe`, ``presets``, ``panel``,
-``knobs``, ``estimated_seconds``) before any data loads; a run is :func:`prepare_runs` on the host (the source's
-share that needs no device), :func:`compute` on the device, :func:`present` back on the host. Nothing scientific
-lives here: every number comes from the pipeline or the source, every figure from :mod:`space.viewers`."""
+``knobs``, ``estimated_seconds``) before any data loads; a run is :func:`prepare_runs` on the host (a lookup of the
+source's share that needs no device, in the page's cache), :func:`compute` on the device (which computes the share
+the page had not cached first, so the GPU call is entered as soon as the request arrives), :func:`present` back on
+the host. Nothing scientific lives here: every number comes from the pipeline or the source, every figure from
+:mod:`space.viewers`."""
 from __future__ import annotations
 
 import os
@@ -35,6 +37,7 @@ UPLOADED = "uploaded scheme"
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
 NO_KNOB = P.NO_KNOB
 NO_SCANNER = "none: any gradient amplitude"
+RESPONSES_ROW = "worker · the packs' responses not cached on the page"     # the timings row tools/live.py prints
 SAMPLE = 10_000                                          # streamlines kept in the page's state and in the sample .tck
 OUTPUTS = ("result", "headline", "dwi_view", "tract_view", "mats", "timings", "tck", "volumes", "z_slider", "m_slider",
            "tract_view_b", "mats_b", "b_row", "floor_view", "accuracy", "spread_view",
@@ -134,25 +137,57 @@ def _split(S, cfg, rest):
     return physics_values(S, cfg, *rest[:n]), rest[n:]
 
 
+def response_entries(source, runs, ladder_on):
+    """The :meth:`~space.pipeline.Source.prepare` entries of :func:`plan_runs`'s ``runs``: ``[(slot, meas, physics)]``
+    for A, B and, with the ladder, A's rungs; ``slot`` is ``("runs", tag)`` or ``("ladder", i)``."""
+    out = [(("runs", tag), P.measurements(prot, source.shapes), ph) for tag, prot, _, _, ph in runs]
+    if ladder_on:
+        meas_a = out[0][1]
+        out += [(("ladder", i), meas_a, ph) for i, (_, ph) in enumerate(source.ladder_steps(runs[0][4]))]
+    return out
+
+
 def prepare_runs(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
-    """The host's share of the runs the inputs ask for, before the device is held: the source's
-    :meth:`~space.pipeline.Source.prepare` for A, B and A's ladder rungs (``{"runs": {tag: ...}, "ladder": [...] or
-    None, "seconds": s}``; every entry None for a source without one)."""
+    """The source's share of the runs the inputs ask for as the page's process has it cached
+    (:meth:`~space.pipeline.Source.cached`), looked up and never computed, so the GPU call follows the request at
+    once: ``{"runs": {tag: ...}, "ladder": [...] or None}``, None for an entry not cached (or a source with nothing
+    to prepare); :func:`compute` computes the missing ones."""
     state = _load()
     if state["error"]:
         raise ValueError(f"the source did not load: {state['error']}")
     source, cfg = state["source"], state["cfg"]
     values, shell_inputs = _split(type(source), cfg, rest)
     runs = plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner, values, shell_inputs)
-    t0 = time.perf_counter()
-    out = dict(runs={}, ladder=None)
-    for tag, prot, _, _, physics in runs:
-        out["runs"][tag] = source.prepare(P.measurements(prot, source.shapes), physics)
-    if ladder_on:
-        meas_a = P.measurements(runs[0][1], source.shapes)
-        out["ladder"] = [source.prepare(meas_a, ph) for _, ph in source.ladder_steps(runs[0][4])]
-    out["seconds"] = time.perf_counter() - t0
+    out = dict(runs={}, ladder=[] if ladder_on else None)
+    for (where, k), meas, ph in response_entries(source, runs, ladder_on):
+        hit = source.cached(meas, ph)
+        if where == "runs":
+            out["runs"][k] = hit
+        else:
+            out["ladder"].append(hit)
     return out
+
+
+def _fill(source, runs, ladder_on, prepared):
+    """:func:`prepare_runs`'s entries the page had not cached, computed here (inside the GPU call), a generator: a
+    stage text when there are any, then returns ``(prepared, {response_key: result}, seconds)``: the entries
+    complete, the ones computed here by key, the time (None for a source with nothing to prepare)."""
+    entries = [(slot, meas, ph) for slot, meas, ph in response_entries(source, runs, ladder_on) if source.response_key(meas, ph) is not None]
+    if not entries:
+        return prepared, {}, None
+    out = dict(runs=dict(prepared["runs"]), ladder=None if prepared["ladder"] is None else list(prepared["ladder"]))
+    missing = [(slot, meas, ph) for slot, meas, ph in entries if out[slot[0]][slot[1]] is None]
+    if missing:
+        yield (f"**computing the packs' responses on the worker: not cached on the page** ({len(missing)} of {len(entries)}) …", 0.0)
+    t0 = time.perf_counter()
+    computed = {}
+    for (where, k), meas, ph in missing:
+        r = source.cached(meas, ph)                     # an earlier entry of this run with the same key (B = A but its M0)
+        if r is None:
+            r = source.prepare(meas, ph)
+            computed[source.response_key(meas, ph)] = r
+        out[where][k] = r
+    return out, computed, time.perf_counter() - t0
 
 
 def _result_state(res, sample, load_seconds):
@@ -279,9 +314,10 @@ def layer_table(ex):
 def compute(prepared, preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
     """Everything a run needs the device for, a generator: ``(text, fraction)`` stage updates while it works, then
     the payload last, a dict of plain data (:class:`P.Result` per tag, the explorer's ladder and ingredient maps, the
-    tracker-key spread, the seconds of each step, the clock at the handoff). ``prepared`` is :func:`prepare_runs`'s,
-    ``rest`` the physics panel then the shell rows. On a shared GPU pool this runs in the forked worker and its yields
-    cross to the page's process; nothing here draws or writes a file, so the device is held for the compute alone."""
+    tracker-key spread, the seconds of each step, the source's share the page had not cached as computed here by key
+    and its seconds, the clock at the handoff). ``prepared`` is :func:`prepare_runs`'s, ``rest`` the physics panel
+    then the shell rows. On a shared GPU pool this runs in the forked worker and its yields cross to the page's
+    process; nothing here draws or writes a file, so the device is held for the compute alone."""
     state = _load()
     if state["error"]:
         raise ValueError(f"the source did not load: {state['error']}")
@@ -294,8 +330,9 @@ def compute(prepared, preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
         if plan:
             yield (f"**{tag}: full replay of {plan['rows']:,} rows, {plan['bytes'] / 1e9:.1f} GB to read, about "
                    f"{plan['estimated_seconds'] / 60:.0f} min** (bands {plan['K']}, field modes {plan['modes']})", 0.0)
-    tracking = S.tracking(cfg, density=density, max_angle=max_angle, step=step_mm, key=key)
     t0 = time.perf_counter()
+    prepared, kernels, response_seconds = yield from _fill(source, runs, ladder_on, prepared)
+    tracking = S.tracking(cfg, density=density, max_angle=max_angle, step=step_mm, key=key)
     results = {}; seconds = {}
     try:
         for tag, prot, on, s_, ph in runs:
@@ -322,7 +359,8 @@ def compute(prepared, preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
     finally:
         source.release()
     yield dict(results={tag: _light(r) for tag, r in results.items()}, ladder=[(label, vol.astype(np.float32)) for label, vol in ladder],
-               ingredients=ingredients, spread=spread, knob=knob, seconds=seconds, compute_seconds=time.perf_counter() - t0, handed_off_at=time.time())
+               ingredients=ingredients, spread=spread, knob=knob, seconds=seconds, kernels=kernels, response_seconds=response_seconds,
+               compute_seconds=time.perf_counter() - t0, handed_off_at=time.time())
 
 
 def _light(res):
@@ -331,16 +369,17 @@ def _light(res):
     return replace(res, dwi=res.dwi.astype(np.float32), clean=None if res.clean is None else res.clean.astype(np.float32))
 
 
-def present(payload, state, prepared=None):
-    """The page's outputs (:data:`OUTPUTS`, in order) from a compute payload and the host's ``prepared`` share: the
-    files, the per-session states, the headline and the figures. Runs where the page runs, never on the device."""
+def present(payload, state):
+    """The page's outputs (:data:`OUTPUTS`, in order) from a compute payload: the files, the per-session states, the
+    headline and the figures (A's source share from the page's cache, which holds it after :func:`run_pipeline`).
+    Runs where the page runs, never on the device."""
     import gradio as gr
     received = time.time()
     source = state["source"]; load_seconds = state["load_seconds"]; regions = state["regions"]
     results = payload["results"]; ladder = payload["ladder"]; ingredients = payload["ingredients"]; spread = payload["spread"]; knob = payload["knob"]
     post = {}
-    if prepared is not None and prepared.get("seconds"):
-        post["host · the source's share before the GPU (the packs' responses)"] = prepared["seconds"]
+    if payload.get("response_seconds") is not None:
+        post[RESPONSES_ROW] = payload["response_seconds"]
     post.update(payload["seconds"])
     t = time.perf_counter()
     samples = {}; files = {}
@@ -367,7 +406,7 @@ def present(payload, state, prepared=None):
     timings += [[k, f"{v:.2f}"] for k, v in post.items()]
     rs["explorer"] = ex                                  # the page state: A, B and the explorer's layers
     box = V.grid_box(ra["shape"], source.affine) if d["views"]["truth"] else ra["shape"]
-    pa = prepared["runs"]["A"] if prepared is not None else None
+    pa = source.cached(results["A"].meas, results["A"].physics)
     out = (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=True, label="A: "),
            V.tractogram3d(ra["tractogram"], regions, box, total=ra["n_streamlines"]),
            source.matrices(results["A"].matrix, results["A"].score, results["A"].reference),
@@ -389,9 +428,10 @@ def present(payload, state, prepared=None):
 
 
 def run_pipeline(compute_fn, *args, progress=None):
-    """The run button, a generator: the host's share of the runs (:func:`prepare_runs`), then the stage texts of
-    ``compute_fn`` (:func:`compute`, or it wrapped for a GPU pool) into the headline as they arrive (the other outputs
-    untouched, the progress bar following), then the page's outputs from its payload (:func:`present`)."""
+    """The run button, a generator: the source's share of the runs the page has cached (:func:`prepare_runs`, a
+    lookup), then the stage texts of ``compute_fn`` (:func:`compute`, or it wrapped for a GPU pool) into the headline
+    as they arrive (the other outputs untouched, the progress bar following), then the share the call computed kept
+    in the page's cache and the page's outputs from its payload (:func:`present`)."""
     import gradio as gr
     state = _load()
     if state["error"]:
@@ -400,7 +440,7 @@ def run_pipeline(compute_fn, *args, progress=None):
         progress(0.0, desc="starting")
     payload = None
     try:
-        yield _status("**preparing the run on the host** (the packs' responses, before the GPU is held) …")
+        yield _status("**starting the run** (the packs' responses looked up on the page) …")
         prepared = prepare_runs(*args)
         for item in compute_fn(prepared, *args):
             if isinstance(item, dict):
@@ -412,8 +452,10 @@ def run_pipeline(compute_fn, *args, progress=None):
                 yield _status(text)
     except (ValueError, KeyError) as e:
         raise gr.Error(str(e))
+    if payload.get("kernels"):
+        state["source"].keep(payload["kernels"])
     yield _status(f"**drawing** … (device held {payload['compute_seconds']:.0f} s)")
-    yield present(payload, state, prepared)
+    yield present(payload, state)
 
 
 GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # ZeroGPU's daily quota per visitor tier, seconds
@@ -422,7 +464,8 @@ GPU_TIERS = (("logged out", 120), ("free account", 300), ("PRO", 2400))    # Zer
 def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
     """The GPU seconds a run reserves on the shared pool, from its inputs (the same positional inputs as
     :func:`run_pipeline`): the configured source's measured cost model
-    (:meth:`~space.pipeline.Source.estimated_seconds`). The pool refuses a request above the visitor's daily quota
+    (:meth:`~space.pipeline.Source.estimated_seconds`) with the source's share the call computes because the page has
+    it not cached (:func:`uncached_responses`). The pool refuses a request above the visitor's daily quota
     (:data:`GPU_TIERS`) and kills a run that outlives its reservation, so this is the measured cost with its margin,
     not a generous one; 480 when the inputs make no protocol."""
     try:
@@ -432,7 +475,25 @@ def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
         protocol = _protocol_from_inputs(S, cfg, preset, n_b0, *rest[n:], scheme=scheme_file, full=S.mode == "full")
     except Exception:
         return 480
-    return S.estimated_seconds(cfg, protocol, density=density, knob=knob, n_keys=n_keys, ladder=ladder_on)
+    responses = uncached_responses(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest)
+    return S.estimated_seconds(cfg, protocol, density=density, knob=knob, n_keys=n_keys, ladder=ladder_on, responses=responses)
+
+
+def uncached_responses(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
+    """``(state, n_meas)`` per entry of the source's share of the run the inputs ask for that the page's process has
+    not cached (:meth:`~space.pipeline.Source.responses`): what the GPU call computes before its replay. Empty when
+    the source is not loaded in this process (the pool's entry loads it before the page serves) or refuses the run
+    (it is refused before the GPU call)."""
+    source = _state["source"]
+    if source is None:
+        return []
+    cfg = _state["cfg"]
+    try:
+        values, shell_inputs = _split(type(source), cfg, rest)
+        runs = plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner, values, shell_inputs)
+    except (ValueError, KeyError):
+        return []
+    return source.responses([(meas, ph) for _, meas, ph in response_entries(source, runs, ladder_on)])
 
 
 def gpu_seconds_text(*args):
@@ -495,7 +556,7 @@ def _widget(c):
 def build(runner=None, cfg=None):
     """The Blocks of the configured source (``cfg``, else :func:`space.pipeline.config`). ``runner`` wraps
     :func:`compute` for the run button (the ZeroGPU entry passes ``spaces.GPU(...)``): the device part of a run; the
-    page prepares on the host before it and draws from its payload after it, in this process."""
+    page looks up its cache before it and draws from its payload after it, in this process."""
     import gradio as gr
     cfg = cfg or P.config()
     S = sources.source_class(cfg)
@@ -650,8 +711,10 @@ def build(runner=None, cfg=None):
         run_inputs = [preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *physics_inputs, *shell_inputs]
         if runner is not None:                                   # the pool: what the run reserves, live as the inputs change
             gr.on([c.change for c in run_inputs] + [demo.load], gpu_seconds_text, inputs=run_inputs, outputs=gpu_text, show_progress="hidden")
-        go.click(run_with_progress, inputs=run_inputs,
-                 outputs=[outputs[name] for name in OUTPUTS], concurrency_limit=1, api_name="run_pipeline")   # the endpoint tools/live.py drives
+        run_event = go.click(run_with_progress, inputs=run_inputs,
+                             outputs=[outputs[name] for name in OUTPUTS], concurrency_limit=1, api_name="run_pipeline")   # the endpoint tools/live.py drives
+        if runner is not None:                                   # the run's responses are now cached on the page: the reservation falls
+            run_event.then(gpu_seconds_text, inputs=run_inputs, outputs=gpu_text, show_progress="hidden")
         for ctl in (z_slider, m_slider, overlay, which):
             ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view, truth_view, fractions_view], show_progress="hidden")
         gt_tab.select(ground_truth_views, outputs=[strands_view, gt_matrix])

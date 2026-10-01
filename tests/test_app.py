@@ -1,6 +1,8 @@
 """The page's acquisition choice without a browser: DiSCo's table, a config preset, the shell rows (a stored class in
 demo mode, the row's own delta / Delta / TE in full mode), a scheme upload only in full mode; an unknown choice
 refused (no Gradio needed: the mapping lives beside the page, not in a widget)."""
+import types
+
 import numpy as np
 import pytest
 
@@ -93,7 +95,6 @@ def test_a_knob_changes_one_thing_of_a():
 
 
 def test_compare_is_symmetric_in_its_pairs_and_zero_for_the_same_run():
-    import types
     M = np.zeros((16, 16)); M[0, 1] = M[1, 0] = 5; M[2, 3] = M[3, 2] = 2
     N = M.copy(); N[4, 5] = N[5, 4] = 1; N[2, 3] = N[3, 2] = 0
     a = types.SimpleNamespace(matrix=M, score=dict(pearson_count=0.9, pearson_area=0.8))
@@ -146,6 +147,23 @@ def test_the_runs_are_planned_and_refused_before_any_work():
         A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "twist", A.NO_SCANNER, v, ROWS)
 
 
+def test_disco_prepares_nothing_so_the_lookup_and_the_worker_have_nothing_to_do(monkeypatch):
+    """DiSCo has no share outside the device: prepare_runs gives None for every entry, the worker computes nothing and
+    says nothing, the payload has no response seconds and the reservation has no response part."""
+    src = _Demo(CFG)
+    monkeypatch.setattr(A, "_load", lambda: dict(error=None, source=src, cfg=CFG))
+    v = _values()
+    args = [A.CUSTOM, 2, True, 30.0, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, True, *v.values(), *ROWS]
+    prepared = A.prepare_runs(*args)
+    assert prepared["runs"] == {"A": None, "B": None} and all(p is None for p in prepared["ladder"])
+    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "SNR → 10", A.NO_SCANNER, v, ROWS)
+    gen = A._fill(src, runs, True, prepared)
+    with pytest.raises(StopIteration) as stop:
+        next(gen)
+    assert stop.value.value == (prepared, {}, None)
+    assert src.responses([(m, ph) for _, m, ph in A.response_entries(src, runs, True)]) == []
+
+
 def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     v = list(_values().values())
     one = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, False, *v, *ROWS)
@@ -193,21 +211,24 @@ def test_the_run_button_chains_the_devices_texts_into_the_headline_then_the_page
     """run_pipeline: every (text, fraction) of the compute function becomes a headline-only update (the progress bar
     following), the payload goes to present once the device part has ended, and its outputs are the last yield."""
     pytest.importorskip("gradio")
-    monkeypatch.setattr(A, "_load", lambda: dict(error=None, load_seconds=1.0, regions=None, source=None))
-    monkeypatch.setattr(A, "prepare_runs", lambda *args: dict(runs={"A": args}, ladder=None, seconds=0.5))
+    kept = []
+    source = types.SimpleNamespace(keep=kept.append)
+    monkeypatch.setattr(A, "_load", lambda: dict(error=None, load_seconds=1.0, regions=None, source=source))
+    monkeypatch.setattr(A, "prepare_runs", lambda *args: dict(runs={"A": args}, ladder=None))
     seen = []
-    monkeypatch.setattr(A, "present", lambda payload, state, prepared: seen.append((payload, prepared)) or ("drawn",) * len(A.OUTPUTS))
+    monkeypatch.setattr(A, "present", lambda payload, state: seen.append(payload) or ("drawn",) * len(A.OUTPUTS))
 
     def fake_compute(prepared, *args):
         assert prepared["runs"]["A"] == args
         yield ("**A · 1/5 replay** …", 0.1)
         yield ("**A · 2/5 noise** …", 0.3)
-        yield dict(results={}, compute_seconds=12.0)
+        yield dict(results={}, compute_seconds=12.0, kernels={"key": "computed on the worker"})
     bars = []
     out = list(A.run_pipeline(fake_compute, "x", 1, progress=lambda f, desc: bars.append((f, desc))))
-    assert "preparing" in out[0][1] and [o[1] for o in out[1:3]] == ["**A · 1/5 replay** …", "**A · 2/5 noise** …"] and all(len(o) == len(A.OUTPUTS) for o in out[:4])
+    assert "starting" in out[0][1] and [o[1] for o in out[1:3]] == ["**A · 1/5 replay** …", "**A · 2/5 noise** …"] and all(len(o) == len(A.OUTPUTS) for o in out[:4])
     assert "drawing" in out[3][1] and out[4] == ("drawn",) * len(A.OUTPUTS)
-    assert bars == [(0.0, "starting"), (0.1, "A · 1/5 replay"), (0.3, "A · 2/5 noise")] and seen[0][0]["compute_seconds"] == 12.0 and seen[0][1]["seconds"] == 0.5
+    assert bars == [(0.0, "starting"), (0.1, "A · 1/5 replay"), (0.3, "A · 2/5 noise")] and seen[0]["compute_seconds"] == 12.0
+    assert kept == [{"key": "computed on the worker"}]          # the page keeps what the worker computed, before drawing
 
 
 def test_the_payload_carries_float32_volumes():

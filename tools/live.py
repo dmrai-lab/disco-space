@@ -1,5 +1,6 @@
 """The live Space through its Gradio API: the configuration's first preset at SNR 30 with the tissue panel's defaults,
-then a custom two-shell protocol on the configuration's first timing class; prints the headline and timings and, with ``--stream``, every stage update as it
+then a custom two-shell protocol on the configuration's first timing class; prints the headline, the timings and the
+seconds the worker spent on the packs' responses the page had not cached and, with ``--stream``, every stage update as it
 arrives; downloads the figures and files to ``$LIVE_OUT``. ``--config`` is the configuration the Space serves
 (``DISCO_CONFIG``: ``config.toml`` for the DiSCo Spaces, ``brain.toml`` for ``rfick/brain-zero``): the inputs are
 built from its source's panel, presets and knobs, not spelled here.
@@ -57,6 +58,9 @@ def main():
         print(f"{preset}: {time.perf_counter() - t0:.1f} s wall; result received at unix {time.time():.1f}", flush=True)
         named = dict(zip([n for n in A.OUTPUTS if n not in ("result", "b_row")], out))   # the API returns neither the gr.State nor the gr.Row
         print(named["headline"]); print(named["timings"])
+        rows = named["timings"]["data"] if isinstance(named["timings"], dict) else named["timings"]
+        responses = [r[1] for r in rows if r[0] == A.RESPONSES_ROW]
+        print(f"the packs' responses on the worker: {responses[0] if responses else 'none (the source prepares nothing)'} s", flush=True)
         print("tck", named["tck"], "volumes", named["volumes"], flush=True)
 
 

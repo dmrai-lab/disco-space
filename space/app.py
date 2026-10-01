@@ -115,14 +115,15 @@ def plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner
     S = type(source)
     full = source.mode == "full"
     protocol = _protocol_from_inputs(S, cfg, preset, n_b0, *shell_inputs, scheme=scheme_file, full=full)
-    runs = [("A", protocol, snr_on, snr, S.physics_from(cfg, values))]
+    gradient = scanner if S.plays_slew and scanner != NO_SCANNER else None
+    runs = [("A", protocol, snr_on, snr, S.physics_from(cfg, values, gradient=gradient))]
     knobs = S.knobs(cfg)
     if knob not in knobs:
         raise ValueError(f"unknown knob {knob!r}")
     change = knobs[knob]
     if change is not None:
         pb, on_b, snr_b, vb = S.apply_knob(cfg, change, protocol, snr_on, snr, values)
-        runs.append(("B", pb, on_b, snr_b, S.physics_from(cfg, vb)))
+        runs.append(("B", pb, on_b, snr_b, S.physics_from(cfg, vb, gradient=gradient)))
     for tag, prot, _, _, physics in runs:
         table, ok = gradient_text(prot, source.shapes, scanner)
         if not ok:

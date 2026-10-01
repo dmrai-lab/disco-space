@@ -607,3 +607,48 @@ def test_the_warm_set_has_one_entry_per_response_and_the_high_fields_last():
     assert high == sorted(high) and fields[-2:] == [catalogue_fields[-1]] * 2
     shapes = [i for i, (m, ph) in enumerate(entries) if set(m.shape.tolist()) != {"scan"} and len(m.bvals) == len(entries[0][0].bvals)]
     assert shapes and max(shapes) < min(i for i, f in enumerate(fields) if f > 3.0)
+
+
+@has_fixture
+@has_packs
+def test_a_gradient_system_plays_every_pulse_at_its_slew():
+    """``BrainPhysics.gradient`` names a class of dmipy-sim's scanner catalogue: the pulses are trapezoids with ramps at
+    its slew (the same b, the same amplitude within the ramp's share), the response key tells the systems apart, the
+    label names the system, a name outside the catalogue is refused by name, and the fixture's prepare runs at a
+    finite slew within the packs' band."""
+    cfg = brain_cfg()
+    src = B.Brain(cfg, asset=FIXTURE)
+    values = default_values(cfg)
+    ideal = B.Brain.physics_from(cfg, values)
+    real = B.Brain.physics_from(cfg, values, gradient="connectom")
+    assert ideal.gradient is None and np.isinf(ideal.slew_rate)
+    assert real.gradient == "connectom" and real.slew_rate == pytest.approx(200.0)
+    assert "connectom gradients (200 T/m/s)" in real.label() and "gradients" not in ideal.label()
+    with pytest.raises(ValueError, match="scanner catalogue"):
+        B.Brain.physics_from(cfg, values, gradient="a magnet nobody built")
+    prot = src.protocol(cfg, src.presets(cfg)[0])
+    meas = P.measurements(prot, src.shapes)
+    rows = np.flatnonzero(meas.shape == meas.shape[0])
+    square = src.sequence(meas, rows, np.eye(3), ideal.slew_rate)
+    trap = src.sequence(meas, rows, np.eye(3), real.slew_rate)
+    assert np.max(square.encoding.ramp_time) == 0.0 and np.max(trap.encoding.ramp_time) > 0.0
+    np.testing.assert_allclose(trap.b(), square.b(), rtol=1e-6)                 # measured 1.8e-7: the trapezoid sampled on the 1000-sample grid
+    assert src.response_key(meas, real) != src.response_key(meas, ideal)
+    assert np.isfinite(src.prepare(meas, real).wm).all()
+
+
+@has_fixture
+@has_packs
+def test_the_warm_set_holds_the_scan_on_every_gradient_system_that_can_play_it():
+    """After the knobs, ``warm_entries`` adds the scan's protocol on each catalogue gradient system with a field that
+    can play its shells, at the system's field with its slew; a system that cannot play the scan is left out."""
+    cfg = brain_cfg()
+    src = B.Brain(cfg, asset=FIXTURE)
+    scan = src.protocol(cfg, src.presets(cfg)[0])
+    can = {name for name, (g, f) in P.scanner_classes().items() if f is not None and all(r[-1] for r in P.playable(scan, src.shapes, name))}
+    cannot = {name for name, (g, f) in P.scanner_classes().items() if f is not None} - can
+    got = {ph.gradient: ph for m, ph in src.warm_entries() if ph.gradient is not None}
+    assert set(got) == can and can
+    for name, ph in got.items():
+        assert ph.field_T == pytest.approx(P.scanner_classes()[name][1]) and ph.slew_rate == pytest.approx(P.scanner_classes()[name][0] * 0 + __import__("dmipy_sim.acquisition.scanners", fromlist=["ScannerLimits"]).ScannerLimits.of(name).slew_max)
+    assert not (cannot & set(got))

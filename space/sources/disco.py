@@ -172,8 +172,12 @@ class Disco(P.Source):
                 + [c["rho"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
 
     @classmethod
-    def physics_from(cls, cfg, values):
-        """The panel (page units: ms, µm/s, ppm) as a :class:`space.pipeline.Physics` in SI, or None when it is off."""
+    def physics_from(cls, cfg, values, gradient=None):
+        """The panel (page units: ms, µm/s, ppm) as a :class:`space.pipeline.Physics` in SI, or None when it is off.
+        The DiSCo source plays ideal pulses: a gradient class is refused by name (its slew is not applied here)."""
+        if gradient is not None:
+            raise ValueError(f"the DiSCo source plays ideal pulses; the scanner's gradient limit {gradient!r} only checks what it can play. "
+                             "Choose the limit-free scanner, or the brain Space for finite slew")
         if not values["on"]:
             return None
         q = pools(cfg)

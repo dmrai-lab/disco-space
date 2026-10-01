@@ -406,10 +406,11 @@ class Brain(P.Source):
         import threading
         entries = self.warm_entries()
         for meas, ph in entries:
-            self.pack("wm", ph.wm_pack, self.windows_needed(meas, ph)); self.pack("gm", ph.gm_pack, self.windows_needed(meas, ph))
+            for tissue, label in (("wm", ph.wm_pack), ("gm", ph.gm_pack)):
+                self.pack(tissue, label, self.windows_needed(tissue, label, meas))
         ctx = mp.get_context("spawn")
         queue = ctx.Queue()
-        proc = ctx.Process(target=_warm_worker, args=(self.cfg, self.where, queue), daemon=True, name="brain-warm")
+        proc = ctx.Process(target=_warm_worker, args=(self.cfg, self.where, entries, queue), daemon=True, name="brain-warm")
         proc.start()
 
         def drain():
@@ -1175,14 +1176,14 @@ class Brain(P.Source):
         return (V.regions3d(self.regions, self.mask.shape), V.input_slices(a.b0, pk, amp, a.fractions, a.labels, z))
 
 
-def _warm_worker(cfg, where, queue):
+def _warm_worker(cfg, where, entries, queue):
     """The warm-up's process (:meth:`Brain.warm_in_background`): its own :class:`Brain` on the same configuration
-    and asset, every :meth:`Brain.warm_entries` entry computed on the CPU and put on ``queue`` as
+    and asset, every ``(meas, physics)`` of ``entries`` computed on the CPU and put on ``queue`` as
     ``(response_key, Kernels)``, then ``None``."""
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     try:
         src = Brain(cfg, asset=where)
-        for meas, ph in src.warm_entries():
+        for meas, ph in entries:
             kernels = src.prepare(meas, ph)
             queue.put((src.response_key(meas, ph), kernels))
     finally:

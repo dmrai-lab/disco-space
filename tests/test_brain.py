@@ -566,10 +566,9 @@ def test_a_one_window_class_on_two_windows_is_the_first_window_bit_for_bit(windo
 @has_fixture
 @has_packs
 def test_the_warm_up_runs_in_its_own_process_and_the_page_keeps_what_arrives(monkeypatch):
-    """The warm-up's worker (what ``Brain.warm_in_background`` spawns) computes the entries of ``warm_entries`` and
-    puts ``(key, Kernels)`` on its queue, ``None`` last; the page's source keeps them and then finds them cached. Two
-    entries stand for the set (the worker reads ``warm_entries`` from the class)."""
-    import queue as q
+    """``Brain.warm_in_background`` loads the packs here, spawns the worker on ``warm_entries`` and keeps every
+    ``(key, Kernels)`` the worker sends; the page then finds the entries cached and equal to its own ``prepare``.
+    Two entries stand for the set."""
     cfg = brain_cfg()
     full = B.Brain(cfg, asset=FIXTURE)
     two = full.warm_entries()[:2]
@@ -577,17 +576,10 @@ def test_the_warm_up_runs_in_its_own_process_and_the_page_keeps_what_arrives(mon
     monkeypatch.setattr(B.Brain, "warm_entries", lambda self: two)
     page = B.Brain(cfg, asset=FIXTURE)
     assert all(page.cached(m, ph) is None for m, ph in two)
-    out = q.Queue()
-    B._warm_worker(cfg, FIXTURE, out)
-    items = []
-    while True:
-        item = out.get(timeout=1)
-        if item is None:
-            break
-        items.append(item)
-    assert [k for k, _ in items] == [page.response_key(m, ph) for m, ph in two]
-    for key, kernels in items:
-        page.keep({key: kernels})
+    drain = page.warm_in_background()
+    assert ("wm", two[0][1].wm_pack) in page.packs and ("gm", two[0][1].gm_pack) in page.packs   # loaded here, before the worker
+    drain.join(timeout=600)
+    assert not drain.is_alive(), "the warm-up did not finish in time"
     for m, ph in two:
         got = page.cached(m, ph)
         assert got is not None and np.array_equal(got.wm, full.prepare(m, ph).wm)

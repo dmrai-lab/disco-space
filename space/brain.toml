@@ -92,7 +92,7 @@ m0_gm_knob = [0.7, 1.0]
 # (Brain.pack); a local path or a one-window pack loads whole. SubstrateCommons family records feed this later (disco-space#8, decision 5).
 [packs]
 wm = [
-  { label = "CACTUS, the 1 s Swoop walk in 100 ms windows (1280 Hz)", uri = "hf://SubstrateCommons/cactus-axons/packs/swoop_1s_c3_seg100ms.rpk" },
+  { label = "CACTUS, the 1 s Swoop walk in 125 ms windows (1280 Hz)", uri = "hf://SubstrateCommons/cactus-axons/packs/swoop_1s_c3_seg125ms.rpk" },
   { label = "CACTUS single bundle, 100 ms", uri = "hf://SubstrateCommons/cactus-axons/packs/single_bundle_100ms_xframe.rpk" },
   { label = "canonical cylinder, 2 µm, 100 ms", uri = "hf://SubstrateCommons/canonical-pores/packs/cylinder/d02.00um.rpk" },
 ]

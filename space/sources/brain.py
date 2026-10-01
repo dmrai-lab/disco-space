@@ -400,9 +400,13 @@ class Brain(P.Source):
         this process, and a fork taken while a thread runs JAX can deadlock the child; the spawned process compiles
         its own bands, so an entry of a band this process never compiled is priced cold (:meth:`responses`) until a
         run computes it here. Returns the thread that drains the results; the packs are loaded here first (the
-        windows the entries reach), so a run arriving before the warm-up ends has them."""
+        windows the entries reach), so a run arriving before the warm-up ends has them. Both sides print their
+        progress to stdout (the Space's run log): the process its start (CPUs, memory limit), each entry with its
+        seconds and RSS; this side each entry kept and the process's exit code when it ends, with or without its
+        end marker (a process killed by the container's memory limit sends none)."""
         import multiprocessing as mp
         import threading
+        from queue import Empty
         entries = self.warm_entries()
         for meas, ph in entries:
             for tissue, label in (("wm", ph.wm_pack), ("gm", ph.gm_pack)):
@@ -413,13 +417,24 @@ class Brain(P.Source):
         proc.start()
 
         def drain():
+            n = 0
             while True:
-                item = queue.get()
+                try:
+                    item = queue.get(timeout=30)
+                except Empty:
+                    if proc.is_alive():
+                        continue
+                    print(f"warm-up: the process ended with exit code {proc.exitcode} after {n} of {len(entries)} entries, "
+                          "without its end marker", flush=True)
+                    return
                 if item is None:
                     break
                 key, kernels = item
                 self.keep({key: kernels})
+                n += 1
+                print(f"warm-up: the page keeps entry {n}/{len(entries)}", flush=True)
             proc.join()
+            print(f"warm-up: the process ended with exit code {proc.exitcode} after {n} of {len(entries)} entries", flush=True)
 
         t = threading.Thread(target=drain, daemon=True, name="brain-warm-drain")
         t.start()
@@ -1178,15 +1193,51 @@ class Brain(P.Source):
 def _warm_worker(cfg, where, entries, queue):
     """The warm-up's process (:meth:`Brain.warm_in_background`): its own :class:`Brain` on the same configuration
     and asset, every ``(meas, physics)`` of ``entries`` computed on the CPU and put on ``queue`` as
-    ``(response_key, Kernels)``, then ``None``."""
+    ``(response_key, Kernels)``, then ``None``. One line per entry on stdout (the Space's run log) with its index,
+    the seconds it took and the seconds since the start, so the warm-up's progress is observable."""
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
+    t0 = time.perf_counter()
+    print(f"warm-up: process {os.getpid()} starts on {len(entries)} entries, {len(os.sched_getaffinity(0))} CPUs, "
+          f"memory limit {_cgroup_memory_limit()}", flush=True)
     try:
         src = Brain(cfg, asset=where)
-        for meas, ph in entries:
+        print(f"warm-up: the source loaded, RSS {_rss_gb():.1f} GB ({time.perf_counter() - t0:.0f} s since the start)", flush=True)
+        for i, (meas, ph) in enumerate(entries, 1):
+            t = time.perf_counter()
             kernels = src.prepare(meas, ph)
             queue.put((src.response_key(meas, ph), kernels))
+            windows = {t: src.windows_needed(t, label, meas) for t, label in (("wm", ph.wm_pack), ("gm", ph.gm_pack))}
+            print(f"warm-up {i}/{len(entries)}: {len(meas.bvals)} measurements, WM {ph.wm_pack!r} ({windows['wm']} window(s)), "
+                  f"GM {ph.gm_pack!r} ({windows['gm']} window(s)), {ph.field_T:g} T along {ph.b0_direction}, "
+                  f"tiers {'on' if ph.field else 'off'}: {time.perf_counter() - t:.1f} s, RSS {_rss_gb():.1f} GB "
+                  f"({time.perf_counter() - t0:.0f} s since the start)", flush=True)
     finally:
         queue.put(None)
+
+
+def _rss_gb():
+    """This process's resident set in GB (VmRSS of /proc/self/status; nan where there is no procfs)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    return float("nan")
+
+
+def _cgroup_memory_limit():
+    """The container's memory limit as the cgroup states it (v2 ``memory.max``, v1 ``memory.limit_in_bytes``), in GB,
+    ``'max'`` when unlimited, ``'unknown'`` where neither file exists."""
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(path) as f:
+                v = f.read().strip()
+        except OSError:
+            continue
+        return v if v == "max" else f"{int(v) / 1e9:.1f} GB"
+    return "unknown"
 
 
 def _floor(pack):

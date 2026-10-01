@@ -314,7 +314,9 @@ class Kernels:
     harmonics ``wm`` ``(n_meas, 45)`` complex, the GM response to an isotropic distribution ``gm`` and free water's
     ``csf`` ``(n_meas,)`` complex, the proton densities ``m0``, the packs' certified floors, the seconds it took;
     ``profile`` the true response curves at the run's shells (``b``, ``wm`` ``(n_shells, n_angles)``, ``gm``, ``csf``
-    ``(n_shells,)``, each over its b = 0 value) and ``b0`` the b = 0 signal per tissue under each tier alone."""
+    ``(n_shells,)``, each over its b = 0 value), ``b0`` the b = 0 signal per tissue under each tier alone, and
+    ``stages`` the seconds of each stage of :meth:`Brain.prepare` (``load_wm``, ``load_gm``, ``pose_wm``, ``pose_gm``,
+    ``weights``)."""
     wm: np.ndarray
     gm: np.ndarray
     csf: np.ndarray
@@ -323,6 +325,7 @@ class Kernels:
     seconds: float
     profile: Optional[dict] = None
     b0: Optional[dict] = None
+    stages: Optional[dict] = None
 
 
 # ---- the source ---------------------------------------------------------------------------------------------------------
@@ -851,9 +854,11 @@ class Brain(P.Source):
         process's cache under :meth:`response_key` (:meth:`cached` reads it)."""
         from dmipy_sim.phantom import FreeWater
         from dmipy_sim.replay import so3
-        t0 = time.perf_counter()
+        t0 = time.perf_counter(); stages = {}
         wm_pack = self.pack("wm", physics.wm_pack, self.windows_needed("wm", physics.wm_pack, meas))
+        stages["load_wm"] = time.perf_counter() - t0
         gm_pack = self.pack("gm", physics.gm_pack, self.windows_needed("gm", physics.gm_pack, meas))
+        stages["load_gm"] = time.perf_counter() - t0 - stages["load_wm"]
         for name in np.unique(meas.shape):                                  # the walks and the WM pack's tiers, now loaded
             self.validate(P.Protocol((P.Shell(str(name), 1.0, 1),), name="check"), physics)
         t_wm, t_gm, t_csf = physics.tissues(self.pools(wm_pack), self.pools(gm_pack))
@@ -865,8 +870,11 @@ class Brain(P.Source):
         seqs = [self.sequence(meas, rows, pose) for rows in classes]
         prof = self._profile_sequence(meas, classes[0], pose)             # the explorer's curves ride in the same pass
         batch = seqs + ([prof[0]] if prof is not None else [])
+        t = time.perf_counter()
         r_wm = wm_pack.pose_responses(batch, tissue=t_wm, scanner=physics.scanner, pose=pose, keep=(LMAX, 0))
+        stages["pose_wm"] = time.perf_counter() - t; t = time.perf_counter()
         r_gm = gm_pack.pose_responses(batch, tissue=t_gm, scanner=physics.scanner, pose=pose, keep=(0, 0))
+        stages["pose_gm"] = time.perf_counter() - t
         free = FreeWater(m0=1.0, tissue=t_csf)
         for rows, seq, rw, rg in zip(classes, seqs, r_wm, r_gm):
             C_wm[rows] = rw.retained(LMAX, 0) @ A
@@ -880,9 +888,11 @@ class Brain(P.Source):
             k_ = len(PROFILE_ANGLES)
             profile = dict(b=shells, angles=PROFILE_ANGLES, wm=(wm[1:] / wm[0]).reshape(len(shells), k_),
                            gm=(gm[1:] / gm[0]).reshape(len(shells), k_)[:, 0], csf=(csf[1:] / csf[0]).reshape(len(shells), k_)[:, 0])
+        t = time.perf_counter()
         b0 = self._tier_weights(meas, physics, wm_pack, gm_pack, pose, classes[0])
+        stages["weights"] = time.perf_counter() - t
         floors = {"wm": _floor(wm_pack), "gm": _floor(gm_pack)}
-        k = Kernels(C_wm, e_gm, e_csf, dict(physics.m0), floors, time.perf_counter() - t0, profile, b0)
+        k = Kernels(C_wm, e_gm, e_csf, dict(physics.m0), floors, time.perf_counter() - t0, profile, b0, stages)
         self._store(self.response_key(meas, physics), k)
         self._compiled.add(self._band(meas, physics))
         return k
@@ -1198,7 +1208,7 @@ def _warm_worker(cfg, where, entries, queue):
     t0 = time.perf_counter()
     from ..limits import cpu_quota, THREAD_VARS
     print(f"warm-up: process {os.getpid()} starts on {len(entries)} entries, {len(os.sched_getaffinity(0))} CPUs visible, "
-          f"cgroup CPU quota {cpu_quota()}, threads {os.environ.get(THREAD_VARS[0], 'unset')}, "
+          f"cgroup CPU quota {cpu_quota()}, cpuset {_cgroup_cpuset()}, threads {os.environ.get(THREAD_VARS[0], 'unset')}, "
           f"memory limit {_cgroup_memory_limit()}", flush=True)
     try:
         src = Brain(cfg, asset=where)
@@ -1210,7 +1220,8 @@ def _warm_worker(cfg, where, entries, queue):
             windows = {t: src.windows_needed(t, label, meas) for t, label in (("wm", ph.wm_pack), ("gm", ph.gm_pack))}
             print(f"warm-up {i}/{len(entries)}: {len(meas.bvals)} measurements, WM {ph.wm_pack!r} ({windows['wm']} window(s)), "
                   f"GM {ph.gm_pack!r} ({windows['gm']} window(s)), {ph.field_T:g} T along {ph.b0_direction}, "
-                  f"tiers {'on' if ph.field else 'off'}: {time.perf_counter() - t:.1f} s, RSS {_rss_gb():.1f} GB "
+                  f"tiers {'on' if ph.field else 'off'}: {time.perf_counter() - t:.1f} s "
+                  f"({', '.join(f'{n} {v:.1f}' for n, v in (kernels.stages or {}).items())}), RSS {_rss_gb():.1f} GB "
                   f"({time.perf_counter() - t0:.0f} s since the start)", flush=True)
     finally:
         queue.put(None)
@@ -1226,6 +1237,16 @@ def _rss_gb():
     except OSError:
         pass
     return float("nan")
+
+
+def _cgroup_cpuset():
+    """The CPUs the container may run on as its cgroup states them (v2 ``cpuset.cpus.effective``), ``'unknown'``
+    where the file does not exist."""
+    try:
+        with open("/sys/fs/cgroup/cpuset.cpus.effective") as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
 
 
 def _cgroup_memory_limit():

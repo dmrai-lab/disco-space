@@ -14,6 +14,9 @@ os.environ.setdefault("DISCO_BACKEND", "torch")
 os.environ.setdefault("DISCO_RESIDENT", "0")             # the pool drops the device between calls: tiles rebuilt per call
 os.environ.setdefault("JAX_PLATFORMS", "cpu")            # jax is a library dependency here; it never sees the GPU
 
+from space.limits import cap_threads                    # noqa: E402  (no numpy behind it)
+cap_threads()                                           # BLAS threads = the cgroup's CPU quota, not the 192 CPUs the pool shows
+
 import spaces                                           # noqa: E402  (before torch, as ZeroGPU requires)
 import torch                                            # noqa: E402
 

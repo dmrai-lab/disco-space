@@ -32,6 +32,9 @@ import numpy as np
 
 SH_ORDER = 8
 B0_THRESHOLD_S_MM2 = 50.0                # a row below this b-value (s/mm^2) is a b = 0 measurement
+RESPONSE_ERODE = 3                       # erosion passes of the brain mask the responses are selected from
+RESPONSES = ("three_tissue_response_dhollander16 (mask eroded 3 passes, as MRtrix dwi2response dhollander -erode 3; "
+             "white-matter selection tournier13)")
 
 
 def merge_shells(dwi_dir):
@@ -85,8 +88,8 @@ def brain_mask(mean_b0_volume):
 
 def fit_msmt_csd(data, bvals, bvecs, mask, sh_order=SH_ORDER, solver="csd_cvxpy", voxel_positions=None):
     """dmipy-fit end to end: :func:`three_tissue_response_dhollander16` estimates the WM / GM / CSF response
-    kernels from the data itself, then ``MultiCompartmentSphericalHarmonicsModel`` (``S0_tissue_responses`` set,
-    volume fractions free) fits every voxel of ``mask`` with ``solver`` (``CsdCvxpyOptimizer`` for
+    kernels from the data itself (selected from ``mask`` eroded by ``RESPONSE_ERODE`` passes, the WM by tournier13),
+    then ``MultiCompartmentSphericalHarmonicsModel`` (``S0_tissue_responses`` set, volume fractions free) fits every voxel of ``mask`` with ``solver`` (``CsdCvxpyOptimizer`` for
     ``'csd_cvxpy'``). If ``voxel_positions`` is given (a ``(mask.sum(),)``-shaped boolean subset, for a dry run) only
     those voxels are fit; the rest of ``mask`` is still used to estimate the responses.
 
@@ -106,9 +109,11 @@ def fit_msmt_csd(data, bvals, bvecs, mask, sh_order=SH_ORDER, solver="csd_cvxpy"
     data = np.nan_to_num(np.asarray(data, dtype=np.float64), nan=0.0)
 
     t0 = time.perf_counter()
-    # wm_algorithm='tournier07': the FA-selected single-fibre response (the Space's own single-tissue path uses it too).
+    # The responses are selected from the brain mask eroded by 3 passes (the function's default, MRtrix's
+    # dwi2response dhollander -erode 3), the white matter by Tournier 2013's iterative peak-ratio selection (its
+    # default wm_algorithm): RESPONSES names both in the manifest.
     (s0_wm, s0_gm, s0_csf), (tr2_wm, tr1_gm, tr1_csf), _selection = three_tissue_response_dhollander16(
-        scheme, data, mask=mask, wm_algorithm="tournier07")
+        scheme, data, mask=mask, erode=RESPONSE_ERODE)
     response_seconds = time.perf_counter() - t0
 
     mc = MultiCompartmentSphericalHarmonicsModel(
@@ -161,7 +166,7 @@ def build_manifest(*, subject, scan, source_doi, grid_shape, voxel_size_mm, affi
                 "frame": "image"},
         "fractions": ["wm", "gm", "csf"],
         "reconstruction": {"tool": "dmipy-fit", "commit": dmipy_fit_commit,
-                            "responses": "three_tissue_response_dhollander16", "solver": solver, "sh_order": SH_ORDER},
+                            "responses": RESPONSES, "solver": solver, "sh_order": SH_ORDER},
         "parcellation": {"tool": "SynthSeg --parc --robust (BBillot/SynthSeg) + dipy rigid registration "
                                    "(mutual information) + majority vote onto the diffusion grid",
                           "atlas": "Desikan-Killiany + aseg (fs_default 84)", "n_regions": n_regions},

@@ -81,6 +81,7 @@ def test_build_manifest_schema():
     assert m["fractions"] == ["wm", "gm", "csf"]
     assert m["reconstruction"]["tool"] == "dmipy-fit"
     assert m["reconstruction"]["commit"] == "abc123"
+    assert "eroded 3 passes" in m["reconstruction"]["responses"] and "tournier13" in m["reconstruction"]["responses"]
     assert m["parcellation"]["n_regions"] == 84
 
 
@@ -189,7 +190,8 @@ def test_fit_msmt_csd_end_to_end_on_a_tiny_synthetic_volume():
     # rounding to an empty set (a NaN response, poisoning the CSD kernel), so the volume instead has a continuum of
     # randomly oriented, randomly scaled tensors spanning WM-like (high FA) through GM-like to CSF-like (isotropic,
     # high diffusivity) -- much closer to what real brain data actually looks like to this heuristic.
-    shape = (12, 12, 6)
+    # every side 6 voxels longer than the 3-pass erosion of the response selection removes from it
+    shape = (16, 16, 12)
     n_voxels = int(np.prod(shape))
     fa_like = rng.uniform(0.0, 1.0, size=n_voxels)               # 0 = isotropic, 1 = maximally anisotropic
     mean_d = np.where(fa_like < 0.5, rng.uniform(0.7e-3, 1.0e-3, n_voxels),   # GM/WM-ish mean diffusivity

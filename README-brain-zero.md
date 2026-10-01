@@ -60,13 +60,25 @@ WM stop mask; dmipy-sim 7f6f1fa, dmipy-fit 0c7dde8 with the single-tissue recons
 The reservation (`space/brain.toml`, `[budget]`) is each device stage x 1.5 for the pool, 12 s for the worker's
 start and the handoff, times 1.3: at the default density 2 and 495 measurements, A alone 49 s, A with the ladder 50
 s, A + B + ladder 79 s, so every default configuration with one B fits a logged-out visitor's 2 minutes; density 4
-reserves 131 s for A alone and is for logged-in visitors. These are L40S numbers scaled, not the pool's: the pool's
-own table replaces them after the first deployment (`tools/live.py rfick/brain-zero --config brain.toml`).
+reserves 131 s for A alone and is for logged-in visitors.
+
+**Measured on the pool** (`tools/live.py rfick/brain-zero --config brain.toml`, 2026-10-01, the MASiVar asset at
+revision 2: 71,052 brain voxels, the scan's own protocol of 485 measurements, density 2, 3 T along the bore, every
+tier, SNR 30 at M0 = 1, the multi-tissue reconstruction; the packs' responses cached on the page):
+
+| run | reserved | device held | handoff to the page | wall through the API | connectome Pearson log(1 + count) vs the input's |
+|---|---|---|---|---|---|
+| A + ladder | 50 s | 13.6 s | 4.5 s | 103 s | 0.903 (lobar 0.980), 228,760 streamlines |
+| A + B (field → 7 T) + ladder | 78 s | 22.1 s | 6.6 s | 149 s | A 0.903, B 0.889, A vs B 0.962 |
+
+Device stages of A at 485 measurements on the pool: replay 0.3 s, noise 1.7, the three-tissue responses 1.2,
+MT-CSD 3.1, the round trip 1.2, tracking 2.5, the truth's tracking 2.3 (B reuses A's). The page then spends 9-17 s
+writing files and 4-6 s on states and figures, outside the reservation.
 
 The payload that crosses from the GPU worker back to the page is one Result per run (the DWI before and after the
 noise in float32 on the brain's bounding box, the FOD field, the streamlines): 1.5 GB per run at 495 measurements and
-density 2 (0.27 GB of it streamlines; 3.4 GB at density 4), pickled in 1.8 s on the L40S host, plus the ladder's
-rungs; its handoff on the pool is the number to watch on the first deployment.
+density 2 (0.27 GB of it streamlines; 3.4 GB at density 4), plus the ladder's rungs; the pool hands it off in 4.5 s
+for A alone and 6.6 s for A + B.
 
 The truth connectome is reproducible bit for bit at one key; between two keys at the same density its Pearson of
 log(1 + count) over the 3,486 region pairs is 0.834 / 0.945 / 0.982 at density 1 / 2 / 4, the floor of the score.

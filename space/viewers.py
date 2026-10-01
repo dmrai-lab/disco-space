@@ -204,7 +204,7 @@ def spread_matrices(spread):
 
 def timings_rows(seconds, load_seconds):
     """The stage times as table rows, the source's load time (once per process) first."""
-    rows = [["source loaded and warmed (once per process)", f"{load_seconds:.1f}"]]
+    rows = [["source loaded (once per process; a long warm-up runs beside the page)", f"{load_seconds:.1f}"]]
     return rows + [[k, f"{v:.2f}"] for k, v in seconds.items()]
 
 

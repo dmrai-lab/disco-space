@@ -357,14 +357,12 @@ class Brain(P.Source):
     def load(cls, cfg, *, local=None):
         return cls(cfg, asset=local)
 
-    def warm(self):
-        """The packs loaded (the windows the entries below reach, downloaded once per container) and the pose
-        responses a run can ask for without a custom acquisition computed and kept, at container start where no
-        visitor pays: every preset at the panel's defaults
-        with its ladder rungs, and B of every knob on the default protocol but the pulse-timing ones (a new band each,
-        about 10 s apiece: their runs reserve them), the field presets along both B0 directions. An entry the packs
-        cannot play is skipped (a run asking for it is refused). The bands they compile stay compiled in this process
-        and in every worker forked from it."""
+    def warm_entries(self):
+        """The ``(meas, physics)`` a run can ask for without a custom acquisition, in the order the warm-up
+        computes them: every preset at the panel's defaults with its ladder rungs, then B of every knob on the
+        default protocol but the pulse-timing ones (a new band each, about 10 s apiece: their runs reserve them),
+        the field presets along both B0 directions. An entry the packs cannot play is left out (a run asking for it
+        is refused by name)."""
         cfg = self.cfg
         panel = self.panel(cfg)
         values = {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields}
@@ -380,13 +378,52 @@ class Brain(P.Source):
             prot, _, _, v = self.apply_knob(cfg, change, scan, True, None, values)
             modes = list(B0_MODES) if change[0] == "field" else [v["b0_mode"]]
             entries += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]
+        out = []
         for prot, ph in entries:
             try:
-                meas = self.validate(prot, ph)
-                if self.cached(meas, ph) is None:
-                    self.prepare(meas, ph)
+                out.append((self.validate(prot, ph), ph))
             except ValueError:
                 continue
+        return out
+
+    def warm(self):
+        """The packs loaded (the windows :meth:`warm_entries` reach, downloaded once per container) and every entry's
+        pose responses computed and kept in this process, in order: what a visitor would otherwise pay inside the
+        GPU reservation. The bands it compiles stay compiled in this process and in every worker forked from it."""
+        for meas, ph in self.warm_entries():
+            if self.cached(meas, ph) is None:
+                self.prepare(meas, ph)
+
+    def warm_in_background(self):
+        """:meth:`warm` in a process of its own while this one serves: the entries' responses arrive one by one and
+        are kept here (:meth:`keep`), so a run finds the cache filling from the first entry on and pays, inside its
+        reservation, only for an entry not yet there. A spawned process, not a thread: the GPU worker is a fork of
+        this process, and a fork taken while a thread runs JAX can deadlock the child; the spawned process compiles
+        its own bands, so an entry of a band this process never compiled is priced cold (:meth:`responses`) until a
+        run computes it here. Returns the thread that drains the results; the packs are loaded here first (the
+        windows the entries reach), so a run arriving before the warm-up ends has them."""
+        import multiprocessing as mp
+        import threading
+        entries = self.warm_entries()
+        for meas, ph in entries:
+            self.pack("wm", ph.wm_pack, self.windows_needed(meas, ph)); self.pack("gm", ph.gm_pack, self.windows_needed(meas, ph))
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue()
+        proc = ctx.Process(target=_warm_worker, args=(self.cfg, self.where, queue), daemon=True, name="brain-warm")
+        proc.start()
+
+        def drain():
+            while True:
+                item = queue.get()
+                if item is None:
+                    break
+                key, kernels = item
+                self.keep({key: kernels})
+            proc.join()
+
+        t = threading.Thread(target=drain, daemon=True, name="brain-warm-drain")
+        t.start()
+        return t
 
     # ---- the packs ----
     @classmethod
@@ -1136,6 +1173,20 @@ class Brain(P.Source):
         pk, amp = P.peaks(a.fod)
         z = self.mask.shape[2] // 2
         return (V.regions3d(self.regions, self.mask.shape), V.input_slices(a.b0, pk, amp, a.fractions, a.labels, z))
+
+
+def _warm_worker(cfg, where, queue):
+    """The warm-up's process (:meth:`Brain.warm_in_background`): its own :class:`Brain` on the same configuration
+    and asset, every :meth:`Brain.warm_entries` entry computed on the CPU and put on ``queue`` as
+    ``(response_key, Kernels)``, then ``None``."""
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")
+    try:
+        src = Brain(cfg, asset=where)
+        for meas, ph in src.warm_entries():
+            kernels = src.prepare(meas, ph)
+            queue.put((src.response_key(meas, ph), kernels))
+    finally:
+        queue.put(None)
 
 
 def _floor(pack):

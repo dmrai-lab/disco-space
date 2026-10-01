@@ -561,3 +561,34 @@ def test_a_one_window_class_on_two_windows_is_the_first_window_bit_for_bit(windo
     rows = dict(windowed.accuracy())
     assert "windows held / declared 2 / 2 of 100 ms (1,001 of 1,001 saves at 200 µs)" in rows["WM pack two"]
     assert "windows held / declared 1 / 1 of 100 ms (501 of 501 saves" in rows["WM pack one"]
+
+
+@has_fixture
+@has_packs
+def test_the_warm_up_runs_in_its_own_process_and_the_page_keeps_what_arrives(monkeypatch):
+    """The warm-up's worker (what ``Brain.warm_in_background`` spawns) computes the entries of ``warm_entries`` and
+    puts ``(key, Kernels)`` on its queue, ``None`` last; the page's source keeps them and then finds them cached. Two
+    entries stand for the set (the worker reads ``warm_entries`` from the class)."""
+    import queue as q
+    cfg = brain_cfg()
+    full = B.Brain(cfg, asset=FIXTURE)
+    two = full.warm_entries()[:2]
+    assert len(two) == 2
+    monkeypatch.setattr(B.Brain, "warm_entries", lambda self: two)
+    page = B.Brain(cfg, asset=FIXTURE)
+    assert all(page.cached(m, ph) is None for m, ph in two)
+    out = q.Queue()
+    B._warm_worker(cfg, FIXTURE, out)
+    items = []
+    while True:
+        item = out.get(timeout=1)
+        if item is None:
+            break
+        items.append(item)
+    assert [k for k, _ in items] == [page.response_key(m, ph) for m, ph in two]
+    for key, kernels in items:
+        page.keep({key: kernels})
+    for m, ph in two:
+        got = page.cached(m, ph)
+        assert got is not None and np.array_equal(got.wm, full.prepare(m, ph).wm)
+    assert P.Source.warm_in_background(P.Source.__new__(P.Source)) is None   # the base: warm() itself, nothing to join

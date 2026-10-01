@@ -612,6 +612,12 @@ class Source:
         """Whatever the first run would otherwise pay (nothing for a source that reads per run)."""
         return
 
+    def warm_in_background(self):
+        """:meth:`warm` while the page serves, for a source whose warm-up is long enough to matter; this one's is
+        :meth:`warm` itself, done before the page serves. Returns the handle the caller may join, or None."""
+        self.warm()
+        return None
+
     def release(self):
         """Whatever a run kept on the device that must not survive it (nothing for a source that reads per run)."""
         return

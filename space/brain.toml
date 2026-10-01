@@ -97,6 +97,7 @@ wm = [
   { label = "canonical cylinder, 2 µm, 100 ms", uri = "hf://SubstrateCommons/canonical-pores/packs/cylinder/d02.00um.rpk" },
 ]
 gm = [
+  { label = "grey-matter spheres, 250 ms in 125 ms windows (240 Hz)", uri = "hf://SubstrateCommons/grey-matter-spheres/packs/packed_spheres_leaky_250ms_c2_seg125ms.rpk" },
   { label = "grey-matter spheres, 100 ms", uri = "hf://SubstrateCommons/grey-matter-spheres/packs/gm_spheres_100ms.rpk" },
 ]
 

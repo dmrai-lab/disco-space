@@ -58,7 +58,7 @@ def _load():
                 t0 = time.perf_counter()
                 cfg = P.config()
                 src = sources.source(cfg)
-                src.warm()
+                _state["warm"] = src.warm_in_background()           # the brain's warm-up runs beside the serving page
                 _state["regions"] = V.region_markers(src.regions)
                 _state["gt_views"] = None
                 _state["source"] = src; _state["cfg"] = cfg; _state["load_seconds"] = time.perf_counter() - t0; _state["error"] = None

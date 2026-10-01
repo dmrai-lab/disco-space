@@ -360,9 +360,9 @@ class Brain(P.Source):
     def warm_entries(self):
         """The ``(meas, physics)`` a run can ask for without a custom acquisition, in the order the warm-up
         computes them: every preset at the panel's defaults with its ladder rungs, then B of every knob on the
-        default protocol but the pulse-timing ones (a new band each, about 10 s apiece: their runs reserve them),
-        the field presets along both B0 directions. An entry the packs cannot play is left out (a run asking for it
-        is refused by name)."""
+        default protocol, the field presets along both B0 directions, the pulse-timing knobs last (each a band of
+        its own to compile, the longest reaching a second window of the packs). An entry the packs cannot play is
+        left out (a run asking for it is refused by name)."""
         cfg = self.cfg
         panel = self.panel(cfg)
         values = {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields}
@@ -372,9 +372,8 @@ class Brain(P.Source):
             prot = self.protocol(cfg, name)
             entries += [(prot, physics)] + [(prot, rung) for _, rung in self.ladder_steps(physics)]
         scan = self.protocol(cfg, self.presets(cfg)[0])
-        for change in self.knobs(cfg).values():
-            if change is None or change[0] == "shape":
-                continue
+        knobs = [c for c in self.knobs(cfg).values() if c is not None]
+        for change in [c for c in knobs if c[0] != "shape"] + [c for c in knobs if c[0] == "shape"]:
             prot, _, _, v = self.apply_knob(cfg, change, scan, True, None, values)
             modes = list(B0_MODES) if change[0] == "field" else [v["b0_mode"]]
             entries += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]

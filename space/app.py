@@ -480,8 +480,8 @@ def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
 
 
 def uncached_responses(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
-    """``(state, n_meas)`` per entry of the source's share of the run the inputs ask for that the page's process has
-    not cached (:meth:`~space.pipeline.Source.responses`): what the GPU call computes before its replay. Empty when
+    """``(state, n_meas, saves)`` per entry of the source's share of the run the inputs ask for that the page's
+    process has not cached (:meth:`~space.pipeline.Source.responses`): what the GPU call computes before its replay. Empty when
     the source is not loaded in this process (the pool's entry loads it before the page serves) or refuses the run
     (it is refused before the GPU call)."""
     source = _state["source"]

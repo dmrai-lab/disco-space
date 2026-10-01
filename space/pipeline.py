@@ -533,7 +533,7 @@ class Source:
     @classmethod
     def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
         """The GPU seconds a run of ``protocol`` reserves on a shared pool, from the measured cost model;
-        ``responses`` the ``(state, n_meas)`` of each :meth:`prepare` the call computes (:meth:`responses`)."""
+        ``responses`` the ``(state, n_meas, saves)`` of each :meth:`prepare` the call computes (:meth:`responses`)."""
         raise NotImplementedError
 
     # ---- the run's side ----
@@ -559,8 +559,9 @@ class Source:
         return
 
     def responses(self, entries):
-        """``(state, n_meas)`` for each :meth:`prepare` of a run's ``entries`` ``[(meas, physics)]`` that a process
-        forked from this one would compute, ``state`` a ``[budget]`` key; empty for a source with nothing to prepare."""
+        """``(state, n_meas, saves)`` for each :meth:`prepare` of a run's ``entries`` ``[(meas, physics)]`` that a
+        process forked from this one would compute, ``state`` a ``[budget]`` key, ``saves`` the pack saves it spans;
+        empty for a source with nothing to prepare."""
         return []
 
     def prepare(self, meas, physics=None):

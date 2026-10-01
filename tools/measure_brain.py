@@ -6,6 +6,14 @@ and the size of the payload that crosses from the GPU worker to the page. Writes
 ``space/brain.toml`` is refit from.
 
     DISCO_RECONSTRUCTION=tournier07 python tools/measure_brain.py --asset DIR --wm-pack WM.rpk --gm-pack GM.rpk [--out brain_costs.json]
+
+With ``--saves WM1.rpk,WM2.rpk,...`` it measures only the responses' cost by the WM pack's saves spanned (the
+``per_save`` of ``[budget]``'s ``response_*``): per WM pack, in a fresh interpreter (nothing compiled), ``prepare`` of
+one protocol (``--saves-protocol``: a manifest.json whose protocol rows are played, else the asset's own; retimed to
+``--saves-class``, the scan's own class by default) cold, warm and with the field tier off, beside the saves the class spans on that pack; and the
+least-squares slope of the seconds over the saves per state.
+
+    python tools/measure_brain.py --asset DIR --gm-pack GM.rpk --saves A.rpk,B.rpk [--saves-protocol manifest.json] [--saves-class scan]
 """
 import argparse
 import json
@@ -33,14 +41,76 @@ def five_shells():
     return P.Protocol(tuple(P.Shell(B.SCAN, b, 96) for b in (1000, 1500, 2000, 2500, 3000)), n_b0=15, name="five shells x 96")
 
 
+def saves_one(asset, wm_pack, gm_pack, protocol_manifest, shape):
+    """``prepare``'s seconds cold (the first call), warm (the same band at another tissue) and with the field tier off
+    (each the faster of two calls), on one WM pack in this process, with the saves the protocol's class spans on it."""
+    cfg = P.config(os.path.join(P.HERE, "brain.toml"))
+    cfg["asset"] = {"local": asset}
+    cfg["packs"] = {"wm": [{"label": "wm", "uri": wm_pack}], "gm": [{"label": "gm", "uri": gm_pack}]}
+    src = B.Brain(cfg)
+    panel = B.Brain.panel(cfg)
+    v = {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields}
+    v.update(wm_pack="wm", gm_pack="gm")
+    ph = B.Brain.physics_from(cfg, v)
+    if protocol_manifest:
+        with open(protocol_manifest) as f:
+            prot = B.scan_protocol(json.load(f), name="the manifest's protocol")
+    else:
+        prot = B.Brain.protocol(cfg, B.Brain.presets(cfg)[0])
+    prot = P.retime(prot, shape)
+    meas = src.validate(prot, ph)
+    seg = src.segments("wm", "wm")
+    saves = B.Brain.saves_spanned(seg, src.windows_needed("wm", "wm", meas))
+    seconds = {}
+    other = lambda f: replace(ph, T2={**ph.T2, "gm": ph.T2["gm"] * f})          # the same band at another tissue
+    for state, physics in (("cold", [ph]), ("warm", [other(1.0001), other(1.0002)]), ("no_field", [replace(ph, field=False), replace(other(1.0001), field=False)])):
+        times = []
+        for phys in physics:
+            t = time.perf_counter(); src.prepare(meas, phys); times.append(time.perf_counter() - t)
+        seconds[state] = min(times)
+    pk = src.packs[("wm", "wm")]
+    return dict(pack=wm_pack, id=pk.meta.get("id"), n_walkers=int(pk.n_walkers), K=int(pk.K), segments=seg, saves=saves,
+                n_meas=int(len(meas.bvals)), shape=shape, seconds=seconds)
+
+
+def measure_saves(a):
+    """:func:`saves_one` per WM pack of ``--saves``, each in a fresh interpreter, and the slope of the seconds over the
+    saves per state (least squares with an intercept)."""
+    import multiprocessing as mp
+    rows = []
+    for pack in a.saves.split(","):
+        with mp.get_context("spawn").Pool(1) as pool:
+            row = pool.apply(saves_one, (a.asset, pack, a.gm_pack, a.saves_protocol, a.saves_class))
+        rows.append(row)
+        print(json.dumps(row), flush=True)
+    x = np.array([r["saves"] for r in rows], float)
+    fit = {}
+    for state in ("cold", "warm", "no_field"):
+        y = np.array([r["seconds"][state] for r in rows])
+        slope, icpt = np.polyfit(x, y, 1) if len(rows) > 1 else (float("nan"), float("nan"))
+        fit[state] = dict(per_save=float(slope), intercept=float(icpt))
+    out = dict(cpu_threads=os.environ.get("OMP_NUM_THREADS"), rows=rows, fit=fit)
+    print(json.dumps(fit), flush=True)
+    with open(a.out, "w") as f:
+        json.dump(out, f, indent=1, default=float)
+    print("wrote", a.out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--asset", required=True)
-    ap.add_argument("--wm-pack", required=True)
+    ap.add_argument("--wm-pack")
     ap.add_argument("--gm-pack", required=True)
     ap.add_argument("--out", default="brain_costs.json")
     ap.add_argument("--densities", default="1,2,4")
+    ap.add_argument("--saves", default=None, help="WM packs, comma-separated: measure the responses' cost by the saves spanned only")
+    ap.add_argument("--saves-protocol", default=None, help="a manifest.json whose protocol the saves measurement plays")
+    ap.add_argument("--saves-class", default=B.SCAN, help="the timing class the saves measurement plays it on")
     a = ap.parse_args()
+    if a.saves:
+        return measure_saves(a)
+    if not a.wm_pack:
+        ap.error("--wm-pack is required (or --saves)")
     cfg = P.config(os.path.join(P.HERE, "brain.toml"))
     cfg["asset"] = {"local": a.asset}
     cfg["packs"] = {"wm": [{"label": "wm", "uri": a.wm_pack}], "gm": [{"label": "gm", "uri": a.gm_pack}]}

@@ -584,3 +584,26 @@ def test_the_warm_up_runs_in_its_own_process_and_the_page_keeps_what_arrives(mon
         got = page.cached(m, ph)
         assert got is not None and np.array_equal(got.wm, full.prepare(m, ph).wm)
     assert P.Source.warm_in_background(P.Source.__new__(P.Source)) is None   # the base: warm() itself, nothing to join
+
+
+@has_fixture
+@has_packs
+def test_the_warm_set_has_one_entry_per_response_and_the_high_fields_last():
+    """``Brain.warm_entries``: no two entries share a response key (the noise, M0, default-pack and default-direction
+    knobs repeat the default run's response), the first entry is the scan's protocol at the panel's defaults, and
+    the field presets close the set in ascending field, so the minutes 7 T and 11.7 T cost come after everything
+    cheaper, the pulse-timing classes among it."""
+    cfg = brain_cfg()
+    src = B.Brain(cfg, asset=FIXTURE)
+    entries = src.warm_entries()
+    keys = [src.response_key(m, ph) for m, ph in entries]
+    assert len(keys) == len(set(keys))
+    assert len(entries) < sum(1 for c in B.Brain.knobs(cfg).values() if c is not None) + 3 * 4
+    first_meas, first_ph = entries[0]
+    assert set(first_meas.shape.tolist()) == {"scan"} and first_ph == B.Brain.physics_from(cfg, default_values(cfg))
+    fields = [ph.field_T for m, ph in entries]
+    catalogue_fields = sorted(float(f) for f in cfg["physics"]["fields"])
+    high = [f for f in fields if f > 3.0]
+    assert high == sorted(high) and fields[-2:] == [catalogue_fields[-1]] * 2
+    shapes = [i for i, (m, ph) in enumerate(entries) if set(m.shape.tolist()) != {"scan"} and len(m.bvals) == len(entries[0][0].bvals)]
+    assert shapes and max(shapes) < min(i for i, f in enumerate(fields) if f > 3.0)

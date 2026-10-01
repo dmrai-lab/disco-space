@@ -72,6 +72,16 @@ tier, SNR 30 at M0 = 1, the multi-tissue reconstruction; the packs' responses ca
 | A + ladder | 50 s | 13.6 s | 4.5 s | 103 s | 0.903 (lobar 0.980), 228,760 streamlines |
 | A + B (field → 7 T) + ladder | 78 s | 22.1 s | 6.6 s | 149 s | A 0.903, B 0.889, A vs B 0.962 |
 | A + ladder, the windowed WM pack (`single_bundle_1s_c3_seg125ms`, window 0 of 8; 2026-10-01 13:10, logged out) | 50 s | 13.9 s | 4.7 s | 96 s | 0.893 (lobar 0.975); the container served after 22 s, its warm-up in a process beside the page |
+| A + B (every shell's pulse timing → long-TE δ 30 / Δ 120 ms, TE 160 ms: two windows of both packs) + ladder (2026-10-01 14:55, logged out, the responses cached by the warm-up) | 78 s | 22.8 s | 6.8 s | 362 s (the pool's queue included) | A 0.893, B 0.839 (lobar 0.949; the median voxel's b = 0 SNR falls from 7.0 to 3.7 at TE 160 ms), A vs B 0.943 |
+
+**The warm-up's timeline** (the same container, 44 entries before the set was trimmed to one per response, 192 CPUs and
+104 GB in the container, RSS 4-15 GB): the default run's responses 48 s after the process started, every preset with its
+ladder by 2.7 min, the 64 mT / 1.5 T / 3 T field presets by 5.5 min, 7 T at 9 min (its band 214 s), 11.7 T at 25 min
+(its band 936 s), the one-window knobs by 35 min, the first two-window class at 54 min (1146 s: the two-window band
+compiles once per process; the second two-window class then took 85 s), the end at 55 min. Until an entry is cached,
+a run asking for it computes it inside its own reservation at the cold price; a logged-out visitor's 120 s then holds
+the default run from the first minute, another field once that field is cached, and a two-window class once the
+warm-up reaches it.
 
 Device stages of A at 485 measurements on the pool: replay 0.3 s, noise 1.7, the three-tissue responses 1.2,
 MT-CSD 3.1, the round trip 1.2, tracking 2.5, the truth's tracking 2.3 (B reuses A's). The page then spends 9-17 s

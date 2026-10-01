@@ -1,5 +1,5 @@
-"""The brain source's costs, measured: the host's share (the packs' pose responses, JAX on the CPU as in the page's
-process of a ZeroGPU Space) and every device stage of a run (the contraction, the noise, the reconstruction, the
+"""The brain source's costs, measured: the packs' pose responses (JAX on the CPU, as in the page's process and the
+GPU worker of a ZeroGPU Space) and every device stage of a run (the contraction, the noise, the reconstruction, the
 tracking and the truth's tracking at density 1, 2 and 4, the scoring, the ladder), first call and steady, the
 streamline counts, the truth connectome's reproducibility at one key and its spread over keys (the score's floor),
 and the size of the payload that crosses from the GPU worker to the page. Writes a JSON the ``[budget]`` of
@@ -66,7 +66,7 @@ def main():
     device = {}
     for name, prot in protocols.items():
         meas = src.validate(prot, ph)
-        k = src.prepare(meas, ph)
+        k = src.cached(meas, ph)
         rec = dict(n_meas=prot.n_meas)
         for rep in ("first", "steady"):
             sync(); t = time.perf_counter(); dwi, floor, fac, _ = src.replay(meas, ph, k); sync(); rec[f"replay_{rep}"] = time.perf_counter() - t
@@ -76,7 +76,7 @@ def main():
             sync(); t = time.perf_counter(); sh, secs, extras = src.reconstruct(noisy, fac, meas, signal); sync(); rec[f"reconstruct_{rep}"] = time.perf_counter() - t
         rec["reconstruct_rows"] = secs
         rec["roundtrip"] = extras["roundtrip"]
-        ladder = [src.prepare(meas, r) for _, r in src.ladder_steps(ph)]
+        ladder = [src.cached(meas, r) for _, r in src.ladder_steps(ph)]
         sync(); t = time.perf_counter(); src.ladder(meas, ph, ladder); sync(); rec["ladder"] = time.perf_counter() - t
         t = time.perf_counter(); src.ingredients(meas, ph, k); rec["ingredients"] = time.perf_counter() - t
         tracks = {}

@@ -13,8 +13,9 @@ where ``C_wm`` is the WM pack's pose response contracted to the FOD's harmonics
 ``E_gm`` the GM pack's response to an isotropic orientation distribution, ``E_csf`` free water in closed form
 (:class:`dmipy_sim.phantom.FreeWater`), each at the run's tissue (T2 / T1 per pool at the echo, the WM walls' surface
 relaxivity, the myelin sheath's susceptibility at the scanner's field and its direction), and ``m0`` the proton
-density per tissue. The pose responses are the host's share (:meth:`Brain.prepare`: seconds on the CPU, in the page's
-process before the device is held, cached per pack, protocol, tissue and field); the contraction over voxels x
+density per tissue. The pose responses (:meth:`Brain.prepare`: seconds on the CPU) are cached in the page's process per
+pack, protocol, tissue and field; a run looks them up on the page and computes the missing ones inside the GPU call,
+so the call is entered as soon as the request arrives. The contraction over voxels x
 measurements x 45 runs in torch on the device. It is exactly what ``Phantom.compose(...).replay(seq, pose=...)``
 computes, which the tests check. The acquisition is in the image frame; the field's direction is given in the
 scanner frame and reaches the packs through the specimen's pose (:func:`specimen_pose`).
@@ -288,7 +289,7 @@ def specimen_pose(R, b0_direction):
 
 @dataclass
 class Kernels:
-    """A replay's host share (:meth:`Brain.prepare`): per measurement, the WM response contracted to the FOD's
+    """A replay's pose responses (:meth:`Brain.prepare`): per measurement, the WM response contracted to the FOD's
     harmonics ``wm`` ``(n_meas, 45)`` complex, the GM response to an isotropic distribution ``gm`` and free water's
     ``csf`` ``(n_meas,)`` complex, the proton densities ``m0``, the packs' certified floors, the seconds it took;
     ``profile`` the true response curves at the run's shells (``b``, ``wm`` ``(n_shells, n_angles)``, ``gm``, ``csf``
@@ -328,24 +329,42 @@ class Brain(P.Source):
         self.f = f.astype(np.float32)
         self.packs = {}
         self._reference = {}
-        self._kernels = {}                                                # prepare()'s results for this process's lifetime
+        self._kernels = {}                                                # prepare()'s results, by response_key
+        self._compiled = set()                                            # the _band()s prepare() ran in this process
 
     @classmethod
     def load(cls, cfg, *, local=None):
         return cls(cfg, asset=local)
 
-    def default_physics(self):
-        """The panel's defaults as a :class:`BrainPhysics`."""
-        panel = self.panel(self.cfg)
-        return self.physics_from(self.cfg, {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields})
-
     def warm(self):
-        """The default packs loaded (downloaded once per container) and the host share of the scan's own protocol at
-        the panel's defaults computed and kept: the first visitor's default run pays neither, and the pose route's
-        one-time compilation per pack is paid here."""
-        physics = self.default_physics()
-        prot = self.protocol(self.cfg, self.presets(self.cfg)[0])
-        self.prepare(self.validate(prot, physics), physics)
+        """The packs loaded (downloaded once per container) and the pose responses a run can ask for without a custom
+        acquisition computed and kept, at container start where no visitor pays: every preset at the panel's defaults
+        with its ladder rungs, and B of every knob on the default protocol but the pulse-timing ones (a new band each,
+        about 10 s apiece: their runs reserve them), the field presets along both B0 directions. An entry the packs
+        cannot play is skipped (a run asking for it is refused). The bands they compile stay compiled in this process
+        and in every worker forked from it."""
+        cfg = self.cfg
+        panel = self.panel(cfg)
+        values = {c.name: c.value for row in panel.rows for c in row if c.name in panel.fields}
+        physics = self.physics_from(cfg, values)
+        entries = []
+        for name in self.presets(cfg):
+            prot = self.protocol(cfg, name)
+            entries += [(prot, physics)] + [(prot, rung) for _, rung in self.ladder_steps(physics)]
+        scan = self.protocol(cfg, self.presets(cfg)[0])
+        for change in self.knobs(cfg).values():
+            if change is None or change[0] == "shape":
+                continue
+            prot, _, _, v = self.apply_knob(cfg, change, scan, True, None, values)
+            modes = list(B0_MODES) if change[0] == "field" else [v["b0_mode"]]
+            entries += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]
+        for prot, ph in entries:
+            try:
+                meas = self.validate(prot, ph)
+                if self.cached(meas, ph) is None:
+                    self.prepare(meas, ph)
+            except ValueError:
+                continue
 
     # ---- the packs ----
     @classmethod
@@ -404,8 +423,9 @@ class Brain(P.Source):
                     "(relative to CSF). **SNR is defined at M0 = 1**, the b = 0 signal of a pure-CSF voxel before relaxation, so "
                     "lowering a tissue's M0 lowers its SNR. The **field** tier is the WM pack's myelin-sheath susceptibility at the "
                     "scanner's field and direction (given in the scanner frame; the head's own susceptibility is not modelled); the "
-                    "GM pack and free water carry no field source. The packs' responses are computed on the page's CPU before the GPU "
-                    "is held (seconds; a field or protocol not seen before costs a few seconds more). The pack menu is the "
+                    "GM pack and free water carry no field source. The packs' responses to the presets and the field presets are "
+                    "computed once when the Space starts; any other (a custom protocol, a field or tissue not seen before) is "
+                    "computed inside the GPU call and is part of what the run reserves. The pack menu is the "
                     "configuration's list; the WM pack's contact tier uses the catalogue's white-matter ρ, the GM pack's walls take "
                     "none (no cited value)."),
             explorer=("What the replay made, before the noise and the tractography. **A** is the run you configured (its replay "
@@ -575,17 +595,19 @@ class Brain(P.Source):
         return int(np.ceil(REACH_MM / float(step_mm))) + 1
 
     @classmethod
-    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder):
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
         """The GPU seconds a run reserves: ``[budget]`` of the configuration, measured on the L40S with the BATMAN
         fixture (tools/measure_brain.py): a fixed part (the worker's start, noise, the reconstruction's fixed cost, the
         handoff), a part per measurement (the contraction and the reconstruction scale with the rows), the tracking
         and the truth's tracking per density, the ladder's two rungs of contraction, B (a second run whose truth is A's),
-        each further tracker key; times the margin, within 30 and 480 s."""
+        each further tracker key, and the pose responses the worker computes because the page has them not cached
+        (``responses``: ``(state, n_meas)`` per entry, :meth:`responses`); times the margin, within 30 and 480 s."""
         b = cfg["budget"]
         n = protocol.n_meas; d = str(int(density))
         track = float(b["track"][d])
         run = b["fixed"] + b["per_meas"] * n + track
         secs = run + track + (b["ladder_per_meas"] * n if ladder else 0.0) + ((run - b["worker"]) if knob != P.NO_KNOB else 0.0) + track * (int(n_keys) - 1)
+        secs += sum(b[f"response_{state}"]["fixed"] + b[f"response_{state}"]["per_meas"] * m for state, m in responses)
         return int(min(480, max(30, b["margin"] * secs)))
 
     # ---- the run's side ----
@@ -628,20 +650,63 @@ class Brain(P.Source):
                            slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
         return d.pgse(dirs, float(t["delta"]), float(t["Delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000, slew_rate=np.inf)
 
-    def prepare(self, meas, physics=None):
-        """The host's share of a replay, on the CPU of the page's process: per timing class of ``meas``, the WM and GM
-        packs' pose responses at the run's tissue, field and specimen pose (dmipy-sim's closed form) contracted to the
-        FOD's harmonics, free water's closed form; the true response curves for the explorer and the b = 0 weight of
-        each tier alone. Loads the chosen packs; kept for the process's lifetime per (packs, measurements, tissue,
-        field) -- the proton densities are applied on the device and are not part of the key."""
+    def response_key(self, meas, physics=None):
+        """The key of :meth:`prepare`'s result in this process's cache: the measurements (b-values, directions,
+        timing classes) and the physics but its proton densities, which the device applies."""
         import hashlib
         h = hashlib.sha256()
         for x in (meas.bvals, meas.dirs, meas.shape.astype(str)):
             h.update(np.ascontiguousarray(x).tobytes())
-        key = (h.hexdigest(), repr(replace(physics, m0={t: 0.0 for t in TISSUES})))
-        if key in self._kernels:
-            k = self._kernels[key]
-            return replace(k, m0=dict(physics.m0), seconds=0.0)
+        return h.hexdigest(), repr(replace(physics, m0={t: 0.0 for t in TISSUES}))
+
+    @staticmethod
+    def _band(meas, physics):
+        """What the pose route compiles for: the packs, the rows per timing class and, with the field tier, the field
+        and the sheath's susceptibility (the phase amplitude sets the expansion's band, whose shapes compile; measured:
+        a new tissue or field direction at a compiled band costs no compilation, a run without the field tier none
+        at all)."""
+        names, counts = np.unique(meas.shape.astype(str), return_counts=True)
+        field = (physics.field_T, physics.chi_iso, physics.chi_aniso) if physics.field else None
+        return physics.wm_pack, physics.gm_pack, tuple(zip(names.tolist(), counts.tolist())), field
+
+    def cached(self, meas, physics=None):
+        """:meth:`prepare`'s result for ``meas`` at ``physics`` when this process has it (at ``physics``'s proton
+        densities, zero seconds), else None."""
+        k = self._kernels.get(self.response_key(meas, physics))
+        return None if k is None else replace(k, m0=dict(physics.m0), seconds=0.0)
+
+    def keep(self, kernels):
+        """``{response_key: Kernels}`` computed in another process (the GPU worker) kept in this one's cache."""
+        for key, k in kernels.items():
+            self._store(key, k)
+
+    def _store(self, key, k):
+        self._kernels[key] = k
+        while len(self._kernels) > 128:                                     # a bounded memory: the oldest goes first
+            self._kernels.pop(next(iter(self._kernels)))
+
+    def responses(self, entries):
+        """What :meth:`prepare` costs for a run's ``entries`` ``[(meas, physics)]`` in a process forked from this one,
+        in order: ``(state, n_meas)`` for each entry not cached here, once per key; ``state`` is ``no_field`` (the
+        field tier off: nothing to compile), ``warm`` (a band compiled here, or by an earlier entry of the run) or
+        ``cold`` (a band to compile first). ``[budget]`` prices them (``response_<state>``)."""
+        out = []; keys = set(); bands = set(self._compiled)
+        for meas, ph in entries:
+            key = self.response_key(meas, ph)
+            if key in self._kernels or key in keys:
+                continue
+            keys.add(key)
+            band = self._band(meas, ph)
+            out.append(("no_field" if not ph.field else "warm" if band in bands else "cold", len(meas.bvals)))
+            bands.add(band)
+        return out
+
+    def prepare(self, meas, physics=None):
+        """The pose responses of a replay, on the CPU: per timing class of ``meas``, the WM and GM packs' pose
+        responses at the run's tissue, field and specimen pose (dmipy-sim's closed form) contracted to the FOD's
+        harmonics, free water's closed form; the true response curves for the explorer and the b = 0 weight of each
+        tier alone. Loads the chosen packs; computed every call and kept in this process's cache under
+        :meth:`response_key` (:meth:`cached` reads it)."""
         from dmipy_sim.phantom import FreeWater
         from dmipy_sim.replay import so3
         t0 = time.perf_counter()
@@ -675,9 +740,8 @@ class Brain(P.Source):
         b0 = self._tier_weights(meas, physics, wm_pack, gm_pack, pose, classes[0])
         floors = {"wm": _floor(wm_pack), "gm": _floor(gm_pack)}
         k = Kernels(C_wm, e_gm, e_csf, dict(physics.m0), floors, time.perf_counter() - t0, profile, b0)
-        self._kernels[key] = k
-        while len(self._kernels) > 32:                                      # a bounded memory: the oldest goes first
-            self._kernels.pop(next(iter(self._kernels)))
+        self._store(self.response_key(meas, physics), k)
+        self._compiled.add(self._band(meas, physics))
         return k
 
     def _profile_sequence(self, meas, rows, pose):
@@ -719,7 +783,7 @@ class Brain(P.Source):
         the accuracy)."""
         import torch
         if prepared is None:
-            raise ValueError("a brain replay needs its host share: Brain.prepare(meas, physics) first")
+            raise ValueError("a brain replay needs its pose responses: Brain.prepare(meas, physics) first")
         t0 = time.perf_counter()
         dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         k = prepared

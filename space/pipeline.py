@@ -453,8 +453,9 @@ class Source:
     :meth:`catalogue_numbers`, :meth:`physics_from`, :meth:`knobs` and :meth:`apply_knob` (B, one knob away from A),
     :meth:`tracking_controls` and :meth:`estimated_seconds` (the GPU seconds a run reserves on a shared pool).
 
-    The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the host's share of a
-    replay, done before the device is held), :meth:`replay`, :meth:`reconstruct`, :meth:`tracking_inputs`,
+    The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the share of a replay
+    that needs no device, kept per process: :meth:`response_key`, :meth:`cached`, :meth:`keep`,
+    :meth:`responses`), :meth:`replay`, :meth:`reconstruct`, :meth:`tracking_inputs`,
     :meth:`reference` and :meth:`score` (the truth the connectome is scored against), :meth:`compare` (A against
     B), :meth:`ladder`, :meth:`ingredients`, :meth:`accuracy`."""
     mode = ""
@@ -530,8 +531,9 @@ class Source:
         raise NotImplementedError
 
     @classmethod
-    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder):
-        """The GPU seconds a run of ``protocol`` reserves on a shared pool, from the measured cost model."""
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
+        """The GPU seconds a run of ``protocol`` reserves on a shared pool, from the measured cost model;
+        ``responses`` the ``(state, n_meas)`` of each :meth:`prepare` the call computes (:meth:`responses`)."""
         raise NotImplementedError
 
     # ---- the run's side ----
@@ -544,9 +546,27 @@ class Source:
         """Refuses, before any work, a run this source cannot do; returns its measurements."""
         return measurements(protocol, self.shapes)
 
+    def response_key(self, meas, physics=None):
+        """The key of :meth:`prepare`'s result in this process's cache; None for a source with nothing to prepare."""
+        return None
+
+    def cached(self, meas, physics=None):
+        """:meth:`prepare`'s result for ``meas`` at ``physics`` when this process has it, else None."""
+        return None
+
+    def keep(self, prepared):
+        """``{response_key: result}`` of :meth:`prepare` computed in another process kept in this one's cache."""
+        return
+
+    def responses(self, entries):
+        """``(state, n_meas)`` for each :meth:`prepare` of a run's ``entries`` ``[(meas, physics)]`` that a process
+        forked from this one would compute, ``state`` a ``[budget]`` key; empty for a source with nothing to prepare."""
+        return []
+
     def prepare(self, meas, physics=None):
-        """The host's share of a replay of ``meas`` at ``physics``, done in the page's process before the device is
-        held (None for a source that has none); :meth:`replay` takes it as ``prepared``."""
+        """The share of a replay of ``meas`` at ``physics`` that needs no device, computed and kept in this process's
+        cache (None for a source that has none); :meth:`replay` takes it as ``prepared``. A run looks it up on the page
+        (:meth:`cached`) and computes what is missing inside the GPU call."""
         return None
 
     def replay(self, meas, physics=None, prepared=None):

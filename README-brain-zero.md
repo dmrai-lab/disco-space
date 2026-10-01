@@ -24,8 +24,11 @@ against the connectome of the input FOD tracked with the same tracker, settings,
 https://github.com/dmrai-lab/disco-space (`requirements-zero.txt`, `app.py`, `space/sources/brain.py`).
 
 **Where the work runs.** The packs' pose responses (the only physics that depends on the tissue and the field) are
-computed on the CPU of the page's process before the GPU is held, and kept for the container's lifetime per pack,
-protocol, tissue and field; the GPU call gets the small response arrays. Inside the call, torch contracts them with
+computed on the CPU and kept in the page's process for the container's lifetime per pack, protocol, tissue and field:
+for every preset (with its ladder) and the scan's protocol at every field preset when the container starts, for any
+other run inside its GPU call (the page only looks its cache up before the call, so the call follows the request at
+once; ZeroGPU's proxy token expires when the call comes late), after which the page keeps them too. Inside the call,
+torch contracts them with
 every voxel's FOD, fractions and proton densities (voxels x measurements x 45), then the noise, the reconstruction
 (dmipy-fit), the tracking and the truth's tracking (dmipy-tract), the scoring. Deterministic algorithms are on and
 TF32 off inside the call.
@@ -35,8 +38,9 @@ TF32 off inside the call.
 Every run reserves the GPU for the seconds the page shows under the run button. ZeroGPU charges that reservation
 against the *visitor's* daily quota, not the Space's: 2 minutes logged out, 5 with a free Hugging Face account, 40
 with PRO; a single request above the visitor's quota is refused before it starts, and a run that outlives its
-reservation is killed. Only the device part of a run holds the GPU; the packs' responses before it and the page's
-files and figures after it do not.
+reservation is killed. Only the device part of a run holds the GPU, with the packs' responses the page has not
+cached (part of the reservation shown, which falls once a run has cached them); the page's files and figures after
+it do not.
 
 Measured on the L40S with the BATMAN development fixture (96 x 96 x 60 at 2.5 mm, 90,205 brain voxels, 36,605 in the
 WM stop mask; dmipy-sim 7f6f1fa, dmipy-fit 0c7dde8 with the single-tissue reconstruction, dmipy-tract 7da22c3;

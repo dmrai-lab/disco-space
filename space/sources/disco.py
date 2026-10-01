@@ -238,12 +238,12 @@ class Disco(P.Source):
         return P.Tracking(density=int(density), step_mm=float(step), max_angle=float(max_angle), max_steps=int(cfg["tracking"]["max_steps"]), key=int(key))
 
     @classmethod
-    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder):
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
         """Measured on the pool at DiSCo 364 with every tier (#7, dmipy-sim#522/#523): the worker's start and the
         payload's handoff 8 s, noise to scoring 8 s, the first replay 0.045 s per measurement (the tiles uploaded
         inside the call), each further replay on the resident tiles 0.032 s per measurement (the ladder is three, B
         one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; times 1.3, within 30
-        and 480 s."""
+        and 480 s. DiSCo prepares nothing, so ``responses`` is empty."""
         n = protocol.n_meas
         secs = 16 + 0.045 * n + (3 * 0.032 * n if ladder else 0) + ((8 + 0.032 * n) if knob != P.NO_KNOB else 0) + 10 * (int(n_keys) - 1)
         return int(min(480, max(30, 1.3 * secs)))

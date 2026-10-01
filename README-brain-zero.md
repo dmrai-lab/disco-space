@@ -71,6 +71,7 @@ tier, SNR 30 at M0 = 1, the multi-tissue reconstruction; the packs' responses ca
 |---|---|---|---|---|---|
 | A + ladder | 50 s | 13.6 s | 4.5 s | 103 s | 0.903 (lobar 0.980), 228,760 streamlines |
 | A + B (field → 7 T) + ladder | 78 s | 22.1 s | 6.6 s | 149 s | A 0.903, B 0.889, A vs B 0.962 |
+| A + ladder, the windowed WM pack (`single_bundle_1s_c3_seg125ms`, window 0 of 8; 2026-10-01 13:10, logged out) | 50 s | 13.9 s | 4.7 s | 96 s | 0.893 (lobar 0.975); the container served after 22 s, its warm-up in a process beside the page |
 
 Device stages of A at 485 measurements on the pool: replay 0.3 s, noise 1.7, the three-tissue responses 1.2,
 MT-CSD 3.1, the round trip 1.2, tracking 2.5, the truth's tracking 2.3 (B reuses A's). The page then spends 9-17 s

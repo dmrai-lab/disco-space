@@ -1,8 +1,11 @@
 """The container's CPU quota, read from its cgroup, and the BLAS thread cap derived from it.
 
 A Space's container sees the host's CPUs (192 on the ZeroGPU pool) while its cgroup grants a few; numpy's BLAS and
-OpenMP pools size themselves on the visible count unless told otherwise, and a heavy contraction then runs on far more
-threads than it has cores, throttled by the quota. This module has no numpy import, so the entry can call it first."""
+OpenMP pools size themselves on the visible count unless told otherwise, and XLA's CPU pool (jax, the pose expansion's
+field factor) on the CPUs the process may run on, which no variable changes: measured 247 threads at 72 CPUs, 73 at
+16, 25 at 4. A heavy contraction then runs on far more threads than it has cores, throttled by the quota: the pool's
+first two-window warm entry spent 1217 s of 1292 s in that one jax phase against 24 s on an 8-thread box. This module
+has no numpy import, so the entry can call it first."""
 import math
 import os
 
@@ -44,3 +47,17 @@ def cap_threads(quota=None):
     for var in THREAD_VARS:
         os.environ.setdefault(var, str(n))
     return n
+
+
+def cap_affinity(quota=None):
+    """Restricts this process to the first ``quota`` CPUs it may run on (``os.sched_setaffinity``; ``quota`` overrides
+    the cgroup read), so that every pool that sizes itself on the schedulable CPUs (XLA's, and torch's) matches the
+    quota; returns the CPUs it now runs on, or None when there is no quota or the process already runs on no more
+    than it. Children (the warm-up's process, the forked GPU worker) inherit it."""
+    n = cpu_quota() if quota is None else quota
+    allowed = sorted(os.sched_getaffinity(0))
+    if n is None or len(allowed) <= n:
+        return None
+    cpus = set(allowed[:n])
+    os.sched_setaffinity(0, cpus)
+    return cpus

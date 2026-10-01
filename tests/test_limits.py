@@ -23,3 +23,15 @@ def test_the_cap_sets_only_the_unset_variables(monkeypatch):
     assert L.cap_threads(quota=6) == 6
     assert os.environ["OMP_NUM_THREADS"] == "6" and os.environ["OPENBLAS_NUM_THREADS"] == "6"
     assert os.environ["MKL_NUM_THREADS"] == "3"
+
+
+def test_the_affinity_cap_keeps_the_first_cpus_of_the_allowed_set():
+    before = os.sched_getaffinity(0)
+    try:
+        assert L.cap_affinity(quota=len(before)) is None                        # no more than the quota: untouched
+        assert os.sched_getaffinity(0) == before
+        if len(before) > 1:
+            got = L.cap_affinity(quota=1)
+            assert got == {min(before)} and os.sched_getaffinity(0) == got
+    finally:
+        os.sched_setaffinity(0, before)

@@ -1203,7 +1203,8 @@ def _warm_worker(cfg, where, entries, queue):
     """The warm-up's process (:meth:`Brain.warm_in_background`): its own :class:`Brain` on the same configuration
     and asset, every ``(meas, physics)`` of ``entries`` computed on the CPU and put on ``queue`` as
     ``(response_key, Kernels)``, then ``None``. One line per entry on stdout (the Space's run log) with its index,
-    the seconds it took and the seconds since the start, so the warm-up's progress is observable."""
+    the seconds it took, :attr:`Kernels.stages`, the pose expansion's phases (dmipy-sim's run record, which the
+    expansion joins) and the seconds since the start, so the warm-up's progress is observable."""
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     t0 = time.perf_counter()
     from ..limits import cpu_quota, THREAD_VARS
@@ -1213,15 +1214,18 @@ def _warm_worker(cfg, where, entries, queue):
     try:
         src = Brain(cfg, asset=where)
         print(f"warm-up: the source loaded, RSS {_rss_gb():.1f} GB ({time.perf_counter() - t0:.0f} s since the start)", flush=True)
+        from dmipy_sim.run import Run
         for i, (meas, ph) in enumerate(entries, 1):
             t = time.perf_counter()
-            kernels = src.prepare(meas, ph)
+            with Run("brain-warm", params=dict(entry=i)) as run:              # the pose expansion's phases join this record
+                kernels = src.prepare(meas, ph)
+            phases = ", ".join(f"{n} {v:.1f}" for n, v in run.phase_seconds().items())
             queue.put((src.response_key(meas, ph), kernels))
             windows = {t: src.windows_needed(t, label, meas) for t, label in (("wm", ph.wm_pack), ("gm", ph.gm_pack))}
             print(f"warm-up {i}/{len(entries)}: {len(meas.bvals)} measurements, WM {ph.wm_pack!r} ({windows['wm']} window(s)), "
                   f"GM {ph.gm_pack!r} ({windows['gm']} window(s)), {ph.field_T:g} T along {ph.b0_direction}, "
                   f"tiers {'on' if ph.field else 'off'}: {time.perf_counter() - t:.1f} s "
-                  f"({', '.join(f'{n} {v:.1f}' for n, v in (kernels.stages or {}).items())}), RSS {_rss_gb():.1f} GB "
+                  f"({', '.join(f'{n} {v:.1f}' for n, v in (kernels.stages or {}).items())}; phases {phases}), RSS {_rss_gb():.1f} GB "
                   f"({time.perf_counter() - t0:.0f} s since the start)", flush=True)
     finally:
         queue.put(None)

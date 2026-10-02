@@ -45,7 +45,8 @@ def main():
     for preset in a.preset or (S.presets(cfg)[0], A.CUSTOM):
         t0 = time.perf_counter()
         args = inputs(preset, knob=a.knob or A.NO_KNOB, ladder=not a.no_ladder)
-        print(f"{preset}: reserves {A.estimated_seconds(*args)} s", flush=True)
+        print(f"{preset}: the client's own estimate {A.estimated_seconds(*args)} s (the page's cache is not known here; the Space prices "
+              f"the responses it has not cached on top)", flush=True)
         job = c.submit(*args, api_name="/run_pipeline")
         seen = 0
         while a.stream and not job.done():

@@ -71,3 +71,37 @@ def test_the_noiseless_pipeline_scores_within_the_references_band(layout):
     assert s["pearson_count"] >= CFG["gate"]["pearson_count_min"], s
     assert s["missed_pairs"] <= CFG["gate"]["missed_pairs_max"], s
     assert first.score["pearson_count"] == s["pearson_count"]   # the same key: the same tractogram (deterministic XLA ops)
+
+
+@pytest.mark.parametrize("machine", [m["key"] for m in CFG["scanners"]["machines"]])
+def test_a_machine_on_discos_protocol_moves_the_image_and_is_timed(layout, machine):
+    """Each machine of the menu at 7.9 cm from isocentre along R-L on DiSCo's own protocol (none of them can play it:
+    the gradient limit is the page's, the replay's cost is measured here at the gate's protocol), against the ideal
+    scanner at the machine's field and direction: the delivered image is finite where the ideal one is and moves it;
+    the first and steady replay seconds of both go to ``gate_scanners.json`` beside ``gate.json``. A machine with its
+    own gradient needs the layout's background moments and is skipped by name on a layout without them."""
+    from dataclasses import replace
+    L = P.limits(machine)
+    if L.has_field_law and not layout.moments.background:
+        pytest.skip(f"{machine}'s own gradient needs the layout's background moments (shape_moments.stamp_background)")
+    p, _ = D.disco_protocol(CFG)
+    ideal = P.Physics.at(float(L.field_T), b0_direction=tuple(L.b0_axis or (0.0, 0.0, 1.0)))
+    far = replace(ideal, scanner=machine, offset_m=(0.079, 0.0, 0.0))
+    m = layout.validate(p, far)
+    secs = {}
+    for tag, ph in (("ideal", ideal), ("machine", far)):
+        for k in ("first", "steady"):
+            dwi, _, factor, s = layout.replay(m, ph)
+            secs[f"{tag}_{k}"] = s
+        if tag == "ideal":
+            ref = dwi
+    both = np.isfinite(ref)
+    assert (np.isfinite(dwi) == both).all()
+    moved = float(np.max(np.abs(dwi - ref)[both]))
+    print(f"\n{machine} at 7.9 cm on DiSCo 364: max |dS| vs ideal {moved:.3e}; seconds {json.dumps(secs)}")
+    assert moved > 1e-3
+    path = os.path.join(os.path.dirname(OUT), "gate_scanners.json")
+    table = json.load(open(path)) if os.path.exists(path) else {}
+    table[machine] = dict(seconds=secs, max_abs_dS=moved, n_meas=p.n_meas, offset_m=list(far.offset_m), device=str(__import__("jax").devices()[0]))
+    with open(path, "w") as f:
+        json.dump(table, f, indent=1)

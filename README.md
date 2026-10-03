@@ -32,6 +32,14 @@ susceptibility, each tier switchable on its own; the defaults are dmipy-sim's ci
 nearest field. A stimulated-echo pulse timing (δ 7.6 / TM 38.3 ms) is the twin of DiSCo's b = 3091 class: the same
 diffusion time with the magnetisation stored along z, so the field acts only during the two δ.
 
+**The scanner.** Besides the ideal scanner the menu holds three catalogued machines of dmipy-sim (the Hyperfine Swoop
+64 mT, the Siemens Prisma 3 T and Terra 7 T). A machine sets the field and its direction, refuses a shell beyond its
+gradient limit and plays every term its catalogue entry carries at the phantom's place in the bore: on DiSCo, a
+distance from isocentre the page offers, every voxel's delivered gradient exactly on the shape-moment layout (with
+the layout's background moments for a magnet's own gradient); on the brain, the head centre at isocentre and the
+voxels binned into encoding classes, each class's delivered waveform expanded by the packs. `docs/scanner.md` is the
+design note: each term, how it enters each page, its exactness and cost, and what is refused (the Swoop on the brain).
+
 **The Replay DWI Explorer** (the third tab) shows what the replay made before the noise and the tractography: the
 ingredient of each tier per voxel (the intra-axonal weight fraction; the walkers' wall contact, a boundary local
 time of 0–58 µm on DiSCo with a contact survival of 0.89–1 at ρ = 1.16 µm/s; the spread of the sheath field's

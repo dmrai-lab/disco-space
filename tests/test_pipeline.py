@@ -234,18 +234,17 @@ def test_a_tractogram_sample_keeps_whole_streamlines_in_order():
 
 
 def test_the_gradient_a_shell_needs_and_the_scanners_that_can_play_it():
-    """b = 1000 at δ 12 / Δ 24 ms needs 70 mT/m (γ² G² δ² (Δ − δ/3)); the Prisma (80 mT/m) plays it, the low-field
-    class (23 mT/m) does not; DiSCo's b = 13183 shell needs the Connectom class; None means no limit."""
+    """b = 1000 at δ 12 / Δ 24 ms needs 70 mT/m (γ² G² δ² (Δ − δ/3)); the Prisma (80 mT/m) plays it, the Swoop (23
+    mT/m) does not; DiSCo's b = 13183 shell needs more than either; None means no limit."""
     G = P.gradient_needed(1000, 0.012, 0.024)
     assert 0.069 < G < 0.071
-    classes = P.scanner_classes()
-    assert classes["prisma"] == (0.08, 3.0) and classes["low_field"][0] < 0.03
+    assert P.limits("siemens_magnetom_prisma_3T").G_max == 0.08 and P.limits("hyperfine_swoop_64mT").G_max < 0.03
     p = P.Protocol((P.Shell("d12-D24", 1000, 30),), n_b0=1)
-    assert P.playable(p, CFG["shapes"], "prisma")[0][-1] and not P.playable(p, CFG["shapes"], "low_field")[0][-1]
+    assert P.playable(p, CFG["shapes"], "siemens_magnetom_prisma_3T")[0][-1] and not P.playable(p, CFG["shapes"], "hyperfine_swoop_64mT")[0][-1]
     assert P.playable(p, CFG["shapes"], None)[0][5] is None and P.playable(p, CFG["shapes"], None)[0][-1]
     disco, _ = D.disco_protocol(CFG)
-    rows = P.playable(disco, CFG["shapes"], "connectom")
-    assert all(r[-1] for r in rows) and not all(r[-1] for r in P.playable(disco, CFG["shapes"], "prisma"))
+    assert all(r[-1] for r in P.playable(disco, CFG["shapes"], None))
+    assert not all(r[-1] for r in P.playable(disco, CFG["shapes"], "siemens_magnetom_prisma_3T"))
     free = P.Protocol((P.Shell.free(1000, 30, 0.012, 0.024, 0.06),), n_b0=1)
     assert abs(P.playable(free, CFG["shapes"], None)[0][4] - G) < 1e-12
 
@@ -342,3 +341,40 @@ def test_the_ingredients_are_the_layouts_tier_maps_in_the_pages_units():
     assert calls[-1][1:3] == (False, None)
     lay.tiers = False
     assert D.Layout.ingredients(lay, meas, ph) is None
+
+
+def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
+    """On a stand-in layout: the ideal scanner asks the image for the commanded acquisition (no delivery); a machine
+    asks the layout's delivery for every class at the machine's catalogue entry and the grid centred at the physics'
+    offset, and hands it to that class's image; a machine with its own gradient on a layout without background moments,
+    and with a transmit law on one without RF schedules, is refused by name."""
+    from dmipy_sim.phantom import Grid
+    seen = []
+    class _M:
+        grid = Grid(shape=(2, 1, 1), voxel_size_m=(25e-6,) * 3, origin_m=(0.0, 0.0, 0.0))
+        background = None
+        manifest = {"shapes": {"d12-D24": {}, "d8-D20": {}}}
+        def delivery(self, shape, b, dirs, scanner, grid):
+            seen.append(("delivery", shape, scanner.name, tuple(np.round(np.asarray(grid.isocenter_m) - np.asarray(self.grid.isocenter_m), 6))))
+            return ("delivered", shape)
+        def image(self, shape, b, dirs, *, backend, resident, tissue, scanner, b0_direction, delivered=None):
+            seen.append(("image", shape, delivered, scanner, tuple(b0_direction)))
+            return np.ones((2, 1, 1, len(b))), np.zeros((2, 1, 1))
+    lay = D.Layout.__new__(D.Layout); lay.moments = _M(); lay.tiers = True; lay.backend = "jax"; lay.unseeded = ("myelin",)
+    lay.M0 = np.ones((2, 1, 1)); lay.mask = np.ones((2, 1, 1), bool); lay.pools = ("intra", "extra"); lay.shapes = CFG["shapes"]
+    meas = P.measurements(P.Protocol((P.Shell("d12-D24", 1000, 3), P.Shell("d8-D20", 2000, 3)), n_b0=1), CFG["shapes"])
+    D.Layout.replay(lay, meas, P.Physics.at(3.0))
+    assert [s[2] for s in seen if s[0] == "image"] == [None, None]
+    seen.clear()
+    ph = P.Physics.at(3.0, scanner="siemens_magnetom_prisma_3T", offset_m=(0.0, 0.0, 0.05))
+    D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 1000, 3),), n_b0=1), ph)
+    D.Layout.replay(lay, meas, ph)
+    assert [s for s in seen if s[0] == "delivery"] == [("delivery", "d12-D24", "siemens_magnetom_prisma_3T", (0.0, 0.0, -0.05)),
+                                                        ("delivery", "d8-D20", "siemens_magnetom_prisma_3T", (0.0, 0.0, -0.05))]
+    assert [s[2] for s in seen if s[0] == "image"] == [("delivered", "d12-D24"), ("delivered", "d8-D20")]
+    swoop = P.Physics.at(0.064, scanner="hyperfine_swoop_64mT", b0_direction=(0.0, 1.0, 0.0))
+    with pytest.raises(ValueError, match="background moments"):
+        D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
+    lay.moments.background = {"amplitude": 5e-3}
+    with pytest.raises(ValueError, match="RF schedules"):
+        D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)

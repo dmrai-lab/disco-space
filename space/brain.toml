@@ -87,6 +87,19 @@ default_field = 3.0
 default_on = true
 m0_gm_knob = [0.7, 1.0]
 
+# The scanner menu after "ideal": catalogue machines whose every catalogued term the brain applies, the head centre at
+# isocentre (docs/scanner.md). Each voxel is binned into an encoding class by what the machine delivers there, to
+# `tolerance` of b (dmipy_sim.phantom.bore.encoding_classes), and every class's played acquisition is expanded by the
+# packs. The Swoop is not on this menu: its own gradient makes every voxel's waveform two-directional, which has no
+# closed-form pose expansion (the quadrature: 174 s for 5 measurements of one class, against hundreds of classes);
+# the DiSCo Space carries it exactly.
+[scanners]
+machines = [
+  { label = "Siemens Prisma 3 T", key = "siemens_magnetom_prisma_3T" },
+  { label = "Siemens Terra 7 T", key = "siemens_magnetom_terra_7T" },
+]
+tolerance = 0.01
+
 # The pack menu per tissue (the first is the default): a label and a pack URI (hf:// or a local path, as
 # dmipy_sim.phantom.PackSubstrate resolves it). A Hub pack declaring several windows loads the windows a run reaches
 # (Brain.pack); a local path or a one-window pack loads whole. SubstrateCommons family records feed this later (disco-space#8, decision 5).
@@ -150,6 +163,11 @@ margin = 1.3
 response_cold = { fixed = 22.0, per_meas = 0.07, per_save = 0.0016 }
 response_warm = { fixed = 2.5, per_meas = 0.04, per_save = 0.0016 }
 response_no_field = { fixed = 0.5, per_meas = 0.012, per_save = 0.0016 }
+# On a machine every encoding class's rows play their own amplitude, so its shells no longer share the expansion's
+# bodies: a class of the scan's 485 measurements on the 100 ms CACTUS pack at 3 T with every tier took 25 s against
+# 4.5 s for the commanded protocol (gaia's CPU, 8 threads, the Prisma at 6 cm, its slew), so an entry's rows count
+# once per class times this (Brain.responses).
+response_per_class = 5.6
 [budget.track]                # one tracking of the WM at density d, the run's or the truth's (L40S steady x 1.5)
 1 = 1.5                       # 36,605 seeds: 0.7 s
 2 = 3.5                       # 292,840 seeds: 1.9-2.1 s

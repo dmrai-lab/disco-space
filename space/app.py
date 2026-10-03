@@ -2,7 +2,9 @@
 
 The acquisition tab: a preset (the source's), custom shells (on a stored pulse timing; at their own δ / Δ / TE, or
 from an uploaded Camino scheme, in DiSCo's full mode); the source's tissue-and-scanner panel; the noise; the
-tracker; a scanner whose gradient limit refuses a shell it cannot play; B, the same run with one knob changed; N
+tracker; the scanner (ideal, or a catalogued machine whose every catalogued term the replay applies at the phantom's
+place in the bore, and whose gradient limit refuses a shell it cannot play; docs/scanner.md); B, the same run with one
+knob changed; N
 tracker keys for the tractogram's own spread; the run button, whose progress names the stage it is in. The truth
 tab: the source's input and ground truth. The Replay DWI Explorer: the ingredient maps of the tiers, the noise-free
 layers (the tier ladder, A, B) and their differences in the DWI or in MD / FA, per shell, and the estimated against
@@ -36,7 +38,7 @@ CUSTOM = "custom shells"
 UPLOADED = "uploaded scheme"
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
 NO_KNOB = P.NO_KNOB
-NO_SCANNER = "none: any gradient amplitude"
+IDEAL = P.IDEAL
 RESPONSES_ROW = "worker · the packs' responses not cached on the page"     # the timings row tools/live.py prints
 SAMPLE = 10_000                                          # streamlines kept in the page's state and in the sample .tck
 OUTPUTS = ("result", "headline", "dwi_view", "tract_view", "mats", "timings", "tck", "volumes", "z_slider", "m_slider",
@@ -98,9 +100,9 @@ def physics_values(S, cfg, *values):
     return dict(zip(fields, values))
 
 
-def gradient_text(protocol, shapes, scanner):
-    """The per-shell gradient table as Markdown, and whether every shell is playable on ``scanner``."""
-    rows = P.playable(protocol, shapes, scanner if scanner != NO_SCANNER else None)
+def gradient_text(cfg, protocol, shapes, scanner):
+    """The per-shell gradient table as Markdown, and whether every shell is playable on the menu's ``scanner``."""
+    rows = P.playable(protocol, shapes, P.machine(cfg, scanner))
     lines = ["| shell | b (s/mm²) | timing | needs | limit |", "|---|---|---|---|---|"]
     for name, b, delta, Delta, G, G_max, ok in rows:
         limit = "any" if G_max is None else f"{G_max * 1e3:.0f} mT/m {'✓' if ok else '✗ cannot play'}"
@@ -115,17 +117,20 @@ def plan_runs(cfg, source, preset, n_b0, snr_on, snr, scheme_file, knob, scanner
     S = type(source)
     full = source.mode == "full"
     protocol = _protocol_from_inputs(S, cfg, preset, n_b0, *shell_inputs, scheme=scheme_file, full=full)
-    gradient = scanner if S.plays_slew and scanner != NO_SCANNER else None
-    runs = [("A", protocol, snr_on, snr, S.physics_from(cfg, values, gradient=gradient))]
+    key = P.machine(cfg, scanner)
+    runs = [("A", protocol, snr_on, snr, S.physics_from(cfg, values, scanner=key))]
     knobs = S.knobs(cfg)
     if knob not in knobs:
         raise ValueError(f"unknown knob {knob!r}")
     change = knobs[knob]
     if change is not None:
+        if key is not None and change[0] in ("field", "b0"):
+            raise ValueError(f"the {scanner} fixes the field and its direction: the knob {knob!r} would make B the same run; "
+                             "choose the ideal scanner to vary them")
         pb, on_b, snr_b, vb = S.apply_knob(cfg, change, protocol, snr_on, snr, values)
-        runs.append(("B", pb, on_b, snr_b, S.physics_from(cfg, vb, gradient=gradient)))
+        runs.append(("B", pb, on_b, snr_b, S.physics_from(cfg, vb, scanner=key)))
     for tag, prot, _, _, physics in runs:
-        table, ok = gradient_text(prot, source.shapes, scanner)
+        table, ok = gradient_text(cfg, prot, source.shapes, scanner)
         if not ok:
             raise ValueError(f"{scanner} cannot play run {tag}'s shells (square pulses):\n\n{table}")
         source.validate(prot, physics)
@@ -477,7 +482,11 @@ def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
     except Exception:
         return 480
     responses = uncached_responses(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest)
-    return S.estimated_seconds(cfg, protocol, density=density, knob=knob, n_keys=n_keys, ladder=ladder_on, responses=responses)
+    try:
+        machine = P.machine(cfg, scanner)
+    except ValueError:
+        return 480
+    return S.estimated_seconds(cfg, protocol, density=density, knob=knob, n_keys=n_keys, ladder=ladder_on, responses=responses, scanner=machine)
 
 
 def uncached_responses(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest):
@@ -621,8 +630,10 @@ def build(runner=None, cfg=None):
                         step_mm = gr.Slider(tc["step"][0], tc["step"][1], value=tc["step"][2], step=tc["step"][3], label=tc["step"][4])
                         key = gr.Number(value=0, precision=0, label="random key")
                         knob = gr.Dropdown(list(S.knobs(cfg)), value=NO_KNOB, label="B: the same run with one knob changed")
-                        scanner = gr.Dropdown([NO_SCANNER] + list(P.scanner_classes()), value=NO_SCANNER,
-                                              label="scanner gradient limit (the catalogue's classes): a shell it cannot play refuses the run")
+                        scanner = gr.Dropdown([IDEAL] + list(P.machines(cfg)), value=IDEAL,
+                                              label="scanner: a catalogued machine sets the field and its direction, plays every term "
+                                                    "its catalogue entry carries, and refuses a shell beyond its gradient limit")
+                        scanner_terms = gr.Markdown(P.scanner_text(cfg, IDEAL))
                         gradients = gr.Markdown()
                         n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
                         ladder_on = gr.Checkbox(value=not full, visible=not full, label=d["ladder"])
@@ -697,7 +708,16 @@ def build(runner=None, cfg=None):
                 prot = _protocol_from_inputs(S, cfg, preset_, n_b0_, *shells_, scheme=scheme_, full=full)
             except (ValueError, KeyError) as e:
                 return f"({e})"
-            return gradient_text(prot, shapes, scanner_)[0]
+            return gradient_text(cfg, prot, shapes, scanner_)[0]
+
+        def choose_scanner(label, field_now):
+            """The menu's machine: its term table, its field on the slider and the catalogue's tissue at it (the ideal
+            scanner keeps the field as set)."""
+            key = P.machine(cfg, label)
+            f = float(field_now) if key is None else float(P.limits(key).field_T)
+            return [P.scanner_text(cfg, label), f] + (S.catalogue_numbers(cfg, f) if key is not None else [gr.update()] * len(tissue_numbers))
+        scanner.change(choose_scanner, inputs=[scanner, widgets["field_T"]], outputs=[scanner_terms, widgets["field_T"]] + tissue_numbers,
+                       show_progress="hidden")
         for ctl in (preset, scanner, scheme_file, *shell_inputs):
             ctl.change(show_gradients, inputs=[preset, n_b0, scanner, scheme_file, *shell_inputs], outputs=gradients, show_progress="hidden")
         outputs = dict(result=result, headline=headline, dwi_view=dwi_view, tract_view=tract_view, mats=mats, timings=timings, tck=tck,

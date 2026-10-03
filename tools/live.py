@@ -39,7 +39,7 @@ def main():
     def inputs(preset, *, knob, n_keys=1, ladder=True):
         shells = [True, shapes[0], 1000, 30, 12.0, 24.0, 53.5, True, shapes[0], 3000, 45, 8.0, 20.0, 53.5,
                   False, shapes[0], 3000, 90, 17.0, 30.0, 53.5, False, shapes[0], 6000, 60, 17.0, 30.0, 53.5]
-        return [preset, 2, True, 30, tc["density"][2], tc["max_angle"][2], tc["step"][2], 0, None, knob, A.NO_SCANNER, n_keys, ladder, *physics, *shells]
+        return [preset, 2, True, 30, tc["density"][2], tc["max_angle"][2], tc["step"][2], 0, None, knob, A.IDEAL, n_keys, ladder, *physics, *shells]
 
     c = Client(a.space, token=get_token(), verbose=False, download_files=os.environ.get("LIVE_OUT", "/tmp/disco-live"), httpx_kwargs={"timeout": 900})
     for preset in a.preset or (S.presets(cfg)[0], A.CUSTOM):

@@ -89,7 +89,7 @@ def test_the_replay_is_dmipy_sims_phantom_composition(brain):
                               remainder=Inert(), orientation={wm: ODF(fod.reshape(n, 1, 1, 45), basis="tournier07"),
                                                               gm: ODF(iso.reshape(n, 1, 1, 45), basis="tournier07")})
     pose = B.specimen_pose(brain.asset.R, ph.b0_direction)
-    ref = phantom.replay(brain.sequence(meas, np.arange(len(meas.bvals)), pose), scanner=ph.scanner, pose=pose)[:, 0, 0, :]
+    ref = phantom.replay(brain.sequence(meas, np.arange(len(meas.bvals)), pose), scanner=ph.scanner_field, pose=pose)[:, 0, 0, :]
     got = (dwi * factor[..., None])[tuple(ijk.T)]
     live = np.isfinite(ref[:, 0])
     assert live.sum() > 150 and (np.isfinite(got[:, 0]) == live).all()
@@ -179,9 +179,9 @@ def test_the_panel_is_a_brain_physics_and_every_knob_changes_one_thing(brain):
     assert set(panel.fields) <= set(panel.controls()) and set(panel.catalogue) <= set(panel.fields)
     v = default_values(cfg)
     ph = B.Brain.physics_from(cfg, v)
-    assert ph.m0 == {"wm": 0.7, "gm": 0.85, "csf": 1.0} and ph.T2["wm"]["intra"] == pytest.approx(0.05) and ph.scanner == 3.0
+    assert ph.m0 == {"wm": 0.7, "gm": 0.85, "csf": 1.0} and ph.T2["wm"]["intra"] == pytest.approx(0.05) and ph.scanner_field == 3.0
     off = B.Brain.physics_from(cfg, {**v, "on": False})
-    assert off.bare and off.m0 == ph.m0 and off.scanner is None and off.wm_pack == ph.wm_pack
+    assert off.bare and off.m0 == ph.m0 and off.scanner_field is None and off.wm_pack == ph.wm_pack
     prot = P.preset_protocol(cfg, "clinical b1000 x 30")
     for label, change in B.Brain.knobs(cfg).items():
         if change is None:
@@ -255,7 +255,7 @@ def test_the_brain_page_runs_a_to_b_on_a_small_crop(tmp_path, monkeypatch):
     panel = B.Brain.panel(cfg)
     physics = [default_values(cfg)[k] for k in panel.fields]
     shells = [True, "d12-D24", 1000, 12, 10.0, 20.0, 60.0] + [False, "d12-D24", 2000, 12, 10.0, 20.0, 60.0] * 3
-    args = ["research 3-shell x 90", 1, True, 30, 1, 45.0, 1.25, 0, None, "field tier → off", A.NO_SCANNER, 2, True, *physics, *shells]
+    args = ["research 3-shell x 90", 1, True, 30, 1, 45.0, 1.25, 0, None, "field tier → off", A.IDEAL, 2, True, *physics, *shells]
     out = list(A.run_pipeline(A.compute, *args))
     final = out[-1]
     assert len(final) == len(A.OUTPUTS)
@@ -289,7 +289,7 @@ def test_the_worker_computes_what_the_page_has_not_cached_and_the_page_keeps_it(
     monkeypatch.setattr(A, "_load", lambda: dict(error=None, source=page, cfg=cfg))
     v = default_values(cfg)
     physics = [v[k] for k in B.Brain.panel(cfg).fields]
-    args = ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, "B0 direction → " + list(B.B0_MODES)[1], A.NO_SCANNER, 1, True, *physics] + [False] * 28
+    args = ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, "B0 direction → " + list(B.B0_MODES)[1], A.IDEAL, 1, True, *physics] + [False] * 28
     prepared = A.prepare_runs(*args)
     assert set(prepared["runs"]) == {"A", "B"} and all(k is None for k in [*prepared["runs"].values(), *prepared["ladder"]]) and len(prepared["ladder"]) == 3
     runs = A.plan_runs(cfg, page, *args[:4], args[8], args[9], args[10], v, [False] * 28)
@@ -330,13 +330,13 @@ def test_the_reservation_prices_the_responses_the_page_has_not_cached(monkeypatc
     monkeypatch.setattr(A.P, "config", lambda path=None: cfg)
     v = default_values(cfg)
     physics = [v[k] for k in B.Brain.panel(cfg).fields]
-    args = lambda knob, ladder=True: ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, knob, A.NO_SCANNER, 1, ladder, *physics] + [False] * 28
+    args = lambda knob, ladder=True: ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, knob, A.IDEAL, 1, ladder, *physics] + [False] * 28
     seven = "field → 7 T (catalogue tissue at that field)"
     cold = A.uncached_responses(*args(P.NO_KNOB))
     saves = 1002                                              # the 100 ms WM pack's one window
     assert cold == [("cold", 31, saves), ("no_field", 31, saves), ("no_field", 31, saves), ("no_field", 31, saves)]
     prot = P.preset_protocol(cfg, "clinical b1000 x 30")
-    for (_, meas, ph) in A.response_entries(page, A.plan_runs(cfg, page, *args(P.NO_KNOB)[:4], None, P.NO_KNOB, A.NO_SCANNER, v, [False] * 28), True):
+    for (_, meas, ph) in A.response_entries(page, A.plan_runs(cfg, page, *args(P.NO_KNOB)[:4], None, P.NO_KNOB, A.IDEAL, v, [False] * 28), True):
         page.prepare(meas, ph)
     assert A.uncached_responses(*args(P.NO_KNOB)) == []
     assert A.uncached_responses(*args(seven)) == [("cold", 31, saves)]
@@ -347,14 +347,14 @@ def test_the_reservation_prices_the_responses_the_page_has_not_cached(monkeypatc
     before = A.estimated_seconds(*args(seven))
     cold_price = b["response_cold"]["fixed"] + 31 * b["response_cold"]["per_meas"] + saves * b["response_cold"]["per_save"]
     assert abs((before - base) - b["margin"] * cold_price) <= 1
-    runs = A.plan_runs(cfg, page, *args(seven)[:4], None, seven, A.NO_SCANNER, v, [False] * 28)
+    runs = A.plan_runs(cfg, page, *args(seven)[:4], None, seven, A.IDEAL, v, [False] * 28)
     meas_b, ph_b = A.response_entries(page, runs, False)[1][1:]
     worker = B.Brain(cfg)
     page.keep({page.response_key(meas_b, ph_b): worker.prepare(meas_b, ph_b)})
     assert A.uncached_responses(*args(seven)) == [] and A.estimated_seconds(*args(seven)) == base < before
     seven_both = dict(v, field_T=7.0)                         # A at 7 T (cold), B its other direction: warm after A
     physics7 = [seven_both[k] for k in B.Brain.panel(cfg).fields]
-    a7 = ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, "B0 direction → " + list(B.B0_MODES)[1], A.NO_SCANNER, 1, False, *physics7] + [False] * 28
+    a7 = ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, "B0 direction → " + list(B.B0_MODES)[1], A.IDEAL, 1, False, *physics7] + [False] * 28
     assert A.uncached_responses(*a7) == [("cold", 31, saves), ("warm", 31, saves)]
 
 
@@ -611,21 +611,22 @@ def test_the_warm_set_has_one_entry_per_response_and_the_high_fields_last():
 
 @has_fixture
 @has_packs
-def test_a_gradient_system_plays_every_pulse_at_its_slew():
-    """``BrainPhysics.gradient`` names a class of dmipy-sim's scanner catalogue: the pulses are trapezoids with ramps at
-    its slew (the same b, the same amplitude within the ramp's share), the response key tells the systems apart, the
-    label names the system, a name outside the catalogue is refused by name, and the fixture's prepare runs at a
-    finite slew within the packs' band."""
+def test_a_machine_plays_every_pulse_at_its_slew_and_field():
+    """``BrainPhysics.scanner`` names a machine of dmipy-sim's catalogue: the pulses are trapezoids with ramps at its
+    slew (the same b), its field and direction replace the panel's, the response key tells the machines apart, the label
+    names it, a magnet with its own gradient (the Swoop) is refused by name, and a name outside the catalogue too."""
     cfg = brain_cfg()
     src = B.Brain(cfg, asset=FIXTURE)
     values = default_values(cfg)
     ideal = B.Brain.physics_from(cfg, values)
-    real = B.Brain.physics_from(cfg, values, gradient="connectom")
-    assert ideal.gradient is None and np.isinf(ideal.slew_rate)
-    assert real.gradient == "connectom" and real.slew_rate == pytest.approx(200.0)
-    assert "connectom gradients (200 T/m/s)" in real.label() and "gradients" not in ideal.label()
-    with pytest.raises(ValueError, match="scanner catalogue"):
-        B.Brain.physics_from(cfg, values, gradient="a magnet nobody built")
+    real = B.Brain.physics_from(cfg, dict(values, field_T=1.5), scanner="siemens_magnetom_terra_7T")
+    assert ideal.scanner is None and np.isinf(ideal.slew_rate)
+    assert real.scanner == "siemens_magnetom_terra_7T" and real.slew_rate == pytest.approx(200.0) and real.field_T == 7.0
+    assert real.b0_direction == (0.0, 0.0, 1.0) and "on the siemens_magnetom_terra_7T" in real.label() and "on the" not in ideal.label()
+    with pytest.raises(ValueError, match="two-directional"):
+        B.Brain.physics_from(cfg, values, scanner="hyperfine_swoop_64mT")
+    with pytest.raises(Exception):
+        B.Brain.physics_from(cfg, values, scanner="a magnet nobody built")
     prot = src.protocol(cfg, src.presets(cfg)[0])
     meas = P.measurements(prot, src.shapes)
     rows = np.flatnonzero(meas.shape == meas.shape[0])
@@ -634,21 +635,82 @@ def test_a_gradient_system_plays_every_pulse_at_its_slew():
     assert np.max(square.encoding.ramp_time) == 0.0 and np.max(trap.encoding.ramp_time) > 0.0
     np.testing.assert_allclose(trap.b(), square.b(), rtol=1e-6)                 # measured 1.8e-7: the trapezoid sampled on the 1000-sample grid
     assert src.response_key(meas, real) != src.response_key(meas, ideal)
-    assert np.isfinite(src.prepare(meas, real).wm).all()
+
+
+@has_fixture
+def test_the_head_sits_at_isocentre_at_its_physical_offsets():
+    """The bore grid puts every brain voxel at its affine's place relative to the head centre (the left-handed
+    affine's third index reversed, not mirrored), with non-negative indices a phantom can take."""
+    src = B.Brain(brain_cfg(), asset=FIXTURE)
+    grid, idx = src.bore_grid
+    A = src.affine
+    truth = (A[:3, :3] @ src.vox.T).T * 1e-3 + A[:3, 3] * 1e-3
+    np.testing.assert_allclose(grid.offset_m(idx) @ np.asarray(grid.to_scanner).T, truth - truth.mean(0), atol=1e-12)
+    assert idx.min() >= 0 and np.all(idx.max(0) < np.asarray(grid.shape))
 
 
 @has_fixture
 @has_packs
-def test_the_warm_set_holds_the_scan_on_every_gradient_system_that_can_play_it():
-    """After the knobs, ``warm_entries`` adds the scan's protocol on each catalogue gradient system with a field that
-    can play its shells, at the system's field with its slew; a system that cannot play the scan is left out."""
+def test_a_machine_plays_each_voxel_its_encoding_class_and_a_representative_exactly():
+    """On the Prisma, the clinical preset: every voxel is played its encoding class (the delivered b of every member
+    within the configured tolerance of its class's), and a class's first member -- the voxel whose exact values the
+    class was composed from -- gets exactly what its own delivered acquisition, expanded by the packs and composed with
+    its FOD and fractions, gives: the replay to 1e-5 in M0 units; the machine moves the image off the ideal scanner's."""
+    from dmipy_sim.phantom import FreeWater
+    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    cfg = brain_cfg()
+    src = B.Brain(cfg, asset=FIXTURE)
+    values = default_values(cfg)
+    ph = B.Brain.physics_from(cfg, values, scanner="siemens_magnetom_prisma_3T")
+    ideal = B.Brain.physics_from(cfg, values)
+    prot = B.Brain.protocol(cfg, "clinical b1000 x 30")
+    meas = src.validate(prot, ph)
+    k = src.prepare(meas, ph)
+    dwi, _, factor, _ = src.replay(meas, ph, k)
+    dwi0, _, factor0, _ = src.replay(meas, ideal, src.prepare(meas, ideal))
+    rows = np.flatnonzero(meas.shape == meas.shape[0])
+    cls, played = src.encoding(meas, ph, rows)
+    assert 1 < len(played) < 50 and k.wm.shape[0] == len(played)
+    b_class = np.array([p.b() for p in played])                                # (n_classes, n_meas)
+    grid, idx = src.bore_grid
+    tol = float(cfg["scanners"]["tolerance"])
+    rng = np.random.default_rng(1)
+    for v in rng.choice(len(idx), 40, replace=False):
+        _, own = encoding_classes(P.limits(ph.scanner), grid, src.sequence(meas, rows, np.eye(3), ph.slew_rate), idx[v:v + 1], tolerance=None)
+        b = own[0].b(); nz = meas.bvals[rows] > 50
+        assert np.max(np.abs(b[nz] / b_class[cls[v]][nz] - 1)) < 2 * tol
+    pose = B.specimen_pose(src.asset.R, ph.b0_direction)
+    wm_pack, gm_pack = src.pack("wm", ph.wm_pack, 1), src.pack("gm", ph.gm_pack, 1)
+    t_wm, t_gm, t_csf = ph.tissues(src.pools(wm_pack), src.pools(gm_pack))
+    reps = [int(np.flatnonzero(cls == c)[0]) for c in range(len(played))]
+    reps = [v for v in reps if np.isfinite(factor[tuple(src.vox[v])])][:4]          # a class's first member may hold no signal
+    assert reps
+    for v in reps:
+        _, own = encoding_classes(P.limits(ph.scanner), grid, src.sequence(meas, rows, np.eye(3), ph.slew_rate), idx[v:v + 1], tolerance=None)
+        seq = rotate_waveform(own[0], pose)
+        Cw = wm_pack.pose_responses([seq], tissue=t_wm, scanner=ph.scanner_field, pose=pose, keep=(B.LMAX, 0))[0].retained(B.LMAX, 0) @ B.axis_map()
+        eg = gm_pack.pose_responses([seq], tissue=t_gm, scanner=ph.scanner_field, pose=pose, keep=(0, 0))[0].retained(0, 0)[:, 0] * B.axis_map()[0, 0] * B.C00
+        ec = FreeWater(m0=1.0, tissue=t_csf).response(seq)
+        f = src.f[v].astype(np.float64); m0 = ph.m0
+        ref = np.abs(f[0] * m0["wm"] * (src.fod_unit[v].astype(np.float64) @ Cw.T) + f[1] * m0["gm"] * eg + f[2] * m0["csf"] * ec)
+        got = (dwi * factor[..., None])[tuple(src.vox[v])][rows]
+        assert np.max(np.abs(got - ref)) < 1e-5, (v, np.max(np.abs(got - ref)))
+    moved = np.nanmax(np.abs(dwi * factor[..., None] - dwi0 * factor0[..., None]))
+    assert moved > 1e-3
+
+
+@has_fixture
+@has_packs
+def test_the_warm_set_holds_the_scan_on_every_machine_that_can_play_it():
+    """After the knobs, ``warm_entries`` adds the scan's protocol on each machine of the menu that can play its
+    shells, at the machine's field with its slew; a machine that cannot play the scan is left out."""
     cfg = brain_cfg()
     src = B.Brain(cfg, asset=FIXTURE)
     scan = src.protocol(cfg, src.presets(cfg)[0])
-    can = {name for name, (g, f) in P.scanner_classes().items() if f is not None and all(r[-1] for r in P.playable(scan, src.shapes, name))}
-    cannot = {name for name, (g, f) in P.scanner_classes().items() if f is not None} - can
-    got = {ph.gradient: ph for m, ph in src.warm_entries() if ph.gradient is not None}
+    menu = P.machines(cfg).values()
+    can = {key for key in menu if all(r[-1] for r in P.playable(scan, src.shapes, key))}
+    got = {ph.scanner: ph for m, ph in src.warm_entries() if ph.scanner is not None}
     assert set(got) == can and can
-    for name, ph in got.items():
-        assert ph.field_T == pytest.approx(P.scanner_classes()[name][1]) and ph.slew_rate == pytest.approx(P.scanner_classes()[name][0] * 0 + __import__("dmipy_sim.acquisition.scanners", fromlist=["ScannerLimits"]).ScannerLimits.of(name).slew_max)
-    assert not (cannot & set(got))
+    for key, ph in got.items():
+        assert ph.field_T == pytest.approx(P.limits(key).field_T) and ph.slew_rate == pytest.approx(P.limits(key).slew_max)

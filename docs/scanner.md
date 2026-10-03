@@ -74,7 +74,7 @@ played. A machine enters by replacing `g u` with the delivered vector and adding
   one (`epg.transmit_amplitude`): `sin^3(90 kappa)` for the spin echo, `0.5 sin^3(90 kappa)` over `0.5` for the
   stimulated echo.
 
-dmipy-sim#556 holds this against the reference route at 1e-7, for each machine with every term on: each voxel's
+dmipy-sim#560 holds this against the reference route at 1e-7, for each machine with every term on: each voxel's
 acquisition rebuilt through `ScannerSequence.with_gradient_nonlinearity / with_background_gradient /
 with_concomitant` and replayed walker by walker. The cost per run is one `(n_voxels, n_meas, 3)` array of delivered
 vectors on the host (`bore.delivered_moments`, closed forms only) and a per-tile gather in the kernel.
@@ -99,7 +99,7 @@ Measured on the scan's 485 measurements with the CACTUS 100 ms pack (gaia's CPU,
   corrupts its heap in the pose expansion's lab-side product, so `tools/measure_scanners.py` ran with
   `OPENBLAS_NUM_THREADS=1`. The contraction is unchanged, 0.09-0.10 s on the CPU.
 - **Ramps:** the scanner's slew makes the Maxwell gradient a rank-2 waveform, which used to send every class to the
-  quadrature at 35 s per measurement. dmipy-sim#556 takes its principal direction when the residual's phase, bounded
+  quadrature at 35 s per measurement. dmipy-sim#561 takes its principal direction when the residual's phase, bounded
   over every pose, stays under a tenth of the floor (bound 3.3e-6 at 6 cm on the Prisma), and adds the bound to the
   misfit.
 - **Pricing:** the warm-up computes the scan protocol at each machine when the container starts, which is not charged

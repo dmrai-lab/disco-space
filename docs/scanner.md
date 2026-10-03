@@ -132,7 +132,7 @@ All runs are noiseless and the reference is the ideal scanner at the machine's f
 delivered gradient and the transmit scale differ.
 
 **DiSCo, phantom centre 7.9 cm from isocentre along R-L.** The layout was replayed on gaia's CPU from the stamped
-layout (`effects/disco_effects.py`), CSD order 8, 659,840 seeds.
+layout (`tools/scanner_disco_effects.py`, `LAYOUT=` the stamped layout), CSD order 8, 659,840 seeds.
 
 | machine | protocol (what it can play) | connectome Pearson vs strand count, ideal -> machine | direction-mean shell change (median, 1-99 %) | per-measurement abs(dS), median / 99 % | S0 |
 |---|---|---|---|---|---|
@@ -140,7 +140,7 @@ layout (`effects/disco_effects.py`), CSD order 8, 659,840 seeds.
 | Prisma 3 T | research 3-shell x 90 (b 1000 / 2000 / 3000) | 0.925 -> 0.924 | -1.0 / -1.7 / -2.3 % | 0.0066-0.0081 / 0.0081-0.0090 (floor 0.0074) | 1 |
 | Terra 7 T | the same | 0.919 -> 0.917 | -0.9 / -1.7 / -2.2 % | the same | 1 |
 
-The Swoop's terms one at a time on its shell (per-measurement abs(dS), median / 99 %):
+The Swoop's terms one at a time on its shell (`tools/scanner_disco_terms.py`; per-measurement abs(dS), median / 99 %):
 
 | term | median | 99 % |
 |---|---|---|
@@ -156,7 +156,7 @@ every direction's b alike (+2.4 % at 7.9 cm transverse). The shells drop by perc
 connectome keep.
 
 **The brain, head centre at isocentre.** Delivered b over the b = 1000 shell (96 directions, square pulses,
-`effects/brain_bmap.py`):
+`tools/scanner_brain_bmap.py`):
 
 | machine | direction-mean b / b (1 %, median, 99 %) | per direction (min, max) | transmit scale |
 |---|---|---|---|

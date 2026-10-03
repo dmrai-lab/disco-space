@@ -88,18 +88,24 @@ composed per class from a member's exact values (`ScannerSequence.with_*`) and e
 composes its own class's responses with its FOD and fractions. This is exactly `Phantom.compose(...).replay(seq,
 scanner=ScannerLimits, encoding_tolerance=tol)`, which the brain's tests hold it to.
 
-Measured on the scan's 485 measurements at the CACTUS 100 ms pack (gaia CPU, 8 threads, every tier at 3 T):
+Measured on the scan's 485 measurements with the CACTUS 100 ms pack (gaia's CPU, every tier on):
 
 - **Classes:** the Prisma and the Terra deliver between -2.2 % and +2.7 % of the nominal b over the head; 3 classes at
   3 % of b, 6 at 1 %, 18 at 0.3 %.
-- **Cost per class:** 25 s, against 4.5 s for the commanded protocol. Every row of a class now plays its own
-  amplitude, so the shells no longer share a body.
+- **Cost per class:** 25 s, against 4.5 s for the commanded protocol (8 BLAS threads). Every row of a class now
+  plays its own amplitude, so the shells no longer share a body. The whole MASiVar head at the 1 % tolerance gives
+  6 classes on each cylinder. `prepare` takes 354 s on the Prisma against 13.6 s on the ideal scanner at 3 T, and
+  405 s on the Terra against 41.9 s at 7 T. Those are single-threaded BLAS figures: gaia's multithreaded OpenBLAS
+  corrupts its heap in the pose expansion's lab-side product, so `tools/measure_scanners.py` ran with
+  `OPENBLAS_NUM_THREADS=1`. The contraction is unchanged, 0.09-0.10 s on the CPU.
 - **Ramps:** the scanner's slew makes the Maxwell gradient a rank-2 waveform, which used to send every class to the
   quadrature at 35 s per measurement. dmipy-sim#556 takes its principal direction when the residual's phase, bounded
   over every pose, stays under a tenth of the floor (bound 3.3e-6 at 6 cm on the Prisma), and adds the bound to the
   misfit.
 - **Pricing:** the warm-up computes the scan protocol at each machine when the container starts, which is not charged
-  to a visitor. A custom protocol at a machine is priced at its classes in the reservation.
+  to a visitor. A run of it then costs what the ideal scanner's does. A custom protocol at a machine is priced at its
+  classes in the reservation (`response_per_class`). For the scan protocol that comes to the 480 s cap, which no
+  visitor's quota covers, so only what the warm-up cached is runnable on a machine.
 
 ## What is refused, and why
 
@@ -119,3 +125,44 @@ Measured on the scan's 485 measurements at the CACTUS 100 ms pack (gaia CPU, 8 t
   gradient limit still refuses what it cannot play. On DiSCo's TE 53.5 ms classes this leaves the Swoop (23 mT/m)
   b-values up to about 350 s/mm² (δ 17.7 / Δ 35.8 ms), and the Prisma and Terra (80 mT/m) the clinical and research
   presets but not DiSCo 364.
+
+## Measured effects
+
+All runs are noiseless and the reference is the ideal scanner at the machine's field and direction, so only the
+delivered gradient and the transmit scale differ.
+
+**DiSCo, phantom centre 7.9 cm from isocentre along R-L.** The layout was replayed on gaia's CPU from the stamped
+layout (`effects/disco_effects.py`), CSD order 8, 659,840 seeds.
+
+| machine | protocol (what it can play) | connectome Pearson vs strand count, ideal -> machine | direction-mean shell change (median, 1-99 %) | per-measurement abs(dS), median / 99 % | S0 |
+|---|---|---|---|---|---|
+| Swoop 64 mT | b 350 x 60 on δ 17.7 / Δ 35.8 ms | **0.927 -> 0.650** | +0.01 % (-0.2, +0.3 %) | 0.0080 / 0.0177 (floor 0.0024) | 0.90 |
+| Prisma 3 T | research 3-shell x 90 (b 1000 / 2000 / 3000) | 0.925 -> 0.924 | -1.0 / -1.7 / -2.3 % | 0.0066-0.0081 / 0.0081-0.0090 (floor 0.0074) | 1 |
+| Terra 7 T | the same | 0.919 -> 0.917 | -0.9 / -1.7 / -2.2 % | the same | 1 |
+
+The Swoop's terms one at a time on its shell (per-measurement abs(dS), median / 99 %):
+
+| term | median | 99 % |
+|---|---|---|
+| background g0 | 0.0074 | 0.0171 |
+| nonlinearity | 0.0040 | 0.0117 |
+| Maxwell | 0.0002 | 0.0009 |
+| transmit | 0 | 0 |
+
+The transmit scale cancels in the S0-normalised DWI; it shows only in S0 (0.90). The background's cross term flips
+with the direction, so the direction mean hides it (+0.02 %). The connectome does not hide it: the shell's angular
+contrast at b 350 is of the same order as the term. The cylinders' class model is an isotropic scale, so it moves
+every direction's b alike (+2.4 % at 7.9 cm transverse). The shells drop by percent while the FOD shape and the
+connectome keep.
+
+**The brain, head centre at isocentre.** Delivered b over the b = 1000 shell (96 directions, square pulses,
+`effects/brain_bmap.py`):
+
+| machine | direction-mean b / b (1 %, median, 99 %) | per direction (min, max) | transmit scale |
+|---|---|---|---|
+| Swoop (199 voxels beyond its 8 cm anchor excluded) | 0.983, 1.001, 1.021 | 0.83, 1.27 | 0.95-1.17 |
+| Prisma | 0.982, 1.004, 1.021 | 0.977, 1.027 | not catalogued |
+| Terra | 0.982, 1.004, 1.021 | 0.977, 1.027 | not catalogued |
+
+On the brain page the Prisma and the Terra move the replayed image by a median 2.4e-4 and at most 3.1e-3 in M0
+units (scan protocol, 6 classes each).

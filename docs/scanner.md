@@ -91,24 +91,31 @@ composed per class from a member's exact values (`ScannerSequence.with_*`) and e
 composes its own class's responses with its FOD and fractions. This is exactly `Phantom.compose(...).replay(seq,
 scanner=ScannerLimits, encoding_tolerance=tol)`, which the brain's tests hold it to.
 
-Measured on the scan's 485 measurements with the CACTUS 100 ms pack (gaia's CPU, every tier on):
+Measured at this pin on MASiVar's head (71,052 voxels, the scan's 485 measurements, the default packs: CACTUS 1 s in
+125 ms windows, grey-matter spheres 250 ms; every tier on; `tools/measure_scanners.py`, JAX on gaia's GH200, the
+contraction in torch on the same device, 2026-10-04):
 
-- **Classes:** the Prisma and the Terra deliver between -2.2 % and +2.7 % of the nominal b over the head; 3 classes at
-  3 % of b, 6 at 1 %, 18 at 0.3 %.
-- **Cost per class:** 25 s, against 4.5 s for the commanded protocol (8 BLAS threads). Every row of a class now
-  plays its own amplitude, so the shells no longer share a body. The whole MASiVar head at the 1 % tolerance gives
-  6 classes on each cylinder. `prepare` takes 354 s on the Prisma against 13.6 s on the ideal scanner at 3 T, and
-  405 s on the Terra against 41.9 s at 7 T. Those are single-threaded BLAS figures: gaia's multithreaded OpenBLAS
-  corrupts its heap in the pose expansion's lab-side product, so `tools/measure_scanners.py` ran with
-  `OPENBLAS_NUM_THREADS=1`. The contraction is unchanged, 0.09-0.10 s on the CPU.
+| | encoding classes at 1 % of b | `prepare` (pose responses), s | of it WM / GM, s | replay (contraction) first / steady, s | image vs the ideal scanner at its field, M0 units, median / max |
+|---|---|---|---|---|---|
+| ideal at 3 T | 1 | 9.2 | | 0.10 / 0.04 | |
+| Prisma 3 T | 6 | 167.9 | 157.2 / 9.4 | 0.05 / 0.05 | 1.9e-4 / 2.7e-3 |
+| ideal at 7 T | 1 | 18.9 | | 0.04 / 0.04 | |
+| Terra 7 T | 6 | 111.3 | 103.2 / 6.9 | 0.04 / 0.04 | 1.9e-4 / 2.7e-3 |
+
+- **Classes:** the Prisma and the Terra deliver between -2.3 % and +2.7 % of the nominal b over the head (the
+  delivered-b table below), which the 1 % tolerance bins into 6 classes each.
+- **Cost per class:** 18-28 s of pose responses on the GH200, against 9-19 s for the whole commanded protocol on the
+  ideal scanner. Every row of a class plays its own amplitude, so the shells no longer share a body. The contraction
+  is unchanged. Not re-measured here: the CPU figures of the previous pin (`prepare` 354 s on the Prisma and 405 s on
+  the Terra with single-threaded BLAS, on the 100 ms CACTUS pack, since deleted from the Hub).
 - **Ramps:** the scanner's slew makes the Maxwell gradient a rank-2 waveform, which used to send every class to the
-  quadrature at 35 s per measurement. dmipy-sim#561 takes its principal direction when the residual's phase, bounded
-  over every pose, stays under a tenth of the floor (bound 3.3e-6 at 6 cm on the Prisma), and adds the bound to the
-  misfit.
+  quadrature at 35 s per measurement. The closed form takes its principal direction when the residual's phase, bounded
+  over every pose, stays under a tenth of the floor, and adds the bound to the misfit (dmipy-sim#561, merged as #573).
 - **Pricing:** the warm-up computes the scan protocol at each machine when the container starts, which is not charged
   to a visitor. A run of it then costs what the ideal scanner's does. A custom protocol at a machine is priced at its
   classes in the reservation (`response_per_class`). For the scan protocol that comes to the 480 s cap, which no
-  visitor's quota covers, so only what the warm-up cached is runnable on a machine.
+  visitor's quota covers (measured again here: the scan on either machine prices at 16,296 cold rows and reserves the
+  480 s cap), so only what the warm-up cached is runnable on a machine.
 
 ## What is refused, and why
 
@@ -168,13 +175,13 @@ every direction's b alike (+2.4 % at 7.9 cm transverse). The shells drop by perc
 connectome keep.
 
 **The brain, head centre at isocentre.** Delivered b over the b = 1000 shell (96 directions, square pulses,
-`tools/scanner_brain_bmap.py`):
+`tools/scanner_brain_bmap.py`, re-measured at this pin on the bore grid of the plain index):
 
 | machine | direction-mean b / b (1 %, median, 99 %) | per direction (min, max) | transmit scale |
 |---|---|---|---|
-| Swoop (199 voxels beyond its 8 cm anchor excluded) | 0.983, 1.001, 1.021 | 0.83, 1.27 | 0.95-1.17 |
+| Swoop (196 voxels beyond its 8 cm anchor excluded) | 0.983, 1.001, 1.021 | 0.83, 1.27 | 0.95-1.17 |
 | Prisma | 0.982, 1.004, 1.021 | 0.977, 1.027 | not catalogued |
 | Terra | 0.982, 1.004, 1.021 | 0.977, 1.027 | not catalogued |
 
-On the brain page the Prisma and the Terra move the replayed image by a median 2.4e-4 and at most 3.1e-3 in M0
-units (scan protocol, 6 classes each).
+On the brain page the Prisma and the Terra move the replayed image by a median 1.9e-4 and at most 2.7e-3 in M0
+units (scan protocol, 6 classes each, the default packs; the table above).

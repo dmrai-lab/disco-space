@@ -150,8 +150,9 @@ contraction in torch on the same device, 2026-10-04):
 All runs are noiseless and the reference is the ideal scanner at the machine's field and direction, so only the
 delivered gradient and the transmit scale differ.
 
-**DiSCo, phantom centre 7.9 cm from isocentre along R-L.** The layout was replayed on gaia's CPU from the stamped
-layout (`tools/scanner_disco_effects.py`, `LAYOUT=` the stamped layout), CSD order 8, 659,840 seeds.
+**DiSCo, phantom centre 7.9 cm from isocentre along R-L.** Re-measured at this pin on gaia's GH200 from the published
+layout at revision 2db4e78 (`tools/scanner_disco_effects.py`, `LAYOUT=` its local copy), CSD order 8, 659,840 seeds;
+every number below is the previous pin's to the digits shown.
 
 | machine | protocol (what it can play) | connectome Pearson vs strand count, ideal -> machine | direction-mean shell change (median, 1-99 %) | per-measurement abs(dS), median / 99 % | S0 |
 |---|---|---|---|---|---|
@@ -159,7 +160,8 @@ layout (`tools/scanner_disco_effects.py`, `LAYOUT=` the stamped layout), CSD ord
 | Prisma 3 T | research 3-shell x 90 (b 1000 / 2000 / 3000) | 0.925 -> 0.924 | -1.0 / -1.7 / -2.3 % | 0.0066-0.0081 / 0.0081-0.0090 (floor 0.0074) | 1 |
 | Terra 7 T | the same | 0.919 -> 0.917 | -0.9 / -1.7 / -2.2 % | the same | 1 |
 
-The Swoop's terms one at a time on its shell (`tools/scanner_disco_terms.py`; per-measurement abs(dS), median / 99 %):
+The Swoop's terms one at a time on its shell (`tools/scanner_disco_terms.py`, re-measured the same way; per-measurement
+abs(dS), median / 99 %):
 
 | term | median | 99 % |
 |---|---|---|

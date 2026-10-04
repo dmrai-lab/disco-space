@@ -153,33 +153,36 @@ machinery are the same; the source (`space/sources/brain.py`) is a real brain co
 
 **The gate at the current pins** (dmipy-sim 1b79d2e, dmipy-fit c3dcc54, dmipy-tract 7da22c3, the layout at dataset
 revision 2db4e78): DiSCo 364, noiseless, 659,840 seeds, deterministic XLA ops, JAX on gaia's GH200 (a shared box,
-XLA memory fraction 0.3), 2026-10-04; `tests/test_acceptance.py`, 7 of 7 passed.
+XLA memory fraction 0.3), 2026-10-04; `tests/test_acceptance.py`, 7 of 7 passed in each of two runs.
 
-| stage | GH200 first call (s) | GH200 steady (s) |
-|---|---|---|
-| layout on the device (once per process, the Hub download into an empty cache included) | 281.8 | |
-| replay, 364 measurements on 3 timing classes | 1.46 | 1.47 |
-| CSD (response + `csd_tournier07_jax`, order 8) | 2.78 | 0.37 |
-| tracking (probabilistic, density 4) | 14.8 | 1.17 |
-| whole pipeline | 19.2 | 3.18 |
+Two runs: the first with an empty Hub cache, the second right after it.
 
-Score: Pearson 0.9270634171621878 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected (25 in
-the ground truth: 95 false, 0 missed), the same Pearson to the last digit as the L40S and L4 runs below. The replay of
-the DiSCo 364 protocol from the layout is within 2.01e-7 of the published bare reference volume on every one of the
-31,802 voxels with signal (1.89e-7 at 3 T and 1.91e-7 at 7 T with every tier on).
+| stage | run 1 first call (s) | run 1 steady (s) | run 2 first call (s) | run 2 steady (s) |
+|---|---|---|---|---|
+| layout on the device (once per process; run 1 includes the Hub download into an empty cache) | 281.8 | | 20.9 | |
+| replay, 364 measurements on 3 timing classes | 1.46 | 1.47 | 1.55 | 1.77 |
+| CSD (response + `csd_tournier07_jax`, order 8) | 2.78 | 0.37 | 2.00 | 0.57 |
+| tracking (probabilistic, density 4) | 14.8 | 1.17 | 9.85 | 1.99 |
+| whole pipeline | 19.2 | 3.18 | 13.6 | 4.51 |
+
+Score in both runs: Pearson 0.9270634171621878 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs
+connected (25 in the ground truth: 95 false, 0 missed), the same Pearson to the last digit as the L40S and L4 runs
+below. The replay of the DiSCo 364 protocol from the layout is within 2.01e-7 of the published bare reference volume
+on every one of the 31,802 voxels with signal (1.89e-7 at 3 T and 1.91e-7 at 7 T with every tier on), in both runs.
 
 Each machine of the scanner menu at 7.9 cm from isocentre along R-L on DiSCo 364 (`gate_scanners.json`; the replay
 alone, against the ideal scanner at the machine's field and direction; none of the three can play DiSCo 364 on the
 page, the gate times it at the gate's protocol):
 
-| scanner | replay first / steady (s) | ideal at its field, first / steady (s) | max abs(dS) vs ideal |
+| scanner | machine replay first / steady (s), runs 1; 2 | ideal at its field, first / steady (s), runs 1; 2 | max abs(dS) vs ideal |
 |---|---|---|---|
-| Hyperfine Swoop 64 mT (with the layout's background moments) | 7.67 / 5.24 | 6.77 / 1.93 | 0.058 |
-| Siemens Prisma 3 T | 5.37 / 3.30 | 1.94 / 1.91 | 0.0099 |
-| Siemens Terra 7 T | 3.31 / 3.33 | 1.97 / 1.93 | 0.0098 |
+| Hyperfine Swoop 64 mT (with the layout's background moments) | 7.67 / 5.24; 8.69 / 6.82 | 6.77 / 1.93; 8.30 / 2.84 | 0.058 |
+| Siemens Prisma 3 T | 5.37 / 3.30; 5.54 / 4.87 | 1.94 / 1.91; 2.59 / 3.17 | 0.0099 |
+| Siemens Terra 7 T | 3.31 / 3.33; 5.52 / 3.61 | 1.97 / 1.93; 3.42 / 3.11 | 0.0098 |
 
-A machine's steady replay adds 1.4 s (the Prisma, the Terra) to 3.3 s (the Swoop, its background columns) to the
-ideal scanner's 1.9 s: the delivered vectors on the host and the per-tile gather.
+In run 1, on a quiet device, a machine's steady replay adds 1.4 s (the Prisma, the Terra) to 3.3 s (the Swoop, its
+background columns) to the ideal scanner's 1.9 s: the delivered vectors on the host and the per-tile gather. Run 2's
+steady replays are 0.3-1.6 s higher, the ideal scanner's included: the box is shared.
 
 **Earlier pins, not re-measured at the current one** (dmipy-sim 22fc873 / a184a8f, 2026-09-29), the gate on the same
 protocol:

@@ -651,7 +651,7 @@ def test_a_machine_plays_every_pulse_at_its_slew_and_field():
     assert ideal.scanner is None and np.isinf(ideal.slew_rate)
     assert real.scanner == "siemens_magnetom_terra_7T" and real.slew_rate == pytest.approx(200.0) and real.field_T == 7.0
     assert real.b0_direction == (0.0, 0.0, 1.0) and "on the siemens_magnetom_terra_7T" in real.label() and "on the" not in ideal.label()
-    with pytest.raises(ValueError, match="two-directional"):
+    with pytest.raises(ValueError, match="not on the brain's scanner menu"):
         B.Brain.physics_from(cfg, values, scanner="hyperfine_swoop_64mT")
     with pytest.raises(Exception):
         B.Brain.physics_from(cfg, values, scanner="a magnet nobody built")
@@ -663,6 +663,23 @@ def test_a_machine_plays_every_pulse_at_its_slew_and_field():
     assert np.max(square.encoding.ramp_time) == 0.0 and np.max(trap.encoding.ramp_time) > 0.0
     np.testing.assert_allclose(trap.b(), square.b(), rtol=1e-6)                 # measured 1.8e-7: the trapezoid sampled on the 1000-sample grid
     assert src.response_key(meas, real) != src.response_key(meas, ideal)
+
+
+def test_the_swoop_is_off_the_brains_menu_and_the_page_says_why():
+    """brain.toml's ``[scanners] refused`` keeps the Swoop off the menu; the text under the menu, for the ideal scanner
+    and for each machine, names it with the reason (the closed form is exact, the classes are the cost), and the
+    DiSCo page refuses nothing."""
+    from space.sources import disco as D
+    cfg = P.config(os.path.join(P.HERE, "brain.toml"))
+    refused = B.Brain.refused_machines(cfg)
+    assert list(refused) == ["Hyperfine Swoop 64 mT"] and "hyperfine_swoop_64mT" not in P.machines(cfg).values()
+    for label in [P.IDEAL] + list(P.machines(cfg)):
+        text = P.scanner_text(cfg, label, refused)
+        assert "**Not on this menu: Hyperfine Swoop 64 mT.**" in text and "exactly" in text and "encoding classes" in text
+    assert D.Disco.refused_machines(P.config()) == {}
+    bad = {**cfg, "scanners": {**cfg["scanners"], "refused": [{"label": "Prisma", "key": "siemens_magnetom_prisma_3T"}]}}
+    with pytest.raises(ValueError, match="no field law"):
+        B.Brain.refused_machines(bad)
 
 
 def left_handed_asset(tmp_path):

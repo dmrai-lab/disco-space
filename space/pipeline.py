@@ -462,6 +462,7 @@ class Source:
     The page's side: :meth:`describe` (the title and every text that names the source), :meth:`presets` and
     :meth:`protocol` (the acquisitions offered), :meth:`panel` (the tissue-and-scanner inputs),
     :meth:`catalogue_numbers`, :meth:`physics_from`, :meth:`knobs` and :meth:`apply_knob` (B, one knob away from A),
+    :meth:`refused_machines` (the catalogued machines kept off the scanner menu, and why),
     :meth:`tracking_controls` and :meth:`estimated_seconds` (the GPU seconds a run reserves on a shared pool).
 
     The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the share of a replay
@@ -480,6 +481,13 @@ class Source:
         self.backend = backend(cfg)
 
     # ---- the page's side: from the configuration alone ----
+
+    @classmethod
+    def refused_machines(cls, cfg):
+        """``{label: reason}``: the catalogued machines this source keeps off its scanner menu, each with the reason the
+        page shows under the menu. None here."""
+        return {}
+
     @classmethod
     def describe(cls, cfg):
         """The texts that name the source: ``title``, ``heading`` (the page's first paragraph), ``acquisition``
@@ -1063,15 +1071,19 @@ def scanner_terms(key):
     return rows
 
 
-def scanner_text(cfg, label):
-    """The menu entry's term table as Markdown (the page shows it under the menu)."""
+def scanner_text(cfg, label, refused=None):
+    """The menu entry's term table as Markdown (the page shows it under the menu), followed by each machine the source
+    keeps off its menu and why (``refused``: ``{label: reason}``, :meth:`Source.refused_machines`)."""
     key = machine(cfg, label)
     if key is None:
-        return "**ideal:** the commanded gradient everywhere, the field preset and its direction as set; no transmit scale."
-    lines = [f"**{label}** (`{key}`): every term its catalogue entry carries, at the phantom's place in the bore.",
-             "", "| term | applied | from |", "|---|---|---|"]
-    for term, on, src in scanner_terms(key):
-        lines.append(f"| {term} | {'yes' if on else 'no'} | {src} |")
+        lines = ["**ideal:** the commanded gradient everywhere, the field preset and its direction as set; no transmit scale."]
+    else:
+        lines = [f"**{label}** (`{key}`): every term its catalogue entry carries, at the phantom's place in the bore.",
+                 "", "| term | applied | from |", "|---|---|---|"]
+        for term, on, src in scanner_terms(key):
+            lines.append(f"| {term} | {'yes' if on else 'no'} | {src} |")
+    for name, why in (refused or {}).items():
+        lines += ["", f"**Not on this menu: {name}.** {why}"]
     return "\n".join(lines)
 
 

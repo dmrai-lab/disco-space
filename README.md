@@ -151,7 +151,38 @@ machinery are the same; the source (`space/sources/brain.py`) is a real brain co
 
 ## Measured
 
-The gate on the DiSCo 364 protocol, noiseless, 659,840 seeds (`tests/test_acceptance.py`, deterministic XLA ops):
+**The gate at the current pins** (dmipy-sim 1b79d2e, dmipy-fit c3dcc54, dmipy-tract 7da22c3, the layout at dataset
+revision 2db4e78): DiSCo 364, noiseless, 659,840 seeds, deterministic XLA ops, JAX on gaia's GH200 (a shared box,
+XLA memory fraction 0.3), 2026-10-04; `tests/test_acceptance.py`, 7 of 7 passed.
+
+| stage | GH200 first call (s) | GH200 steady (s) |
+|---|---|---|
+| layout on the device (once per process, the Hub download into an empty cache included) | 281.8 | |
+| replay, 364 measurements on 3 timing classes | 1.46 | 1.47 |
+| CSD (response + `csd_tournier07_jax`, order 8) | 2.78 | 0.37 |
+| tracking (probabilistic, density 4) | 14.8 | 1.17 |
+| whole pipeline | 19.2 | 3.18 |
+
+Score: Pearson 0.9270634171621878 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected (25 in
+the ground truth: 95 false, 0 missed), the same Pearson to the last digit as the L40S and L4 runs below. The replay of
+the DiSCo 364 protocol from the layout is within 2.01e-7 of the published bare reference volume on every one of the
+31,802 voxels with signal (1.89e-7 at 3 T and 1.91e-7 at 7 T with every tier on).
+
+Each machine of the scanner menu at 7.9 cm from isocentre along R-L on DiSCo 364 (`gate_scanners.json`; the replay
+alone, against the ideal scanner at the machine's field and direction; none of the three can play DiSCo 364 on the
+page, the gate times it at the gate's protocol):
+
+| scanner | replay first / steady (s) | ideal at its field, first / steady (s) | max abs(dS) vs ideal |
+|---|---|---|---|
+| Hyperfine Swoop 64 mT (with the layout's background moments) | 7.67 / 5.24 | 6.77 / 1.93 | 0.058 |
+| Siemens Prisma 3 T | 5.37 / 3.30 | 1.94 / 1.91 | 0.0099 |
+| Siemens Terra 7 T | 3.31 / 3.33 | 1.97 / 1.93 | 0.0098 |
+
+A machine's steady replay adds 1.4 s (the Prisma, the Terra) to 3.3 s (the Swoop, its background columns) to the
+ideal scanner's 1.9 s: the delivered vectors on the host and the per-tile gather.
+
+**Earlier pins, not re-measured at the current one** (dmipy-sim 22fc873 / a184a8f, 2026-09-29), the gate on the same
+protocol:
 
 | stage | L40S first call (s) | L40S steady (s) | L4 first call (s) | L4 steady (s) |
 |---|---|---|---|---|
@@ -161,13 +192,11 @@ The gate on the DiSCo 364 protocol, noiseless, 659,840 seeds (`tests/test_accept
 | tracking (probabilistic, density 4) | 18.7 | 2.5 | 24.7 | 7.1 |
 | whole pipeline | 26.0 | 7.9 | 34.9 | 15.9 |
 
-Score on both: Pearson 0.927 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected (25 in the
-ground truth: 95 false, 0 missed); the two machines agree to the last digit (deterministic ops). The replay of the
-DiSCo 364 protocol from the layout is within 2.0e-7 of the published reference volume on every voxel (K = 64 bands,
-band error 1.4e-4 against the pack's floor 4.8e-3). The L4 run is the gate job in the Space's own image
-(`tools/gate_job.py`, 2026-09-29).
+Score on both: Pearson 0.927 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs connected, 0 missed;
+the replay within 2.0e-7 of the published bare reference (K = 64 bands, band error 1.4e-4 against the pack's floor
+4.8e-3). The L4 run is the gate job in the Space's own image (`tools/gate_job.py`, 2026-09-29).
 
-**Live Space** (`rfick/disco`, A10G small after two "not enough hardware capacity" failures on the L4 on 2026-09-29,
+**Live Space** (not re-measured at the current pins; `rfick/disco`, A10G small after two "not enough hardware capacity" failures on the L4 on 2026-09-29,
 through its API with `tools/live.py`): first request after a cold start 150 s wall (layout on the device 104 s
 once per process, then 49.6 s for DiSCo 364 at SNR 30 including every compile: replay 9.4, noise 1.1, CSD 6.5,
 tracking 32.4, score 0.3; Pearson 0.924 / 0.926). A custom two-shell protocol (77 measurements) right after: 34 s

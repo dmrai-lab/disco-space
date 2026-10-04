@@ -633,7 +633,7 @@ def build(runner=None, cfg=None):
                         scanner = gr.Dropdown([IDEAL] + list(P.machines(cfg)), value=IDEAL,
                                               label="scanner: a catalogued machine sets the field and its direction, plays every term "
                                                     "its catalogue entry carries, and refuses a shell beyond its gradient limit")
-                        scanner_terms = gr.Markdown(P.scanner_text(cfg, IDEAL))
+                        scanner_terms = gr.Markdown(P.scanner_text(cfg, IDEAL, S.refused_machines(cfg)))
                         gradients = gr.Markdown()
                         n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
                         ladder_on = gr.Checkbox(value=not full, visible=not full, label=d["ladder"])
@@ -715,7 +715,7 @@ def build(runner=None, cfg=None):
             scanner keeps the field as set)."""
             key = P.machine(cfg, label)
             f = float(field_now) if key is None else float(P.limits(key).field_T)
-            return [P.scanner_text(cfg, label), f] + (S.catalogue_numbers(cfg, f) if key is not None else [gr.update()] * len(tissue_numbers))
+            return [P.scanner_text(cfg, label, S.refused_machines(cfg)), f] + (S.catalogue_numbers(cfg, f) if key is not None else [gr.update()] * len(tissue_numbers))
         scanner.change(choose_scanner, inputs=[scanner, widgets["field_T"]], outputs=[scanner_terms, widgets["field_T"]] + tissue_numbers,
                        show_progress="hidden")
         for ctl in (preset, scanner, scheme_file, *shell_inputs):

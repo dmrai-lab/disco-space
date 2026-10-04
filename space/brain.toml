@@ -90,13 +90,15 @@ m0_gm_knob = [0.7, 1.0]
 # The scanner menu after "ideal": catalogue machines whose every catalogued term the brain applies, the head centre at
 # isocentre (docs/scanner.md). Each voxel is binned into an encoding class by what the machine delivers there, to
 # `tolerance` of b (dmipy_sim.phantom.bore.encoding_classes), and every class's played acquisition is expanded by the
-# packs. The Swoop is not on this menu: its own gradient makes every voxel's waveform two-directional, which has no
-# closed-form pose expansion (the quadrature: 174 s for 5 measurements of one class, against hundreds of classes);
-# the DiSCo Space carries it exactly.
+# packs. `refused` are the machines kept off the menu, each shown under it with the reason (Brain.refused_machines):
+# the Swoop, whose own gradient makes the head thousands of encoding classes (docs/scanner.md).
 [scanners]
 machines = [
   { label = "Siemens Prisma 3 T", key = "siemens_magnetom_prisma_3T" },
   { label = "Siemens Terra 7 T", key = "siemens_magnetom_terra_7T" },
+]
+refused = [
+  { label = "Hyperfine Swoop 64 mT", key = "hyperfine_swoop_64mT" },
 ]
 tolerance = 0.01
 

@@ -44,9 +44,11 @@ built from those leaves when the menu changes.
   `Grid.centred_at(offset)`, with every voxel's terms evaluated at that voxel. 7.9 cm keeps the whole cube inside the
   Swoop's 8 cm anchor. Beyond the anchor the law is refused, not extrapolated.
 - **The brain** has its head centre (the brain mask's centroid) at isocentre, with the image's own orientation in the
-  scanner. The asset's affine is left-handed, so the image frame the page uses (`Asset.R`, a proper rotation) runs its
-  third axis against the third index. The bore grid is built so that every voxel's offset is its physical one
-  (`Brain.bore_grid`). The head reaches 8.3 cm from its centre (0.28 % of voxels lie beyond 8 cm), well inside the
+  scanner. The bore grid is `Grid.from_oblique_affine` of the asset's affine on the voxels' own indices
+  (`Brain.bore_grid`). dmipy-sim places a left-handed grid where its affine puts it (dmipy-sim#572), so every voxel's
+  offset is its physical one. The asset's affine is left-handed; a test holds the Swoop's field offset, transmit scale
+  and own gradient and the Prisma's nonlinearity on a left-handed copy of the fixture to the catalogue's law at
+  `affine @ ijk`. The head reaches 8.3 cm from its centre (196 of 71,052 voxels lie beyond 8 cm), well inside the
   Prisma and Terra models' 11.3 cm.
 
 ## The two routes are different, and so is the cost
@@ -69,7 +71,8 @@ played. A machine enters by replacing `g u` with the delivered vector and adding
   group** (the classes sharing a grid, an RF schedule and a readout). DiSCo has two groups, the six PGSE classes at
   TE 53.5 ms and the stimulated echo, so two `(n_tiles, 128, 3)` float32 columns of 1.9 GB each, written in one pass
   over the columnar pack by `dmipy_sim.replay.shape_moments.stamp_background` without touching any other column.
-  Measured: one pass of 105 GB from the Hub at 43 MB/s, about 40 min on gaia's CPU.
+  The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on gaia's CPU. They are published at
+  `SubstrateCommons/disco-replay` revision 2db4e78, the revision `config.toml` pins.
 - *Transmit:* each voxel's signal is multiplied by the crushed echo's pathway amplitude at its scale over the nominal
   one (`epg.transmit_amplitude`): `sin^3(90 kappa)` for the spin echo, `0.5 sin^3(90 kappa)` over `0.5` for the
   stimulated echo.
@@ -109,14 +112,23 @@ Measured on the scan's 485 measurements with the CACTUS 100 ms pack (gaia's CPU,
 
 ## What is refused, and why
 
-- **The Swoop on the brain page.** Its own gradient is on through the dead times, so every voxel's waveform plays two
-  directions (the encoding and `g0`) with two time courses. Such a waveform has no closed-form pose expansion. The
-  quadrature measured **174 s for 5 measurements** of one class, and the Swoop needs hundreds of classes over a head
-  (63 at 3 % of b over 1,312 voxels). That is weeks of CPU per protocol, far beyond any reservation. The exact route
-  would be a second plane-wave factor in the closed form, coupled like the field factor (`exp(i g0 . R n_w)` with
-  harmonics `j_l(|g0| |n_w|) Y(n_w)`). Its band is small (`|g0| |n_w|` is a few tenths of a radian), but it needs a
-  third coupling beside the gradient and the field. Until then the brain page offers the Swoop's physics only through
-  DiSCo. On the DiSCo page the Swoop is exact.
+- **The Swoop on the brain page.** Its own gradient is on through every pulse and dead time, so every voxel plays a
+  waveform with two directions (the encoding and `g0`) and two time courses. dmipy-sim's closed-form pose expansion
+  now takes it exactly: the background gradient is a second plane-wave factor beside the field's, within a bounded
+  residual, summed as a shell series (dmipy-sim#565, #573, #582, #588). What keeps the Swoop off the brain's menu is
+  the cost, not the physics. Measured at this pin on MASiVar's head (71,052 voxels, the scan's 485 measurements, the
+  Swoop's slew; the classes counted by `encoding_classes`' own binning without composing each one, since composing
+  them all is dmipy-sim#563's memory bound, and three composed classes timed):
+  - **Classes:** 196 voxels lie beyond the Swoop's 8 cm anchor, where its law is refused. The other 70,856 bin into
+    **9,752 encoding classes** at the menu's 1 % of b, and 665 at 3 %. The background is binned to half the tolerance
+    of the commanded gradient, and the Swoop's `g0` (up to 1.4 mT/m at 8 cm against a 23 mT/m commanded gradient)
+    spans many such bins across a head. The earlier figure of 63 classes was a 1,312-voxel subsample at 3 %.
+  - **Cost per class** (the default packs, every tier, the Swoop's field; JAX): WM 104-166 s and GM 4-21 s on gaia's
+    GH200, three classes; WM 484-560 s and GM 51-52 s on gaia's CPU (8 threads, a shared box), two classes.
+  - So one protocol at one tissue and field is about 9,752 x 2.5 min, two weeks of one GPU (a day at 3 %). The
+    page shows this reason under its scanner menu (`Brain.refused_machines`). Whether to cache the default
+    protocol's classes or to keep the Swoop to the DiSCo page is the owner's decision. On the DiSCo page the Swoop is
+    exact.
 - **A machine in DiSCo's full mode.** The columnar route replays one commanded sequence for the whole grid, and the
   scanner's per-voxel waveform is demo mode's. Full mode is not on the hosted Spaces.
 - **A shape with ramps on the moment layout** (the Maxwell term is then not one vector) and a placement beyond a

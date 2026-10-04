@@ -24,6 +24,12 @@ the replayed data, fits CSD, tracks from the white matter and scores the 84 x 84
 against the connectome of the input FOD tracked with the same tracker, settings, seeds and key. Source and pins:
 https://github.com/dmrai-lab/disco-space (`requirements-zero.txt`, `app.py`, `space/sources/brain.py`).
 
+**The scanner.** The menu holds the ideal scanner and two catalogued machines, the Siemens Prisma 3 T and Terra 7 T,
+each played at every voxel as it delivers there with the head centre at isocentre (voxels binned into encoding
+classes at 1 % of b). The Hyperfine Swoop 64 mT is not on this menu, and the page says why under it: its own gradient
+is exact in dmipy-sim's closed form, but it bins this head into 9,752 classes at 2-3 minutes each
+(`docs/scanner.md`). The DiSCo Spaces play it exactly.
+
 **Where the work runs.** The packs' pose responses (the only physics that depends on the tissue and the field) are
 computed on the CPU and kept in the page's process for the container's lifetime per pack, protocol, tissue and field:
 for every preset (with its ladder) and the scan's protocol at every field preset when the container starts, for any
@@ -43,7 +49,7 @@ reservation is killed. Only the device part of a run holds the GPU, with the pac
 cached (part of the reservation shown, which falls once a run has cached them); the page's files and figures after
 it do not.
 
-Measured on the L40S with the BATMAN development fixture (96 x 96 x 60 at 2.5 mm, 90,205 brain voxels, 36,605 in the
+Not re-measured at the current pins (dmipy-sim 1b79d2e; the tables below name their own). Measured on the L40S with the BATMAN development fixture (96 x 96 x 60 at 2.5 mm, 90,205 brain voxels, 36,605 in the
 WM stop mask; dmipy-sim 7f6f1fa, dmipy-fit 0c7dde8 with the single-tissue reconstruction, dmipy-tract 7da22c3;
 `tools/measure_brain.py`, 2026-09-30), steady state, seconds:
 

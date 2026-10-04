@@ -46,6 +46,13 @@ N_COEF = 45
 REACH_MM = 250.0                                          # the longest streamline the tracker must be able to reach
 PROFILE_ANGLES = np.linspace(0.0, 90.0, 19)               # degrees between the gradient and a fibre, for the response plot
 C00 = 1.0 / (2.0 * np.sqrt(np.pi))                        # the l = 0 coefficient of a unit-integral density
+#: why a magnet with its own gradient (a field law: the Swoop) is not on the brain's scanner menu, as the page says it
+FIELD_LAW_REFUSAL = ("Its own gradient (the permanent magnet's field law, 1.4 mT/m at 8 cm) is on through every pulse and dead "
+                     "time, so every voxel plays a two-direction waveform of its own. dmipy-sim's closed form expands that "
+                     "waveform exactly; the cost keeps it off this menu. Binned to the menu's 1 % of b, this head needs 9,752 "
+                     "encoding classes for the scan's protocol (665 at 3 %), and one class's pose responses take 2-3 minutes "
+                     "(WM 104-166 s, GM 4-21 s at 485 measurements on a GH200), so one protocol at one tissue and field is about "
+                     "two weeks of one device. The DiSCo Space plays the Swoop exactly.")
 
 
 # ---- the asset ---------------------------------------------------------------------------------------------------------
@@ -250,8 +257,7 @@ class BrainPhysics:
             if abs(float(L.field_T) - float(self.field_T)) > 1e-9:
                 raise ValueError(f"{self.scanner} is a {L.field_T:g} T magnet; the physics says {self.field_T:g} T")
             if L.has_field_law:
-                raise ValueError(f"{self.scanner}'s own gradient makes every voxel's waveform two-directional, which has no closed-form "
-                                 "pose expansion: the brain cannot afford it (docs/scanner.md); the DiSCo Space carries this machine")
+                raise ValueError(f"{self.scanner} is not on the brain's scanner menu. {FIELD_LAW_REFUSAL}")
         if not (0 < self.field_T < 30):
             raise ValueError(f"the field is in tesla, got {self.field_T}")
         if set(self.m0) != set(TISSUES) or any(float(v) < 0 for v in self.m0.values()):
@@ -486,6 +492,17 @@ class Brain(P.Source):
         return t
 
     # ---- the packs ----
+    @classmethod
+    def refused_machines(cls, cfg):
+        """``{label: reason}`` for ``[scanners] refused`` of the configuration: each a catalogued magnet with its own
+        gradient, kept off the menu for :data:`FIELD_LAW_REFUSAL`."""
+        out = {}
+        for m in (cfg.get("scanners") or {}).get("refused", []):
+            if not P.limits(m["key"]).has_field_law:
+                raise ValueError(f"[scanners] refused names {m['key']!r}, which has no field law: the brain plays it, so it belongs on the menu")
+            out[m["label"]] = FIELD_LAW_REFUSAL
+        return out
+
     @classmethod
     def pack_menu(cls, cfg, tissue):
         """The configuration's packs for ``tissue`` (``wm`` / ``gm``): ``{label: uri}`` in the menu's order."""

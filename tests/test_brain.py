@@ -527,10 +527,13 @@ def test_a_hub_pack_loads_the_windows_reached_and_reloads_for_more(windowed, two
 
 @pytest.mark.skipif(not os.environ.get("DISCO_HUB_TESTS"), reason="reads the Hub: set DISCO_HUB_TESTS=1")
 @has_fixture
-def test_a_hub_pack_loads_by_window(windowed):
+def test_a_hub_pack_loads_by_window(windowed, tmp_path, monkeypatch):
     """brain.toml's default GM pack on the Hub (a walk in two windows, its table from its dataset's record), read by
-    byte range: ``windows=range(1)`` for a class within window 0, then ``range(2)`` when a class reaching window 1
-    asks, which replaces the cached pack."""
+    byte range into an empty Hub cache (the library keeps a window read there and serves a later, smaller request
+    from it): ``windows=range(1)`` for a class within window 0, then ``range(2)`` when a class reaching window 1 asks,
+    which replaces the cached pack."""
+    import huggingface_hub.constants
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
     cfg = P.config(os.path.join(P.HERE, "brain.toml"))
     label, uri = next(iter(B.Brain.pack_menu(cfg, "gm").items()))
     src = B.Brain.__new__(B.Brain)

@@ -28,7 +28,8 @@ is larger than the maximum allowed"), and a run that outlives its reservation is
 run (`space.app.compute`: the replays, the noise, the CSD, the tracking, the scoring, the explorer's maps) holds the
 GPU; the page writes the files and draws in its own process after the device is released (disco-space#7).
 
-Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, dmipy-sim 7f6f1fa with #522 and #523):
+Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, dmipy-sim 7f6f1fa with #522 and #523; not
+re-measured at the current pins, dmipy-sim 1b79d2e, which the pool runs only once deployed):
 
 | run | device held | handoff | client wall | reserved |
 |---|---|---|---|---|

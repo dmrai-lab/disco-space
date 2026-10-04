@@ -44,7 +44,7 @@ def test_full_mode_takes_the_rows_own_timing_and_demo_mode_refuses_the_upload():
 
 def _values(on=True, field_T=3.0, **over):
     nums = S.catalogue_numbers(CFG, field_T)[:-1]
-    v = dict(zip(D.physics_fields(CFG), [on, field_T, next(iter(D.B0_MODES)), 0, 0] + nums + [True, True, True]))
+    v = dict(zip(D.physics_fields(CFG), [on, field_T, next(iter(D.B0_MODES)), 0, 0] + nums + [True, True, True, 7.9, next(iter(D.OFFSET_AXES))]))
     v.update(over)
     return v
 
@@ -53,11 +53,11 @@ def test_the_physics_panel_is_a_physics_in_si_or_none_when_off():
     nums = S.catalogue_numbers(CFG, 3.0)
     assert nums[-1].startswith("catalogue values at 3 T") and S.catalogue_numbers(CFG, 0.064)[-1].startswith("the catalogue has no cited")
     ph = S.physics_from(CFG, _values(field=False))
-    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == D.pools(CFG)
+    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho2 == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == D.pools(CFG)
     assert S.physics_from(CFG, _values(on=False)) is None
     free = S.physics_from(CFG, _values(field_T=7.0, b0_mode=D.FREE_B0, theta=90, phi=90))
     assert abs(free.b0_direction[1] - 1.0) < 1e-12
-    with pytest.raises(ValueError, match="15 inputs"):
+    with pytest.raises(ValueError, match="17 inputs"):
         A.physics_values(S, CFG, 1, 2, 3)
 
 
@@ -105,11 +105,49 @@ def test_compare_is_symmetric_in_its_pairs_and_zero_for_the_same_run():
     assert same["only_a"] == 0 and same["pearson_ab"] == 1.0
 
 
+PRISMA = "Siemens Prisma 3 T"
+SWOOP = next(k for k in P.machines(CFG) if k.startswith("Hyperfine Swoop"))
+
+
 def test_the_gradient_table_names_the_shell_the_scanner_cannot_play():
     prot = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS)
-    table, ok = A.gradient_text(prot, CFG["shapes"], "prisma")
+    table, ok = A.gradient_text(CFG, prot, CFG["shapes"], PRISMA)
     assert "70 mT/m" in table and "194 mT/m" in table and "cannot play" in table and not ok      # shell 2: b 3000 at δ 8 / Δ 20
-    assert A.gradient_text(prot, CFG["shapes"], "connectom")[1] and A.gradient_text(prot, CFG["shapes"], A.NO_SCANNER)[1]
+    assert A.gradient_text(CFG, prot, CFG["shapes"], A.IDEAL)[1]
+    with pytest.raises(ValueError, match="no scanner"):
+        A.gradient_text(CFG, prot, CFG["shapes"], "a magnet nobody built")
+
+
+def test_the_scanner_menu_names_every_term_and_where_it_comes_from():
+    """The term table of each machine: the Swoop applies every term (its field law measured, its nonlinearity's
+    diagonal derived from a measurement), the cylinders their class-model nonlinearity and the Maxwell term, with
+    their own gradient and transmit map absent and said so; the ideal scanner none."""
+    assert list(P.machines(CFG).values()) == ["hyperfine_swoop_64mT", "siemens_magnetom_prisma_3T", "siemens_magnetom_terra_7T"]
+    sw = {t: (on, src) for t, on, src in P.scanner_terms("hyperfine_swoop_64mT")}
+    assert all(on for on, _ in sw.values()) and "0.064 T along (0, 1, 0)" in sw["field strength and direction"][1]
+    assert "measured" in sw["transmit scale B1"][1] and "derived from a measurement" in sw["gradient nonlinearity L"][1]
+    pr = {t: (on, src) for t, on, src in P.scanner_terms("siemens_magnetom_prisma_3T")}
+    assert pr["gradient nonlinearity L"][0] and "inferred from the class" in pr["gradient nonlinearity L"][1]
+    assert not pr["field law: its gradient g0 (and its value, a phase per voxel)"][0] and "absent" in pr["field law: its gradient g0 (and its value, a phase per voxel)"][1]
+    assert not pr["transmit scale B1"][0] and "0.7-1.2" in pr["transmit scale B1"][1] and pr["Maxwell (concomitant) gradient"][0]
+    assert "ideal" in P.scanner_text(CFG, A.IDEAL) and "| transmit scale B1 | no |" in P.scanner_text(CFG, PRISMA)
+
+
+def test_a_machine_sets_the_field_its_direction_and_the_placement():
+    """DiSCo's physics on a machine: the machine's field and direction whatever the panel says, the phantom's centre at
+    the panel's distance along its axis, the bare diffusion on the machine when the tissue is off; the ideal scanner
+    keeps the panel's field and no placement."""
+    v = dict(_values(), field_T=1.5, offset_cm=7.9, offset_axis="A-P (y)")
+    ph = S.physics_from(CFG, v, scanner="hyperfine_swoop_64mT")
+    assert ph.field_T == 0.064 and ph.b0_direction == (0.0, 1.0, 0.0) and np.allclose(ph.offset_m, (0.0, 0.079, 0.0))
+    assert ph.scanner == "hyperfine_swoop_64mT" and "hyperfine_swoop_64mT" in ph.label()
+    off = S.physics_from(CFG, dict(v, on=False), scanner="siemens_magnetom_prisma_3T")
+    assert off.bare and off.scanner == "siemens_magnetom_prisma_3T" and off.field_T == 3.0
+    assert S.physics_from(CFG, dict(v, on=False)) is None
+    ideal = S.physics_from(CFG, v)
+    assert ideal.field_T == 1.5 and ideal.scanner is None and ideal.offset_m == (0.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="T magnet"):
+        P.Physics.at(3.0, scanner="hyperfine_swoop_64mT")
 
 
 class _Demo(D.Disco):
@@ -130,21 +168,25 @@ def test_the_runs_are_planned_and_refused_before_any_work():
     upload refused in demo mode."""
     src = _Demo(CFG)
     v = _values()
-    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, A.NO_SCANNER, v, ROWS)
+    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, A.IDEAL, v, ROWS)
     assert [r[0] for r in runs] == ["A"] and runs[0][4].field_T == 3.0
-    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "SNR → 10", A.NO_SCANNER, v, ROWS)
+    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "SNR → 10", A.IDEAL, v, ROWS)
     assert [r[0] for r in runs] == ["A", "B"] and runs[1][3] == 10.0 and runs[1][1] is runs[0][1]
     with pytest.raises(ValueError, match="cannot play run A"):
-        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, "low_field", v, ROWS)
+        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, SWOOP, v, ROWS)
     with pytest.raises(ValueError, match="cannot play run B"):
-        A.plan_runs(CFG, src, "clinical b1000 x 30", 1, True, 30.0, None, "every shell's pulse timing → d8-D20 (Connectome 2.0 δ 8 / Δ 20 ms)", "prisma", v, ROWS)
+        A.plan_runs(CFG, src, "clinical b1000 x 30", 1, True, 30.0, None, "every shell's pulse timing → d8-D20 (Connectome 2.0 δ 8 / Δ 20 ms)", PRISMA, v, ROWS)
+    with pytest.raises(ValueError, match="fixes the field"):
+        A.plan_runs(CFG, src, "clinical b1000 x 30", 1, True, 30.0, None, "field → 7 T (catalogue tissue at that field)", PRISMA, v, ROWS)
+    runs = A.plan_runs(CFG, src, "clinical b1000 x 30", 1, True, 30.0, None, A.NO_KNOB, PRISMA, v, ROWS)
+    assert runs[0][4].scanner == "siemens_magnetom_prisma_3T" and runs[0][4].field_T == 3.0
     src.tiers = False
     with pytest.raises(ValueError, match="bare only"):
-        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, A.NO_SCANNER, v, ROWS)
+        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, A.NO_KNOB, A.IDEAL, v, ROWS)
     with pytest.raises(ValueError, match="full mode"):
-        A.plan_runs(CFG, src, A.UPLOADED, 2, True, 30.0, "x.scheme", A.NO_KNOB, A.NO_SCANNER, _values(on=False), ROWS)
+        A.plan_runs(CFG, src, A.UPLOADED, 2, True, 30.0, "x.scheme", A.NO_KNOB, A.IDEAL, _values(on=False), ROWS)
     with pytest.raises(ValueError, match="unknown knob"):
-        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "twist", A.NO_SCANNER, v, ROWS)
+        A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "twist", A.IDEAL, v, ROWS)
 
 
 def test_disco_prepares_nothing_so_the_lookup_and_the_worker_have_nothing_to_do(monkeypatch):
@@ -153,10 +195,10 @@ def test_disco_prepares_nothing_so_the_lookup_and_the_worker_have_nothing_to_do(
     src = _Demo(CFG)
     monkeypatch.setattr(A, "_load", lambda: dict(error=None, source=src, cfg=CFG))
     v = _values()
-    args = [A.CUSTOM, 2, True, 30.0, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, True, *v.values(), *ROWS]
+    args = [A.CUSTOM, 2, True, 30.0, 2, 30.0, 0.5, 0, None, "SNR → 10", A.IDEAL, 1, True, *v.values(), *ROWS]
     prepared = A.prepare_runs(*args)
     assert prepared["runs"] == {"A": None, "B": None} and all(p is None for p in prepared["ladder"])
-    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "SNR → 10", A.NO_SCANNER, v, ROWS)
+    runs = A.plan_runs(CFG, src, A.CUSTOM, 2, True, 30.0, None, "SNR → 10", A.IDEAL, v, ROWS)
     gen = A._fill(src, runs, True, prepared)
     with pytest.raises(StopIteration) as stop:
         next(gen)
@@ -166,16 +208,16 @@ def test_disco_prepares_nothing_so_the_lookup_and_the_worker_have_nothing_to_do(
 
 def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     v = list(_values().values())
-    one = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, False, *v, *ROWS)
-    two = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, False, *v, *ROWS)
-    keys = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 8, False, *v, *ROWS)
-    ladder = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS)
-    small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, False, *v, *ROWS)
+    one = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, False, *v, *ROWS)
+    two = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.IDEAL, 1, False, *v, *ROWS)
+    keys = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 8, False, *v, *ROWS)
+    ladder = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS)
+    small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, False, *v, *ROWS)
     assert 30 <= small < one < two <= 480 and one < keys <= 480 and one < ladder <= 480
-    both = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.NO_SCANNER, 1, True, *v, *ROWS)
+    both = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.IDEAL, 1, True, *v, *ROWS)
     assert one < ladder < both <= 120          # DiSCo alone, with the ladder, and A + B + ladder all fit a logged-out visitor's quota
-    assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS) == 480
-    text = A.gpu_seconds_text("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.NO_SCANNER, 1, True, *v, *ROWS)
+    assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS) == 480
+    text = A.gpu_seconds_text("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS)
     assert f"reserves {ladder} s" in text and "logged out" in text.split("started by")[1].split(".")[0]
     assert len(A.OUTPUTS) == 30
 

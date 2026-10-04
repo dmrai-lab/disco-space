@@ -46,6 +46,13 @@ N_COEF = 45
 REACH_MM = 250.0                                          # the longest streamline the tracker must be able to reach
 PROFILE_ANGLES = np.linspace(0.0, 90.0, 19)               # degrees between the gradient and a fibre, for the response plot
 C00 = 1.0 / (2.0 * np.sqrt(np.pi))                        # the l = 0 coefficient of a unit-integral density
+#: why a magnet with its own gradient (a field law: the Swoop) is not on the brain's scanner menu, as the page says it
+FIELD_LAW_REFUSAL = ("Its own gradient (the permanent magnet's field law, 1.4 mT/m at 8 cm) is on through every pulse and dead "
+                     "time, so every voxel plays a two-direction waveform of its own. dmipy-sim's closed form expands that "
+                     "waveform exactly; the cost keeps it off this menu. Binned to the menu's 1 % of b, this head needs 9,752 "
+                     "encoding classes for the scan's protocol (665 at 3 %), and one class's pose responses take 2-3 minutes "
+                     "(WM 104-166 s, GM 4-21 s at 485 measurements on a GH200), so one protocol at one tissue and field is about "
+                     "two weeks of one device. The DiSCo Space plays the Swoop exactly.")
 
 
 # ---- the asset ---------------------------------------------------------------------------------------------------------
@@ -220,16 +227,18 @@ def scan_protocol(man, *, name):
 class BrainPhysics:
     """The tissue and scanner a brain replay is evaluated at: ``field_T`` (the scanner's field, T; the catalogue's
     relaxation is cited at the nearest of 1.5 / 3 / 7 T), ``b0_direction`` (its unit direction in the scanner frame),
-    ``T2`` / ``T1`` as ``{"wm": {pool: s}, "gm": s, "csf": s}``, ``rho`` the WM walls' surface relaxivity (m/s),
+    ``T2`` / ``T1`` as ``{"wm": {pool: s}, "gm": s, "csf": s}``, ``rho2`` the WM walls' surface relaxivity (m/s),
     ``chi_iso`` / ``chi_aniso`` the myelin sheath's susceptibility (SI, the WM pack's field source), ``D_csf`` free
     water's diffusivity (m^2/s), ``m0`` the proton density per tissue relative to CSF, ``wm_pack`` / ``gm_pack`` the
-    packs by their configuration label; ``relaxation``, ``contact`` and ``field`` switch the three tiers; ``gradient``
-    the scanner's gradient system as a class of dmipy-sim's catalogue (its slew rate shapes every pulse's ramps;
-    None plays ideal pulses with vertical ramps). All off is bare diffusion at the same proton densities and packs."""
+    packs by their configuration label; ``relaxation``, ``contact`` and ``field`` switch the three tiers; ``scanner``
+    the machine (a key of dmipy-sim's catalogue): its slew rate shapes every pulse's ramps, its field and direction are
+    the physics', and every voxel is played the gradient it delivers there with the head centre at isocentre
+    (:meth:`Brain.prepare`); None is the ideal scanner, ideal pulses with vertical ramps. All off is bare diffusion at
+    the same proton densities and packs."""
     field_T: float
     T2: dict
     T1: dict
-    rho: float
+    rho2: float
     chi_iso: float
     chi_aniso: float
     D_csf: float
@@ -240,16 +249,20 @@ class BrainPhysics:
     relaxation: bool = True
     contact: bool = True
     field: bool = True
-    gradient: Optional[str] = None
+    scanner: Optional[str] = None
 
     def __post_init__(self):
-        if self.gradient is not None and self.gradient not in P.scanner_classes():
-            raise ValueError(f"the gradient system is a class of the scanner catalogue {sorted(P.scanner_classes())}, not {self.gradient!r}")
+        if self.scanner is not None:
+            L = P.limits(self.scanner)
+            if abs(float(L.field_T) - float(self.field_T)) > 1e-9:
+                raise ValueError(f"{self.scanner} is a {L.field_T:g} T magnet; the physics says {self.field_T:g} T")
+            if L.has_field_law:
+                raise ValueError(f"{self.scanner} is not on the brain's scanner menu. {FIELD_LAW_REFUSAL}")
         if not (0 < self.field_T < 30):
             raise ValueError(f"the field is in tesla, got {self.field_T}")
         if set(self.m0) != set(TISSUES) or any(float(v) < 0 for v in self.m0.values()):
             raise ValueError(f"m0 is a non-negative proton density per tissue {TISSUES}, got {self.m0}")
-        if self.rho < 0:
+        if self.rho2 < 0:
             raise ValueError("the surface relaxivity is non-negative")
         u = np.asarray(self.b0_direction, np.float64)
         if u.shape != (3,) or not np.isclose(np.linalg.norm(u), 1.0, atol=1e-6):
@@ -260,7 +273,7 @@ class BrainPhysics:
         return not (self.relaxation or self.contact or self.field)
 
     @property
-    def scanner(self):
+    def scanner_field(self):
         """The replay's ``scanner=``: the field in tesla with the field tier, else None (relaxation at a field is
         already in T2 and T1)."""
         return self.field_T if self.field else None
@@ -268,29 +281,33 @@ class BrainPhysics:
     @property
     def slew_rate(self):
         """The slew rate every pulse's ramps are played at (T/m/s): the catalogue class's ``slew_max``, infinite
-        (vertical ramps) without a gradient system."""
-        if self.gradient is None:
+        (vertical ramps) on the ideal scanner."""
+        if self.scanner is None:
             return np.inf
         from dmipy_sim.acquisition.scanners import ScannerLimits
-        return float(ScannerLimits.of(self.gradient).slew_max)
+        return float(ScannerLimits.of(self.scanner).slew_max)
 
     def label(self):
         if self.bare:
-            return "bare diffusion"
+            return "bare diffusion" + (f" on the {self.scanner}" if self.scanner else "")
         tiers = "+".join(t for t in ("relaxation", "contact", "field") if getattr(self, t))
         u = self.b0_direction
-        grad = f", {self.gradient} gradients ({self.slew_rate:g} T/m/s)" if self.gradient else ""
+        grad = f", on the {self.scanner} (its slew {self.slew_rate:g} T/m/s and every catalogued term, head centre at isocentre)" if self.scanner else ""
         return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {tiers}{grad}"
 
-    def tissues(self, wm_pools, gm_pools):
-        """``(wm, gm, csf)`` :class:`dmipy_sim.spec.Tissue`: the WM pack's pools ``wm_pools`` with their T2 / T1, the
-        walls' rho and the sheath's susceptibility, the GM pack's pools ``gm_pools`` at grey matter's T2 / T1, free
-        water's D, T2 and T1; a tier off leaves its values out (``None`` for a pack with nothing on: its bare
-        diffusion)."""
+    def tissues(self, wm_pack, gm_pack):
+        """``(wm, gm, csf)`` :class:`dmipy_sim.spec.Tissue` for the packs ``wm_pack`` and ``gm_pack``: the WM pack's
+        pools with their T2 / T1, the walls' rho2 and, on a WM pack whose spec declares its susceptibility field
+        present (a magnetic myelin pool), the sheath's susceptibility; the GM pack's pools at grey matter's T2 / T1;
+        free water's D, T2 and T1. A tier off leaves its values out (``None`` for a pack with nothing on: its bare
+        diffusion). A WM pack whose field is absent has no sheath, so its tissue carries no susceptibility and its
+        field tier is zero at any field."""
         from dmipy_sim.spec import Tissue
-        relax, contact, field = self.relaxation, self.contact, self.field
+        wm_pools, gm_pools = Brain.pools(wm_pack), Brain.pools(gm_pack)
+        relax, contact = self.relaxation, self.contact
+        field = self.field and wm_pack.susceptibility_field == "present"
         wm = Tissue(T2={p: self.T2["wm"][p] for p in wm_pools} if relax else None, T1={p: self.T1["wm"][p] for p in wm_pools} if relax else None,
-                    rho=self.rho if contact else None, chi_iso=self.chi_iso if field else None,
+                    rho2=self.rho2 if contact else None, chi_iso=self.chi_iso if field else None,
                     chi_aniso=self.chi_aniso if field else 0.0) if (relax or contact or field) else None
         gm = Tissue(T2={p: self.T2["gm"] for p in gm_pools}, T1={p: self.T1["gm"] for p in gm_pools}) if relax else None
         csf = Tissue(D=self.D_csf, T2=self.T2["csf"] if relax else None, T1=self.T1["csf"] if relax else None)
@@ -309,7 +326,7 @@ def catalogue(field_T):
         warnings.simplefilter("ignore")
         T2 = {"wm": wm["T2"], **{t: float(get_value(k[0], near, allow_nearest=True)) for t, k in RELAXATION_KEYS.items()}}
         T1 = {"wm": wm["T1"], **{t: float(get_value(k[1], near, allow_nearest=True)) for t, k in RELAXATION_KEYS.items()}}
-        return dict(catalogue_field=near, T2=T2, T1=T1, rho=wm["rho"], chi_iso=wm["chi_iso"], chi_aniso=wm["chi_aniso"],
+        return dict(catalogue_field=near, T2=T2, T1=T1, rho2=wm["rho2"], chi_iso=wm["chi_iso"], chi_aniso=wm["chi_aniso"],
                     D_csf=float(get_value("D_csf")), m0={t: float(get_value(k)) for t, k in M0_KEYS.items()})
 
 
@@ -324,9 +341,12 @@ def specimen_pose(R, b0_direction):
 
 @dataclass
 class Kernels:
-    """A replay's pose responses (:meth:`Brain.prepare`): per measurement, the WM response contracted to the FOD's
-    harmonics ``wm`` ``(n_meas, 45)`` complex, the GM response to an isotropic distribution ``gm`` and free water's
-    ``csf`` ``(n_meas,)`` complex, the proton densities ``m0``, the packs' certified floors, the seconds it took;
+    """A replay's pose responses (:meth:`Brain.prepare`): per encoding class and measurement, the WM response contracted
+    to the FOD's harmonics ``wm`` ``(n_classes, n_meas, 45)`` complex, the GM response to an isotropic distribution ``gm``
+    and free water's ``csf`` ``(n_classes, n_meas)`` complex (a class fills the rows of its timing class), ``classes``
+    ``(n_voxels, n_timing)`` each voxel's class per timing class and ``timing_rows`` the measurement rows of each timing
+    class (the ideal scanner: one class per timing class, every voxel in it), the proton densities ``m0``, the packs'
+    certified floors, the seconds it took;
     ``profile`` the true response curves at the run's shells (``b``, ``wm`` ``(n_shells, n_angles)``, ``gm``, ``csf``
     ``(n_shells,)``, each over its b = 0 value), ``b0`` the b = 0 signal per tissue under each tier alone, and
     ``stages`` the seconds of each stage of :meth:`Brain.prepare` (``load_wm``, ``load_gm``, ``pose_wm``, ``pose_gm``,
@@ -334,6 +354,8 @@ class Kernels:
     wm: np.ndarray
     gm: np.ndarray
     csf: np.ndarray
+    classes: np.ndarray
+    timing_rows: tuple
     m0: dict
     floors: dict
     seconds: float
@@ -370,6 +392,7 @@ class Brain(P.Source):
         self._reference = {}
         self._kernels = {}                                                # prepare()'s results, by response_key
         self._compiled = set()                                            # the _band()s prepare() ran in this process
+        self._encodings = {}                                              # encoding()'s results, by machine and rows
 
     @classmethod
     def load(cls, cfg, *, local=None):
@@ -380,8 +403,8 @@ class Brain(P.Source):
         the warm-up computes them: every preset at the panel's defaults with its ladder rungs, then B of every knob
         on the default protocol, the field presets last in ascending field along both B0 directions (the band to
         compile grows with the field: 7 T and 11.7 T cost minutes each, so they follow everything cheaper, the
-        pulse-timing classes among it), with the scan's protocol on each catalogue gradient system that can play it,
-        at the system's field, with its slew, before the field presets. A knob that leaves the response unchanged (noise, M0, the default pack
+        pulse-timing classes among it), with the scan's protocol on each machine of the scanner menu that can play it,
+        at the system's field, with its slew and its delivered gradient, before the field presets. A knob that leaves the response unchanged (noise, M0, the default pack
         or direction) repeats no entry; an entry the packs cannot play is left out (a run asking for it is refused
         by name)."""
         cfg = self.cfg
@@ -403,11 +426,11 @@ class Brain(P.Source):
                 out += [(prot, self.physics_from(cfg, {**v, "b0_mode": mode})) for mode in modes]
             return out
         entries += knob_entries([c for c in knobs if c[0] != "field"])
-        for name, (G_max, field_T) in P.scanner_classes().items():     # the gradient systems that can play the scan, at their field
-            if field_T is None or not all(r[-1] for r in P.playable(scan, self.shapes, name)):
+        for key in P.machines(cfg).values():                            # the machines that can play the scan, at their field
+            if not all(r[-1] for r in P.playable(scan, self.shapes, key)):
                 continue
-            _, _, _, v = self.apply_knob(cfg, ("field", float(field_T)), scan, True, None, values)
-            entries.append((scan, self.physics_from(cfg, v, gradient=name)))
+            _, _, _, v = self.apply_knob(cfg, ("field", float(P.limits(key).field_T)), scan, True, None, values)
+            entries.append((scan, self.physics_from(cfg, v, scanner=key)))
         entries += knob_entries(fields)
         out = []; keys = set()
         for prot, ph in entries:
@@ -469,6 +492,17 @@ class Brain(P.Source):
         return t
 
     # ---- the packs ----
+    @classmethod
+    def refused_machines(cls, cfg):
+        """``{label: reason}`` for ``[scanners] refused`` of the configuration: each a catalogued magnet with its own
+        gradient, kept off the menu for :data:`FIELD_LAW_REFUSAL`."""
+        out = {}
+        for m in (cfg.get("scanners") or {}).get("refused", []):
+            if not P.limits(m["key"]).has_field_law:
+                raise ValueError(f"[scanners] refused names {m['key']!r}, which has no field law: the brain plays it, so it belongs on the menu")
+            out[m["label"]] = FIELD_LAW_REFUSAL
+        return out
+
     @classmethod
     def pack_menu(cls, cfg, tissue):
         """The configuration's packs for ``tissue`` (``wm`` / ``gm``): ``{label: uri}`` in the menu's order."""
@@ -571,7 +605,7 @@ class Brain(P.Source):
             title=d["title"],
             heading=(f"# {d['title']}\n" + d["heading"]),
             acquisition=("A shell's **pulse timing** (δ, Δ, TE; square pulses) is one of the classes below, each played by the packs' "
-                         "walks, stored in windows of 100 ms: a class reads the windows its acquisition reaches, and a timing beyond the "
+                         "walks, stored in windows (125 ms for the windowed packs): a class reads the windows its acquisition reaches, and a timing beyond the "
                          "walk is refused by name; the b-values, the directions and their number, the "
                          "tissue, the proton densities, the packs, the SNR and the tracker are free. The first preset is the scan's own "
                          "protocol, its directions turned into the image frame. Timing classes: "
@@ -584,7 +618,7 @@ class Brain(P.Source):
                     "GM pack and free water carry no field source. The packs' responses to the presets and the field presets are "
                     "computed once when the Space starts; any other (a custom protocol, a field or tissue not seen before) is "
                     "computed inside the GPU call and is part of what the run reserves. The pack menu is the "
-                    "configuration's list; the WM pack's contact tier uses the catalogue's white-matter ρ, the GM pack's walls take "
+                    "configuration's list; the WM pack's contact tier uses the catalogue's white-matter ρ₂, the GM pack's walls take "
                     "none (no cited value)."),
             explorer=("What the replay made, before the noise and the tractography. **A** is the run you configured (its replay "
                       "before the noise); **B** is the same run with the one knob you chose changed. **Ingredients**: the proton-density "
@@ -604,6 +638,7 @@ class Brain(P.Source):
             fixed=[f"the subject: {d['subject']}; its FOD field, fractions and parcellation (made once, offline)",
                    "one pack per tissue class per run, from the configuration's menu (Hub records later)",
                    "the head's own susceptibility and RF effects are not modelled",
+                   "the head centre at the scanner's isocentre (a machine of the scanner menu plays every voxel the gradient it delivers there; docs/scanner.md)",
                    "no per-voxel split-half floor: the packs' certified floors are the accuracy"],
             accuracy=("A brain replay is exact composition (the tests check it against dmipy-sim's own `Phantom.compose(...).replay`) of "
                       "the packs' responses, so its accuracy is the packs' certified Monte-Carlo floors; there is no per-voxel split-half "
@@ -641,11 +676,11 @@ class Brain(P.Source):
             (C("b0_mode", "dropdown", "B0 direction (scanner frame)", list(B0_MODES)[0], tuple(B0_MODES) + (FREE_B0,)),
              C("theta", "slider", "polar angle from z (°)", 0, minimum=0, maximum=180, step=1),
              C("phi", "slider", "azimuth from x (°)", 0, minimum=0, maximum=360, step=1)),
-            (C("relaxation", "checkbox", "relaxation (T2, T1 per tissue)", True), C("contact", "checkbox", "contact (the WM walls' ρ)", True),
+            (C("relaxation", "checkbox", "relaxation (T2, T1 per tissue)", True), C("contact", "checkbox", "contact (the WM walls' ρ₂)", True),
              C("field", "checkbox", "field (the myelin sheath's susceptibility)", True)),
             tuple(C(f"T2_wm_{p}", "number", f"T2 WM {p} (ms)", c0[k]) for k, p in enumerate(WM_POOLS)),
             (C("T2_gm", "number", "T2 GM (ms)", c0[3]), C("T2_csf", "number", "T2 CSF (ms)", c0[4])),
-            (C("rho", "number", "ρ of the WM walls (µm/s)", c0[5]), C("chi_iso", "number", "χ_iso of the sheath (ppm)", c0[6]),
+            (C("rho2", "number", "ρ₂ of the WM walls, transverse (µm/s)", c0[5]), C("chi_iso", "number", "χ_iso of the sheath (ppm)", c0[6]),
              C("chi_aniso", "number", "Δχ_a of the sheath (ppm)", c0[7])),
             (C("m0_wm", "slider", "M0 WM (relative to CSF)", cat["m0"]["wm"], minimum=0.0, maximum=1.0, step=0.01),
              C("m0_gm", "slider", "M0 GM", cat["m0"]["gm"], minimum=0.0, maximum=1.0, step=0.01),
@@ -654,34 +689,39 @@ class Brain(P.Source):
             (C("catalogue_note", "catalogue_note", value=c0[-1]), C("reset", "reset", "reset to the catalogue at this field")),
         )
         fields = ("on", "field_T", "b0_mode", "theta", "phi", "relaxation", "contact", "field", *[f"T2_wm_{p}" for p in WM_POOLS], "T2_gm", "T2_csf",
-                  "rho", "chi_iso", "chi_aniso", "m0_wm", "m0_gm", "m0_csf", "wm_pack", "gm_pack")
-        return P.Panel(rows, fields, (*[f"T2_wm_{p}" for p in WM_POOLS], "T2_gm", "T2_csf", "rho", "chi_iso", "chi_aniso"),
+                  "rho2", "chi_iso", "chi_aniso", "m0_wm", "m0_gm", "m0_csf", "wm_pack", "gm_pack")
+        return P.Panel(rows, fields, (*[f"T2_wm_{p}" for p in WM_POOLS], "T2_gm", "T2_csf", "rho2", "chi_iso", "chi_aniso"),
                        tuple(float(f) for f in phys["fields"]))
 
     @classmethod
     def catalogue_numbers(cls, cfg, field_T):
-        """The catalogue's T2 per WM pool, GM and CSF (ms), the WM walls' rho (µm/s) and the sheath's susceptibility
+        """The catalogue's T2 per WM pool, GM and CSF (ms), the WM walls' rho2 (µm/s) and the sheath's susceptibility
         (ppm) at ``field_T``, and the note saying which cited field they came from."""
         c = catalogue(float(field_T))
         note = (f"catalogue values at {c['catalogue_field']:g} T" if abs(c["catalogue_field"] - float(field_T)) < 1e-9
                 else f"the catalogue has no cited relaxation at {float(field_T):g} T: nearest is {c['catalogue_field']:g} T, edit as you see fit")
-        return [c["T2"]["wm"][p] * 1e3 for p in WM_POOLS] + [c["T2"]["gm"] * 1e3, c["T2"]["csf"] * 1e3, c["rho"] * 1e6,
+        return [c["T2"]["wm"][p] * 1e3 for p in WM_POOLS] + [c["T2"]["gm"] * 1e3, c["T2"]["csf"] * 1e3, c["rho2"] * 1e6,
                                                           c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note]
 
     @classmethod
-    def physics_from(cls, cfg, values, gradient=None):
+    def physics_from(cls, cfg, values, scanner=None):
         """The panel (page units: ms, µm/s, ppm) as a :class:`BrainPhysics`: T1 and free water's D from the catalogue at
-        the panel's field, the tiers off (bare diffusion at the same M0 and packs) when the panel is off; ``gradient``
-        the page's scanner gradient class, whose slew shapes every pulse (None: ideal pulses)."""
+        the physics' field, the tiers off (bare diffusion at the same M0 and packs) when the panel is off; ``scanner``
+        the machine of the page's menu (a catalogue key; None: the ideal scanner), whose field and direction replace
+        the panel's and whose slew shapes every pulse."""
         on = bool(values["on"])
-        c = catalogue(float(values["field_T"]))
+        field_T = float(values["field_T"])
         u = B0_MODES[values["b0_mode"]] if values["b0_mode"] in B0_MODES else P.b0_direction(values["theta"], values["phi"])
-        return BrainPhysics(field_T=float(values["field_T"]), b0_direction=tuple(float(x) for x in u),
+        if scanner is not None:
+            L = P.limits(scanner)
+            field_T, u = float(L.field_T), tuple(float(x) for x in (L.b0_axis or P.B0_ALONG_Z))
+        c = catalogue(field_T)
+        return BrainPhysics(field_T=field_T, b0_direction=tuple(float(x) for x in u),
                             T2={"wm": {p: float(values[f"T2_wm_{p}"]) * 1e-3 for p in WM_POOLS}, "gm": float(values["T2_gm"]) * 1e-3, "csf": float(values["T2_csf"]) * 1e-3},
-                            T1=c["T1"], rho=float(values["rho"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
+                            T1=c["T1"], rho2=float(values["rho2"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
                             D_csf=c["D_csf"], m0={t: float(values[f"m0_{t}"]) for t in TISSUES}, wm_pack=str(values["wm_pack"]), gm_pack=str(values["gm_pack"]),
                             relaxation=on and bool(values["relaxation"]), contact=on and bool(values["contact"]), field=on and bool(values["field"]),
-                            gradient=gradient)
+                            scanner=scanner)
 
     @classmethod
     def knobs(cls, cfg):
@@ -755,14 +795,14 @@ class Brain(P.Source):
         return int(np.ceil(REACH_MM / float(step_mm))) + 1
 
     @classmethod
-    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=(), scanner=None):
         """The GPU seconds a run reserves: ``[budget]`` of the configuration, measured on the L40S with the BATMAN
         fixture (tools/measure_brain.py): a fixed part (the worker's start, noise, the reconstruction's fixed cost, the
         handoff), a part per measurement (the contraction and the reconstruction scale with the rows), the tracking
         and the truth's tracking per density, the ladder's two rungs of contraction, B (a second run whose truth is A's),
         each further tracker key, and the pose responses the worker computes because the page has them not cached
         (``responses``: ``(state, n_meas, saves)`` per entry, :meth:`responses`, each priced ``fixed + per_meas x n_meas +
-        per_save x saves``); times the margin, within 30 and 480 s."""
+        per_save x saves``; a machine's encoding classes are in ``n_meas``); times the margin, within 30 and 480 s."""
         b = cfg["budget"]
         n = protocol.n_meas; d = str(int(density))
         track = float(b["track"][d])
@@ -776,8 +816,8 @@ class Brain(P.Source):
     def validate(self, protocol, physics):
         """The measurements, refused by name when a class reaches beyond the windows a pack declares
         (:meth:`windows_needed`, from the declared table, loaded or not), when a class's echo lies beyond a loaded
-        pack's walk (:meth:`prepare` loads the chosen ones), or when the WM pack cannot carry the relaxation tier (a
-        pack without a spec has no pool names to give T2 by)."""
+        pack's walk (:meth:`prepare` loads the chosen ones), or when a loaded pack's embedded spec does not declare its
+        susceptibility field (a pack without a spec, or whose magnetic pools, field tier and stored field disagree)."""
         meas = P.measurements(protocol, self.shapes)
         if physics is None:
             raise ValueError("a brain replay needs its physics (the proton densities and the packs), even for bare diffusion")
@@ -792,11 +832,7 @@ class Brain(P.Source):
                 if TE > T * (1 + 1e-9):
                     raise ValueError(f"the {tissue.upper()} pack {label!r} is a {T * 1e3:g} ms walk: it cannot play the class {name!r} "
                                      f"at TE {TE * 1e3:g} ms")
-            if tissue == "wm" and physics.relaxation and self.pools(pk) is None:
-                raise ValueError(f"the WM pack {label!r} embeds no substrate spec, so its pools have no names to give T2 by "
-                                 f"(RPK.md 8.5): switch the relaxation tier off or choose another WM pack")
-            if tissue == "wm" and physics.field and not (pk.has_field or pk.field_is_zero):
-                raise ValueError(f"the WM pack {label!r} stores no field channel: switch the field tier off or choose another WM pack")
+            pk.susceptibility_field                     # refuses a pack whose embedded spec does not declare its field, by name
         return meas
 
     def sequence(self, meas, rows, pose, slew_rate=np.inf):
@@ -856,12 +892,58 @@ class Brain(P.Source):
         while len(self._kernels) > 128:                                     # a bounded memory: the oldest goes first
             self._kernels.pop(next(iter(self._kernels)))
 
+    @functools.cached_property
+    def bore_grid(self):
+        """``(grid, index)``: the brain's voxels as they sit in the bore, the head centre (the mask's centroid) at
+        isocentre: :meth:`dmipy_sim.phantom.Grid.from_oblique_affine` of the cropped asset's affine, whose rotation
+        is :attr:`Asset.R` (the frame the page composes in), and ``index`` the brain voxels' own indices, each at
+        ``affine @ [ijk, 1]`` in the scanner for a left- or right-handed affine."""
+        from dmipy_sim.phantom import Grid
+        A = np.asarray(self.affine, np.float64)
+        centre = (A[:3, :3] @ self.vox.mean(0) + A[:3, 3]) * 1e-3
+        grid, R = Grid.from_oblique_affine(A, self.mask.shape, isocenter_m=centre)
+        if not np.allclose(R, self.asset.R, atol=1e-6):
+            raise ValueError("the asset's rotation is not its affine's: the bore placement would be wrong")
+        return grid, self.vox.copy()
+
+    def encoding(self, meas, physics, rows):
+        """``(class_of_voxel, played)``: the timing class ``rows`` of ``meas`` as the run's machine plays it at every brain
+        voxel, binned to ``[scanners] tolerance`` of b (:func:`dmipy_sim.phantom.bore.encoding_classes` on
+        :attr:`bore_grid`), the played acquisitions in the image frame; computed once per machine, slew and rows."""
+        from dmipy_sim.phantom.bore import encoding_classes
+        import hashlib
+        h = hashlib.sha256()
+        for x in (meas.bvals[rows], meas.dirs[rows], meas.shape[rows].astype(str)):
+            h.update(np.ascontiguousarray(x).tobytes())
+        key = (physics.scanner, physics.slew_rate, h.hexdigest())
+        if key not in self._encodings:
+            grid, idx = self.bore_grid
+            tol = float(self.cfg["scanners"]["tolerance"])
+            seq = self.sequence(meas, rows, np.eye(3), physics.slew_rate)
+            out = encoding_classes(P.limits(physics.scanner), grid, seq, idx, tolerance=tol)
+            if out is None:
+                out = (np.zeros(len(idx), int), [seq])
+            self._encodings[key] = (np.asarray(out[0], int), list(out[1]))
+            while len(self._encodings) > 16:
+                self._encodings.pop(next(iter(self._encodings)))
+        return self._encodings[key]
+
+    def n_classes(self, meas, physics):
+        """The encoding classes the run's acquisition needs over its timing classes (one per timing class on the ideal
+        scanner): what its pose responses cost, in units of the commanded acquisition."""
+        groups = [np.flatnonzero(meas.shape == name) for name in np.unique(meas.shape)]
+        if physics is None or physics.scanner is None:
+            return 1
+        return max(len(self.encoding(meas, physics, rows)[1]) for rows in groups)
+
     def responses(self, entries):
         """What :meth:`prepare` costs for a run's ``entries`` ``[(meas, physics)]`` in a process forked from this one,
         in order: ``(state, n_meas, saves)`` for each entry not cached here, once per key; ``state`` is ``no_field``
         (the field tier off: nothing to compile), ``warm`` (a band compiled here, or by an earlier entry of the run)
         or ``cold`` (a band to compile first); ``saves`` the WM pack's saves the entry's classes span
-        (:meth:`saves_spanned` of :meth:`windows_needed`). ``[budget]`` prices them (``response_<state>``)."""
+        (:meth:`saves_spanned` of :meth:`windows_needed`). ``[budget]`` prices them (``response_<state>``); on a machine
+        an entry counts its rows once per encoding class times ``response_per_class`` (a class's rows each play their own
+        amplitude, so the shells no longer share the expansion's bodies)."""
         out = []; keys = set(); bands = set(self._compiled)
         for meas, ph in entries:
             key = self.response_key(meas, ph)
@@ -870,7 +952,10 @@ class Brain(P.Source):
             keys.add(key)
             band = self._band(meas, ph)
             saves = self.saves_spanned(self.segments("wm", ph.wm_pack), self.windows_needed("wm", ph.wm_pack, meas))
-            out.append(("no_field" if not ph.field else "warm" if band in bands else "cold", len(meas.bvals), saves))
+            n = len(meas.bvals)
+            if ph.scanner is not None:                               # every class's rows are their own bodies
+                n = int(np.ceil(n * self.n_classes(meas, ph) * float(self.cfg["budget"]["response_per_class"])))
+            out.append(("no_field" if not ph.field else "warm" if band in bands else "cold", n, saves))
             bands.add(band)
         return out
 
@@ -890,25 +975,40 @@ class Brain(P.Source):
         stages["load_gm"] = time.perf_counter() - t0 - stages["load_wm"]
         for name in np.unique(meas.shape):                                  # the walks and the WM pack's tiers, now loaded
             self.validate(P.Protocol((P.Shell(str(name), 1.0, 1),), name="check"), physics)
-        t_wm, t_gm, t_csf = physics.tissues(self.pools(wm_pack), self.pools(gm_pack))
+        t_wm, t_gm, t_csf = physics.tissues(wm_pack, gm_pack)
         pose = specimen_pose(self.asset.R, physics.b0_direction)
         A = axis_map()
         n = len(meas.bvals)
-        C_wm = np.zeros((n, N_COEF), np.complex128); e_gm = np.zeros(n, np.complex128); e_csf = np.zeros(n, np.complex128)
         classes = [np.flatnonzero(meas.shape == name) for name in np.unique(meas.shape)]
-        seqs = [self.sequence(meas, rows, pose, physics.slew_rate) for rows in classes]
+        # per timing class, the acquisitions the voxels are played: the commanded one, or one per encoding class of the
+        # machine (its delivered gradient, in the image frame, turned to the specimen's pose)
+        plan, seqs = [], []
+        from dmipy_sim.acquisition.waveforms import rotate_waveform
+        for rows in classes:
+            if physics.scanner is None:
+                cls, played = np.zeros(len(self.vox), int), [self.sequence(meas, rows, pose, physics.slew_rate)]
+            else:
+                cls, img = self.encoding(meas, physics, rows)
+                played = [rotate_waveform(q, pose) for q in img]
+            plan.append((rows, cls, len(seqs))); seqs += played
         prof = self._profile_sequence(meas, classes[0], pose, physics.slew_rate)   # the explorer's curves ride in the same pass
         batch = seqs + ([prof[0]] if prof is not None else [])
         t = time.perf_counter()
-        r_wm = wm_pack.pose_responses(batch, tissue=t_wm, scanner=physics.scanner, pose=pose, keep=(LMAX, 0))
+        r_wm = wm_pack.pose_responses(batch, tissue=t_wm, scanner=physics.scanner_field, pose=pose, keep=(LMAX, 0))
         stages["pose_wm"] = time.perf_counter() - t; t = time.perf_counter()
-        r_gm = gm_pack.pose_responses(batch, tissue=t_gm, scanner=physics.scanner, pose=pose, keep=(0, 0))
+        r_gm = gm_pack.pose_responses(batch, tissue=t_gm, scanner=physics.scanner_field, pose=pose, keep=(0, 0))
         stages["pose_gm"] = time.perf_counter() - t
         free = FreeWater(m0=1.0, tissue=t_csf)
-        for rows, seq, rw, rg in zip(classes, seqs, r_wm, r_gm):
-            C_wm[rows] = rw.retained(LMAX, 0) @ A
-            e_gm[rows] = rg.retained(0, 0)[:, 0] * A[0, 0] * C00
-            e_csf[rows] = free.response(seq)
+        K = len(seqs)
+        C_wm = np.zeros((K, n, N_COEF), np.complex128); e_gm = np.zeros((K, n), np.complex128); e_csf = np.zeros((K, n), np.complex128)
+        voxel_class = np.zeros((len(self.vox), len(classes)), np.int32)
+        for t_, (rows, cls, off) in enumerate(plan):
+            for j in range(int(cls.max()) + 1):
+                k_ = off + j
+                C_wm[k_, rows] = r_wm[k_].retained(LMAX, 0) @ A
+                e_gm[k_, rows] = r_gm[k_].retained(0, 0)[:, 0] * A[0, 0] * C00
+                e_csf[k_, rows] = free.response(seqs[k_])
+            voxel_class[:, t_] = off + cls
         profile = None
         if prof is not None:
             seq, shells = prof
@@ -921,7 +1021,7 @@ class Brain(P.Source):
         b0 = self._tier_weights(meas, physics, wm_pack, gm_pack, pose, classes[0])
         stages["weights"] = time.perf_counter() - t
         floors = {"wm": _floor(wm_pack), "gm": _floor(gm_pack)}
-        k = Kernels(C_wm, e_gm, e_csf, dict(physics.m0), floors, time.perf_counter() - t0, profile, b0, stages)
+        k = Kernels(C_wm, e_gm, e_csf, voxel_class, tuple(classes), dict(physics.m0), floors, time.perf_counter() - t0, profile, b0, stages)
         self._store(self.response_key(meas, physics), k)
         self._compiled.add(self._band(meas, physics))
         return k
@@ -949,19 +1049,19 @@ class Brain(P.Source):
         out = {}
         alone = dict(relaxation=False, contact=False, field=False)
         if physics.relaxation:
-            t_wm, t_gm, t_csf = replace(physics, **{**alone, "relaxation": True}).tissues(self.pools(wm_pack), self.pools(gm_pack))
+            t_wm, t_gm, t_csf = replace(physics, **{**alone, "relaxation": True}).tissues(wm_pack, gm_pack)
             out["relaxation"] = {"wm": float(np.abs(wm_pack.replay(seq, tissue=t_wm))[0]), "gm": float(np.abs(gm_pack.replay(seq, tissue=t_gm))[0]),
                                  "csf": float(np.abs(FreeWater(m0=1.0, tissue=t_csf).response(seq))[0])}
         if physics.contact:
-            t_wm, _, _ = replace(physics, **{**alone, "contact": True}).tissues(self.pools(wm_pack), self.pools(gm_pack))
+            t_wm, _, _ = replace(physics, **{**alone, "contact": True}).tissues(wm_pack, gm_pack)
             out["contact"] = {"wm": float(np.abs(wm_pack.replay(seq, tissue=t_wm))[0])}
         return out
 
     def replay(self, meas, physics=None, prepared=None):
-        """The kernel route on the device: ``S = |F_wm C_wm^T + f_gm m0_gm e_gm + f_csf m0_csf e_csf|`` over the
-        brain's voxels in float32 torch (the device's GPU when there is one), S0-normalised; ``s0_factor`` is every
-        voxel's b = 0 signal in M0 units (M0 = 1: pure CSF before relaxation); the floor is zero (the packs' floors are
-        the accuracy)."""
+        """The kernel route on the device: per timing class and encoding class, ``S = |F_wm C_wm^T + f_gm m0_gm e_gm +
+        f_csf m0_csf e_csf|`` over the class's voxels in float32 torch (the device's GPU when there is one),
+        S0-normalised; ``s0_factor`` is every voxel's b = 0 signal in M0 units (M0 = 1: pure CSF before relaxation);
+        the floor is zero (the packs' floors are the accuracy)."""
         import torch
         if prepared is None:
             raise ValueError("a brain replay needs its pose responses: Brain.prepare(meas, physics) first")
@@ -971,12 +1071,25 @@ class Brain(P.Source):
         m0 = k.m0
         f = torch.as_tensor(self.f, device=dev)
         F = torch.as_tensor(self.fod_unit, device=dev) * (f[:, 0] * m0["wm"])[:, None]
-        Cr = torch.as_tensor(k.wm.real.astype(np.float32), device=dev); Ci = torch.as_tensor(k.wm.imag.astype(np.float32), device=dev)
         g = (f[:, 1] * m0["gm"])[:, None]; c = (f[:, 2] * m0["csf"])[:, None]
-        eg = torch.as_tensor(np.stack([k.gm.real, k.gm.imag]).astype(np.float32), device=dev)
-        ec = torch.as_tensor(np.stack([k.csf.real, k.csf.imag]).astype(np.float32), device=dev)
-        Sr = F @ Cr.T + g * eg[0][None, :] + c * ec[0][None, :]
-        Si = F @ Ci.T + g * eg[1][None, :] + c * ec[1][None, :]
+        n_vox, n = F.shape[0], len(meas.bvals)
+        Sr = torch.zeros((n_vox, n), dtype=torch.float32, device=dev); Si = torch.zeros_like(Sr)
+        for t_, rows in enumerate(k.timing_rows):
+            r = torch.as_tensor(np.asarray(rows), device=dev)
+            for cls in np.unique(k.classes[:, t_]):
+                sel = np.flatnonzero(k.classes[:, t_] == cls)
+                v = torch.as_tensor(sel, device=dev) if len(sel) < n_vox else None
+                C = k.wm[cls][rows]
+                Cr = torch.as_tensor(C.real.astype(np.float32), device=dev); Ci = torch.as_tensor(C.imag.astype(np.float32), device=dev)
+                eg = torch.as_tensor(np.stack([k.gm[cls][rows].real, k.gm[cls][rows].imag]).astype(np.float32), device=dev)
+                ec = torch.as_tensor(np.stack([k.csf[cls][rows].real, k.csf[cls][rows].imag]).astype(np.float32), device=dev)
+                Fv, gv, cv = (F, g, c) if v is None else (F[v], g[v], c[v])
+                re = Fv @ Cr.T + gv * eg[0][None, :] + cv * ec[0][None, :]
+                im = Fv @ Ci.T + gv * eg[1][None, :] + cv * ec[1][None, :]
+                if v is None:
+                    Sr[:, r] = re; Si[:, r] = im
+                else:
+                    Sr[v[:, None], r[None, :]] = re; Si[v[:, None], r[None, :]] = im
         S = torch.sqrt(Sr * Sr + Si * Si)
         S0 = S[:, torch.as_tensor(meas.b0, device=dev)].mean(1)
         live = S0 > 0
@@ -1163,7 +1276,7 @@ class Brain(P.Source):
             return [None, None, None]
         return [("proton density Σ f·M0 (relative to CSF)", ing["m0"], dict(vmin=0, vmax=1)),
                 ("relaxation: the voxel's b = 0 weight from T2 / T1 at the echo", ing["relaxation"], dict(cmap="magma", vmin=0, vmax=1)) if ing.get("relaxation") is not None else None,
-                ("contact: the share of the b = 0 signal the WM walls' ρ leaves", ing["contact"], dict(cmap="magma", vmax=1)) if ing.get("contact") is not None else None]
+                ("contact: the share of the b = 0 signal the WM walls' ρ₂ leaves", ing["contact"], dict(cmap="magma", vmax=1)) if ing.get("contact") is not None else None]
 
     @functools.cached_property
     def input_peaks(self):

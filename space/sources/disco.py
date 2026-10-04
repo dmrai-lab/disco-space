@@ -19,6 +19,8 @@ from .. import pipeline as P
 N_REGIONS = 16
 VOXEL_M = 25e-6                                          # DiSCo's voxel; the strands' coordinate unit
 B0_MODES = {"along z (the strands' frame)": P.B0_ALONG_Z, "transverse (x): 90° from z, as in a biplanar magnet like the Swoop": P.B0_TRANSVERSE}
+#: the scanner axes the phantom can be moved along from isocentre (the strands' frame is the scanner's: R, A, S)
+OFFSET_AXES = {"R-L (x)": (1.0, 0.0, 0.0), "A-P (y)": (0.0, 1.0, 0.0), "S-I (z)": (0.0, 0.0, 1.0)}
 FREE_B0 = "free (polar and azimuth angles below)"
 DISCO_364 = "DiSCo 364"
 
@@ -47,13 +49,13 @@ def physics_fields(cfg):
     """The panel's inputs, in the run signature's order."""
     q = pools(cfg)
     return ("on", "field_T", "b0_mode", "theta", "phi", *[f"T2_{p}" for p in q], *[f"T1_{p}" for p in q],
-            "rho", "chi_iso", "chi_aniso", "relaxation", "contact", "field")
+            "rho2", "chi_iso", "chi_aniso", "relaxation", "contact", "field", "offset_cm", "offset_axis")
 
 
 def tissue_numbers(cfg):
     """The panel's inputs the catalogue fills in: ms, ms, µm/s, ppm on the page."""
     q = pools(cfg)
-    return (*[f"T2_{p}" for p in q], *[f"T1_{p}" for p in q], "rho", "chi_iso", "chi_aniso")
+    return (*[f"T2_{p}" for p in q], *[f"T1_{p}" for p in q], "rho2", "chi_iso", "chi_aniso")
 
 
 class Disco(P.Source):
@@ -96,7 +98,11 @@ class Disco(P.Source):
                          "because the layout holds each walker's response to that pulse shape; the b-value, the directions and their "
                          "number, the tissue, the field, the SNR and the tracker are free. Stored: " + "; ".join(f"`{n}` = {shapes[n]['label']}" for n in shapes)
                          + ". The same image beside the columnar pack (`DISCO_MODE=full`) replays any timing, in minutes."),
-            tissue=("The pack's walkers live in the intra- and extra-axonal pools (its spec names a myelin pool nobody was seeded "
+            tissue=("**The scanner** (the menu beside the run button): a catalogued machine sets the field and its direction and plays "
+                    "every term its catalogue entry carries -- the coils' nonlinearity, their Maxwell gradient, the magnet's own gradient, "
+                    "the transmit scale -- at the phantom's place in the bore (the distance below; every term vanishes at isocentre), per "
+                    "voxel and exactly on the layout (docs/scanner.md). "
+                    "The pack's walkers live in the intra- and extra-axonal pools (its spec names a myelin pool nobody was seeded "
                     "in). On this phantom the field's **direction** and the **stimulated echo** move the signal most; 3 T against "
                     "7 T on a PGSE is small (the 180° refocuses the static dephasing), and at 7 T the catalogue's two T2 coincide."),
             explorer=("What the replay made, before the noise and the tractography. **A** is the run you configured in the first tab "
@@ -149,13 +155,16 @@ class Disco(P.Source):
             (C("b0_mode", "dropdown", "B0 direction", list(B0_MODES)[0], tuple(B0_MODES) + (FREE_B0,)),
              C("theta", "slider", "polar angle from z (°)", 0, minimum=0, maximum=180, step=1),
              C("phi", "slider", "azimuth from x (°)", 0, minimum=0, maximum=360, step=1)),
-            (C("relaxation", "checkbox", "relaxation (T2, T1)", True), C("contact", "checkbox", "contact (surface relaxivity ρ)", True),
+            (C("relaxation", "checkbox", "relaxation (T2, T1)", True), C("contact", "checkbox", "contact (surface relaxivity ρ₂)", True),
              C("field", "checkbox", "field (myelin susceptibility)", True)),
             tuple(C(f"T2_{p}", "number", f"T2 {p} (ms)", c0[k]) for k, p in enumerate(q)),
             tuple(C(f"T1_{p}", "number", f"T1 {p} (ms)", c0[n + k]) for k, p in enumerate(q)),
-            (C("rho", "number", "ρ (µm/s)", c0[2 * n]), C("chi_iso", "number", "χ_iso of the sheath, the field source (ppm)", c0[2 * n + 1]),
+            (C("rho2", "number", "ρ₂, the walls' transverse surface relaxivity (µm/s)", c0[2 * n]), C("chi_iso", "number", "χ_iso of the sheath, the field source (ppm)", c0[2 * n + 1]),
              C("chi_aniso", "number", "Δχ_a of the sheath (ppm)", c0[2 * n + 2])),
             (C("catalogue_note", "catalogue_note", value=c0[-1]), C("reset", "reset", "reset to the catalogue at this field")),
+            (C("offset_cm", "slider", "the phantom's distance from isocentre (cm; a scanner's terms vanish at 0)",
+               float(cfg["scanners"]["default_offset_cm"]), minimum=0.0, maximum=float(cfg["scanners"]["max_offset_cm"]), step=0.1),
+             C("offset_axis", "dropdown", "along the scanner axis", list(OFFSET_AXES)[0], tuple(OFFSET_AXES))),
         )
         return P.Panel(rows, physics_fields(cfg), tissue_numbers(cfg), tuple(float(f) for f in phys["fields"]))
 
@@ -169,23 +178,33 @@ class Disco(P.Source):
         note = (f"catalogue values at {c['catalogue_field']:g} T" if abs(c["catalogue_field"] - float(field_T)) < 1e-9
                 else f"the catalogue has no cited relaxation at {float(field_T):g} T: nearest is {c['catalogue_field']:g} T, edit as you see fit")
         return ([c["T2"][p] * 1e3 for p in q] + [c["T1"][p] * 1e3 for p in q]
-                + [c["rho"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
+                + [c["rho2"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
 
     @classmethod
-    def physics_from(cls, cfg, values, gradient=None):
-        """The panel (page units: ms, µm/s, ppm) as a :class:`space.pipeline.Physics` in SI, or None when it is off.
-        The DiSCo source plays ideal pulses: a gradient class is refused by name (its slew is not applied here)."""
-        if gradient is not None:
-            raise ValueError(f"the DiSCo source plays ideal pulses; the scanner's gradient limit {gradient!r} only checks what it can play. "
-                             "Choose the limit-free scanner, or the brain Space for finite slew")
-        if not values["on"]:
-            return None
+    def physics_from(cls, cfg, values, scanner=None):
+        """The panel (page units: ms, µm/s, ppm, cm) as a :class:`space.pipeline.Physics` in SI, or None when it is off
+        and no machine is chosen. ``scanner`` is the machine (a catalogue key; None: the ideal scanner): it sets the
+        field and its direction (the strands' frame is the scanner's), the panel's placement puts the phantom's
+        centre ``offset_cm`` along ``offset_axis`` from isocentre, and with the tissue off the physics is the bare
+        diffusion on that machine. The layout plays square pulses: a machine's slew is not played here."""
         q = pools(cfg)
         u = B0_MODES[values["b0_mode"]] if values["b0_mode"] in B0_MODES else P.b0_direction(values["theta"], values["phi"])
-        return P.Physics(field_T=float(values["field_T"]), b0_direction=u,
+        field_T = float(values["field_T"])
+        offset = (0.0, 0.0, 0.0)
+        if scanner is not None:
+            L = P.limits(scanner)
+            field_T, u = float(L.field_T), tuple(float(x) for x in (L.b0_axis or P.B0_ALONG_Z))
+            if values["offset_axis"] not in OFFSET_AXES:
+                raise ValueError(f"the phantom moves along one of {list(OFFSET_AXES)}, not {values['offset_axis']!r}")
+            offset = tuple(float(values["offset_cm"]) * 1e-2 * a for a in OFFSET_AXES[values["offset_axis"]])
+        if not values["on"]:
+            return None if scanner is None else P.Physics.at(field_T, pools=q, b0_direction=u, relaxation=False, contact=False,
+                                                             field=False, scanner=scanner, offset_m=offset)
+        return P.Physics(field_T=field_T, b0_direction=u,
                          T2={p: float(values[f"T2_{p}"]) * 1e-3 for p in q}, T1={p: float(values[f"T1_{p}"]) * 1e-3 for p in q},
-                         rho=float(values["rho"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
-                         relaxation=bool(values["relaxation"]), contact=bool(values["contact"]), field=bool(values["field"]))
+                         rho2=float(values["rho2"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
+                         relaxation=bool(values["relaxation"]), contact=bool(values["contact"]), field=bool(values["field"]),
+                         scanner=scanner, offset_m=offset)
 
     @classmethod
     def knobs(cls, cfg):
@@ -242,14 +261,19 @@ class Disco(P.Source):
         return P.Tracking(density=int(density), step_mm=float(step), max_angle=float(max_angle), max_steps=int(cfg["tracking"]["max_steps"]), key=int(key))
 
     @classmethod
-    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=(), scanner=None):
         """Measured on the pool at DiSCo 364 with every tier (#7, dmipy-sim#522/#523): the worker's start and the
         payload's handoff 8 s, noise to scoring 8 s, the first replay 0.045 s per measurement (the tiles uploaded
         inside the call), each further replay on the resident tiles 0.032 s per measurement (the ladder is three, B
-        one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; times 1.3, within 30
-        and 480 s. DiSCo prepares nothing, so ``responses`` is empty."""
+        one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; on a machine every
+        replay adds its delivery, ``[scanners] delivery_per_meas`` s per measurement (the delivered vectors of the
+        layout's live voxels on the host and their upload); times 1.3, within 30 and 480 s. DiSCo prepares nothing,
+        so ``responses`` is empty."""
         n = protocol.n_meas
+        replays = 1 + (3 if ladder else 0) + (1 if knob != P.NO_KNOB else 0)
         secs = 16 + 0.045 * n + (3 * 0.032 * n if ladder else 0) + ((8 + 0.032 * n) if knob != P.NO_KNOB else 0) + 10 * (int(n_keys) - 1)
+        if scanner is not None:
+            secs += replays * float(cfg["scanners"]["delivery_per_meas"]) * n
         return int(min(480, max(30, 1.3 * secs)))
 
     # ---- the run's side ----
@@ -303,13 +327,13 @@ class Disco(P.Source):
 
     @staticmethod
     def ingredient_layers(ing):
-        """The intra-axonal weight fraction, the walls' contact (the survival at the run's rho with the contact tier,
+        """The intra-axonal weight fraction, the walls' contact (the survival at the run's rho2 with the contact tier,
         else the boundary local time), the field's dephasing spread."""
         if not ing:
             return [None, None, None]
         pool = ("intra-axonal weight fraction (relaxation tier re-weights it)", ing["intra_fraction"], dict(vmin=0, vmax=1))
         if ing.get("contact_survival") is not None:
-            contact = ("contact survival exp(−ρ ℓ / D) at the run's ρ (ℓ the walkers' wall contact)", ing["contact_survival"], dict(cmap="magma", vmax=1))
+            contact = ("contact survival exp(−ρ₂ ℓ / D) at the run's ρ₂ (ℓ the walkers' wall contact)", ing["contact_survival"], dict(cmap="magma", vmax=1))
         elif ing.get("wall_contact_um") is not None:
             contact = ("walkers' wall contact ℓ (boundary local time, µm)", ing["wall_contact_um"], dict(cmap="magma", unit="µm"))
         else:
@@ -386,7 +410,23 @@ class Layout(Disco):
             raise ValueError("this layout holds bare diffusion only: switch the tissue panel off")
         if physics and set(physics.pools) != set(self.pools):
             raise ValueError(f"the tissue names the pools {physics.pools}; this layout's are {self.pools}")
+        if physics and physics.scanner is not None:
+            L = P.limits(physics.scanner)
+            if L.has_field_law and not self.moments.background:
+                raise ValueError(f"the {physics.scanner}'s own gradient needs the layout's background moments, and this layout has "
+                                 "none (dmipy_sim.replay.shape_moments.stamp_background adds them in one pass)")
+            if L.has_transmit_profile and any("rf" not in self.moments.manifest["shapes"][n] for n in np.unique(meas.shape)):
+                raise ValueError(f"the {physics.scanner}'s transmit scale needs the classes' RF schedules, which this layout does not "
+                                 "record (stamp_background records them)")
         return meas
+
+    def delivered(self, name, bvals, dirs, physics):
+        """What the run's machine delivers at every voxel with rows for the class ``name`` at ``bvals`` (s/m^2) along
+        ``dirs``: the layout's :meth:`~dmipy_sim.replay.shape_moments.ShapeMoments.delivery` with the grid's centre at
+        the physics' offset; None on the ideal scanner."""
+        if physics is None or physics.scanner is None:
+            return None
+        return self.moments.delivery(name, bvals, dirs, P.limits(physics.scanner), self.moments.grid.centred_at(physics.offset_m))
 
     def replay(self, meas, physics=None, prepared=None):
         t0 = time.perf_counter()
@@ -397,7 +437,8 @@ class Layout(Disco):
         for name in np.unique(meas.shape):
             rows = meas.shape == name
             S[..., rows], f = self.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=self.backend,
-                                                 resident=True, tissue=tissue, scanner=scanner, b0_direction=b0)
+                                                 resident=True, tissue=tissue, scanner=scanner, b0_direction=b0,
+                                                 delivered=self.delivered(name, meas.bvals[rows] * 1e6, meas.dirs[rows], physics))
             floor = np.fmax(floor, f)                    # resident within a run: release() drops the device copies after it
         if self.M0 is None:                              # the bare b = 0 map: the walker weight of every voxel
             self.M0 = self.moments.image(meas.shape[0], np.zeros(1), np.array([P.B0_ALONG_Z]), backend=self.backend, resident=True)[0][..., 0]
@@ -413,8 +454,8 @@ class Layout(Disco):
         :meth:`~dmipy_sim.replay.shape_moments.ShapeMoments.tier_maps` on the device columns the replay left
         resident): ``intra_fraction`` (the walker weight in the intra-axonal pool over the voxel's),
         ``wall_contact_um`` (the walkers' boundary local time l under the class's gate, a length; the layout stores
-        it signed as the exponent's term, -l, so the contact tier's weight is exp(rho c / D) = exp(-rho l / D)),
-        ``contact_survival`` (that factor at the run's rho, None without the contact tier), ``field_rad`` (the spread
+        it signed as the exponent's term, -l, so the contact tier's weight is exp(rho2 c / D) = exp(-rho2 l / D)),
+        ``contact_survival`` (that factor at the run's rho2, None without the contact tier), ``field_rad`` (the spread
         over the voxel's walkers of the dephasing phase the sheath's field gives them by the echo at the run's field
         and direction, the exact per-walker phase the kernel applies, in radians; None without the field tier), and
         ``D_walk`` (m^2/s)."""
@@ -460,7 +501,13 @@ class Layout(Disco):
                 ["source manifest sha256", src["manifest_sha256"][:16]],
                 ["layout written by", f"{m.get('code', {}).get('commit', '?')[:12]} on {m.get('created', '?')}"],
                 ["pulses", "square (slew rate ∞), one TE per class"],
-                ["tiers stored", "pool, contact, field" if self.tiers else "none (bare diffusion only)"]]
+                ["tiers stored", "pool, contact, field" if self.tiers else "none (bare diffusion only)"],
+                ["background moments (a magnet's own gradient)", "stored, certified to {:g} mT/m".format(self.moments.background["amplitude"] * 1e3)
+                 if self.moments.background else "not stored: a machine with its own gradient is refused"]]
+        if res is not None and res.physics is not None and res.physics.scanner is not None:
+            rows.append(["scanner", f"{res.physics.scanner}, the phantom's centre at "
+                                    f"({', '.join(f'{x * 100:.1f}' for x in res.physics.offset_m)}) cm from isocentre: every catalogued term "
+                                    "per voxel, exact on the layout (docs/scanner.md)"])
         rows += super().accuracy(res)
         if res is not None:
             for name in np.unique(res.meas.shape):
@@ -498,6 +545,9 @@ class Columns(Disco):
             raise ValueError("full mode replays one pulse kind (PGSE or stimulated echo) per run")
         if physics and not physics.along_z:
             raise ValueError("full mode replays the field along z only")
+        if physics and physics.scanner is not None:
+            raise ValueError("full mode replays the commanded acquisition on the whole grid; a machine's per-voxel delivery is demo "
+                             "mode's (the layout), so choose the ideal scanner here")
         return meas
 
     def sequence(self, meas):

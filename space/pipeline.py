@@ -267,7 +267,7 @@ B0_TRANSVERSE = (1.0, 0.0, 0.0)
 
 def catalogue(field_T, pools=CATALOGUE_POOLS):
     """dmipy-sim's canonical white matter at the catalogue field nearest ``field_T`` (in log distance): ``T2`` and
-    ``T1`` per pool of ``pools`` (s), ``rho`` (m/s), the sheath's ``chi_iso`` and ``chi_aniso`` (SI), and
+    ``T1`` per pool of ``pools`` (s), ``rho2`` (m/s), the sheath's ``chi_iso`` and ``chi_aniso`` (SI), and
     ``catalogue_field``, the field the numbers were cited at (the page says so when it is not the chosen one)."""
     import warnings
     from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
@@ -281,7 +281,7 @@ def catalogue(field_T, pools=CATALOGUE_POOLS):
     if unknown:
         raise ValueError(f"the catalogue has no relaxation for the pools {unknown}; it knows {CATALOGUE_POOLS}")
     return dict(catalogue_field=near, T2={q: float(w[f"T2_{q}"]) for q in pools}, T1={q: float(w[f"T1_{q}"]) for q in pools},
-                rho=float(w["rho2"]), chi_iso=float(w["chi_iso_myelin"]), chi_aniso=float(w["delta_chi_a"]))
+                rho2=float(w["rho2"]), chi_iso=float(w["chi_iso_myelin"]), chi_aniso=float(w["delta_chi_a"]))
 
 
 def b0_direction(theta_deg, phi_deg):
@@ -293,22 +293,32 @@ def b0_direction(theta_deg, phi_deg):
 @dataclass(frozen=True)
 class Physics:
     """The tissue and the scanner a replay is evaluated at: the field (T) and its direction in the substrate frame,
-    T2 and T1 per seeded pool (s), the walls' surface relaxivity ``rho`` (m/s), the sheath's ``chi_iso`` and
+    T2 and T1 per seeded pool (s), the walls' surface relaxivity ``rho2`` (m/s), the sheath's ``chi_iso`` and
     ``chi_aniso`` (SI, the field source); ``relaxation`` / ``contact`` / ``field`` switch the three tiers, so a tier
     is a knob the page can turn off one at a time. :meth:`tissue` is the :class:`dmipy_sim.spec.tissue.Tissue` for
-    the replay (None when every tier is off: bare diffusion)."""
+    the replay (None when every tier is off: bare diffusion). ``scanner`` is the machine (a catalogue key; None: the
+    ideal scanner), whose field the physics is at, and ``offset_m`` where the phantom's centre sits from isocentre
+    (metres, the scanner's frame): together they say what gradient every voxel is delivered (docs/scanner.md)."""
     field_T: float
     T2: dict
     T1: dict
-    rho: float
+    rho2: float
     chi_iso: float
     chi_aniso: float
     b0_direction: tuple = B0_ALONG_Z
     relaxation: bool = True
     contact: bool = True
     field: bool = True
+    scanner: Optional[str] = None
+    offset_m: tuple = (0.0, 0.0, 0.0)
 
     def __post_init__(self):
+        if self.scanner is not None:
+            L = limits(self.scanner)
+            if abs(float(L.field_T) - float(self.field_T)) > 1e-9:
+                raise ValueError(f"{self.scanner} is a {L.field_T:g} T magnet; the physics says {self.field_T:g} T")
+        if np.shape(self.offset_m) != (3,):
+            raise ValueError("offset_m is the phantom centre's displacement from isocentre, three lengths in metres")
         if not (0 < self.field_T < 30):
             raise ValueError(f"the field is in tesla, got {self.field_T}")
         if not self.T2 or set(self.T1) != set(self.T2):
@@ -316,7 +326,7 @@ class Physics:
         for what, m in (("T2", self.T2), ("T1", self.T1)):
             if any(not (0 < float(v) < 100) for v in m.values()):
                 raise ValueError(f"{what} is seconds per pool, got {m}")
-        if self.rho < 0:
+        if self.rho2 < 0:
             raise ValueError("the surface relaxivity is non-negative")
         u = np.asarray(self.b0_direction, np.float64)
         if u.shape != (3,) or not np.isclose(np.linalg.norm(u), 1.0, atol=1e-6):
@@ -349,15 +359,16 @@ class Physics:
         first = self.pools[0]
         T2 = {**self.T2, **{q: self.T2[first] for q in unseeded}}; T1 = {**self.T1, **{q: self.T1[first] for q in unseeded}}
         return Tissue(T2=T2 if self.relaxation else None, T1=T1 if self.relaxation else None,
-                      rho=self.rho if self.contact else None, chi_iso=self.chi_iso if self.field else None,
+                      rho2=self.rho2 if self.contact else None, chi_iso=self.chi_iso if self.field else None,
                       chi_aniso=self.chi_aniso if self.field else 0.0)
 
     def label(self):
+        where = "" if self.scanner is None else f" on the {self.scanner} at ({', '.join(f'{x * 100:.1f}' for x in self.offset_m)}) cm"
         if self.bare:
-            return "bare diffusion"
+            return "bare diffusion" + where
         tiers = [n for n, on in (("relaxation", self.relaxation), ("contact", self.contact), ("field", self.field)) if on]
         u = self.b0_direction
-        return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {'+'.join(tiers)}"
+        return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {'+'.join(tiers)}" + where
 
 
 def tissue_and_scanner(physics, unseeded=()):
@@ -451,6 +462,7 @@ class Source:
     The page's side: :meth:`describe` (the title and every text that names the source), :meth:`presets` and
     :meth:`protocol` (the acquisitions offered), :meth:`panel` (the tissue-and-scanner inputs),
     :meth:`catalogue_numbers`, :meth:`physics_from`, :meth:`knobs` and :meth:`apply_knob` (B, one knob away from A),
+    :meth:`refused_machines` (the catalogued machines kept off the scanner menu, and why),
     :meth:`tracking_controls` and :meth:`estimated_seconds` (the GPU seconds a run reserves on a shared pool).
 
     The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the share of a replay
@@ -469,6 +481,13 @@ class Source:
         self.backend = backend(cfg)
 
     # ---- the page's side: from the configuration alone ----
+
+    @classmethod
+    def refused_machines(cls, cfg):
+        """``{label: reason}``: the catalogued machines this source keeps off its scanner menu, each with the reason the
+        page shows under the menu. None here."""
+        return {}
+
     @classmethod
     def describe(cls, cfg):
         """The texts that name the source: ``title``, ``heading`` (the page's first paragraph), ``acquisition``
@@ -537,9 +556,10 @@ class Source:
         raise NotImplementedError
 
     @classmethod
-    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=()):
+    def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=(), scanner=None):
         """The GPU seconds a run of ``protocol`` reserves on a shared pool, from the measured cost model;
-        ``responses`` the ``(state, n_meas, saves)`` of each :meth:`prepare` the call computes (:meth:`responses`)."""
+        ``responses`` the ``(state, n_meas, saves)`` of each :meth:`prepare` the call computes (:meth:`responses`),
+        ``scanner`` the machine (a catalogue key; None: the ideal scanner)."""
         raise NotImplementedError
 
     # ---- the run's side ----
@@ -967,22 +987,36 @@ def gradient_needed(b, delta, Delta):
     return float(np.sqrt(b * 1e6 / (GAMMA ** 2 * delta ** 2 * (Delta - delta / 3.0))))
 
 
-def scanner_classes():
-    """The catalogue's scanner classes with their gradient limit and field: ``{name: (G_max T/m, field_T or None)}``."""
+IDEAL = "ideal: no scanner terms, any gradient amplitude"
+
+
+def machines(cfg):
+    """The configuration's scanner menu after :data:`IDEAL`: ``{label: catalogue key}`` (``[scanners] machines``), each a
+    machine of dmipy-sim's catalogue whose every catalogued term the page applies (docs/scanner.md)."""
+    return {m["label"]: m["key"] for m in (cfg.get("scanners") or {}).get("machines", [])}
+
+
+def machine(cfg, label):
+    """The catalogue key of the menu's ``label``, None for :data:`IDEAL`; an unknown label is refused by name."""
+    if label in (None, IDEAL):
+        return None
+    menu = machines(cfg)
+    if label not in menu:
+        raise ValueError(f"no scanner {label!r}; the menu is {[IDEAL] + list(menu)}")
+    return menu[label]
+
+
+def limits(key):
+    """The :class:`dmipy_sim.acquisition.scanners.ScannerLimits` of a catalogue key."""
     from dmipy_sim.acquisition.scanners import ScannerLimits
-    from dmipy_sim.acquisition import scanner_constants as scc
-    out = {}
-    for c in scc.SCANNER_CONSTANTS["classes"]:
-        L = ScannerLimits.of(c)
-        out[c] = (float(L.G_max), L.field_T)
-    return out
+    return ScannerLimits.of(key)
 
 
 def playable(protocol, shapes, scanner=None):
-    """Per shell, the gradient it needs and whether ``scanner`` (a catalogue class, or None for no limit) can play
-    it: rows of ``(shell, b, delta, Delta, G_needed, G_max or None, ok)`` in SI. A stimulated-echo class needs the
-    same amplitude as its PGSE twin (the same δ and diffusion time)."""
-    G_max = scanner_classes()[scanner][0] if scanner else None
+    """Per shell, the gradient it needs and whether ``scanner`` (a catalogue key, or None for no limit) can play it:
+    rows of ``(shell, b, delta, Delta, G_needed, G_max or None, ok)`` in SI. A stimulated-echo class needs the same
+    amplitude as its PGSE twin (the same δ and diffusion time)."""
+    G_max = float(limits(scanner).G_max) if scanner else None
     rows = []
     for s in protocol.shells:
         t = dict(delta=s.delta, Delta=s.Delta) if s.free_timing else shapes[s.shape]
@@ -990,6 +1024,67 @@ def playable(protocol, shapes, scanner=None):
         G = gradient_needed(s.b, delta, Delta)
         rows.append((s.shape, s.b, delta, Delta, G, G_max, G_max is None or G <= G_max))
     return rows
+
+
+#: how the page names a catalogue leaf's confidence
+CONFIDENCE = {"cited": "measured", "widely-quoted": "measured", "derived": "derived from a measurement",
+              "inferred": "inferred from the class"}
+#: the scanner terms and the catalogue leaves each is read from (section, leaf), in the page's order
+TERMS = (("field strength and direction", (("frame", "b0_axis"),)),
+         ("field law: its gradient g0 (and its value, a phase per voxel)", (("homogeneity", "b0_harmonic_Z2"), ("homogeneity", "b0_harmonic_Z2X"))),
+         ("gradient nonlinearity L", (("gradient_nonlinearity", "d_scale_y_dx"), ("gradient_nonlinearity", "b_error_quadratic_axial"))),
+         ("Maxwell (concomitant) gradient", ()),
+         ("transmit scale B1", (("rf", "b1_axial_falloff"), ("rf", "b1_calibration_offset"))))
+
+
+def scanner_terms(key):
+    """The rows of a machine's term table: ``(term, applied, where the number comes from)``. ``applied`` is whether
+    the catalogue carries the term (the page applies every one it carries); the source is the catalogue leaves'
+    confidence as the page names it (:data:`CONFIDENCE`) with their citation keys, or why the term is absent."""
+    from dmipy_sim.acquisition import scanner_constants as scc
+    L = limits(key)
+    _key, entry, _kind = scc.resolve(key)
+    rows = []
+    have = {"field strength and direction": L.field_T is not None,
+            "field law: its gradient g0 (and its value, a phase per voxel)": L.has_field_law,
+            "gradient nonlinearity L": L.has_gradient_nonlinearity,
+            "Maxwell (concomitant) gradient": L.field_T is not None,
+            "transmit scale B1": L.has_transmit_profile}
+    for term, leaves in TERMS:
+        got = []
+        for sec, leaf in leaves:
+            rec = (entry.get(sec) or {}).get(leaf)
+            if isinstance(rec, dict) and rec.get("value") not in (None, "None") and rec.get("confidence") in CONFIDENCE:
+                got.append(f"{CONFIDENCE[rec['confidence']]} ({rec.get('source_key')})")
+        if term == "Maxwell (concomitant) gradient":
+            src = f"exact from the field strength ({L.field_T:g} T) and the coils' linear field: Maxwell's equations, no fit"
+        elif term == "field strength and direction":
+            u = L.b0_axis or (0.0, 0.0, 1.0)
+            src = f"{L.field_T:g} T along ({u[0]:g}, {u[1]:g}, {u[2]:g}) (R, A, S); " + "; ".join(dict.fromkeys(got))
+        elif have[term]:
+            src = "; ".join(dict.fromkeys(got))
+        elif term == "transmit scale B1" and L.b1_brain_range:
+            src = f"absent: the catalogue holds a range over a brain ({L.b1_brain_range[0]:g}-{L.b1_brain_range[1]:g}), no map"
+        else:
+            src = "absent: the catalogue publishes no such law for this machine"
+        rows.append((term, bool(have[term]), src))
+    return rows
+
+
+def scanner_text(cfg, label, refused=None):
+    """The menu entry's term table as Markdown (the page shows it under the menu), followed by each machine the source
+    keeps off its menu and why (``refused``: ``{label: reason}``, :meth:`Source.refused_machines`)."""
+    key = machine(cfg, label)
+    if key is None:
+        lines = ["**ideal:** the commanded gradient everywhere, the field preset and its direction as set; no transmit scale."]
+    else:
+        lines = [f"**{label}** (`{key}`): every term its catalogue entry carries, at the phantom's place in the bore.",
+                 "", "| term | applied | from |", "|---|---|---|"]
+        for term, on, src in scanner_terms(key):
+            lines.append(f"| {term} | {'yes' if on else 'no'} | {src} |")
+    for name, why in (refused or {}).items():
+        lines += ["", f"**Not on this menu: {name}.** {why}"]
+    return "\n".join(lines)
 
 
 def sample_tractogram(tg, n, *, seed=0):

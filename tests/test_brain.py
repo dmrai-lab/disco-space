@@ -14,17 +14,17 @@ from space.sources import brain as B
 
 FIXTURE = os.environ.get("DISCO_BRAIN_FIXTURE", os.path.expanduser("~/dmrai-ws/data/batman/brain_fixture"))
 PACKS = os.environ.get("DISCO_BRAIN_PACKS", os.path.expanduser("~/dmrai-ws/packs"))
-WM_PACK = os.path.join(PACKS, "cactus_single_bundle_100ms_xframe.spec.rpk")
+WM_PACK = os.path.join(PACKS, "single_bundle_1s_c3_seg125ms.rpk")
 GM_PACK = os.path.join(PACKS, "gm_spheres_100ms.rpk")
 has_fixture = pytest.mark.skipif(not os.path.exists(os.path.join(FIXTURE, "manifest.json")), reason="the BATMAN brain fixture is not on this machine")
-has_packs = pytest.mark.skipif(not (os.path.exists(WM_PACK) and os.path.exists(GM_PACK)), reason="the 100 ms packs are not on this machine")
+has_packs = pytest.mark.skipif(not (os.path.exists(WM_PACK) and os.path.exists(GM_PACK)), reason="the WM and GM packs are not on this machine")
 
 
 def brain_cfg(asset=FIXTURE):
     """brain.toml with the asset and the packs local (the tests never touch the network)."""
     cfg = P.config(os.path.join(P.HERE, "brain.toml"))
     cfg["asset"] = {"local": asset}
-    cfg["packs"] = {"wm": [{"label": "CACTUS single bundle, 100 ms", "uri": WM_PACK}],
+    cfg["packs"] = {"wm": [{"label": "CACTUS single bundle, 1 s in 125 ms windows", "uri": WM_PACK}],
                     "gm": [{"label": "grey-matter spheres, 100 ms", "uri": GM_PACK}]}
     return cfg
 
@@ -72,7 +72,7 @@ def compose_reference(brain, meas, ph, *, scanner, n=200):
     ijk = brain.vox[pick]
     fr = brain.asset.fractions[tuple(ijk.T)].astype(np.float64); fod = brain.asset.fod[tuple(ijk.T)].astype(np.float64)
     wm_pack, gm_pack = brain.pack("wm", ph.wm_pack, 1), brain.pack("gm", ph.gm_pack, 1)
-    t_wm, t_gm, t_csf = ph.tissues(brain.pools(wm_pack), brain.pools(gm_pack))
+    t_wm, t_gm, t_csf = ph.tissues(wm_pack, gm_pack)
     wm = PackSubstrate(wm_pack, m0=ph.m0["wm"], name="wm", tissue=t_wm)
     gm = PackSubstrate(gm_pack, m0=ph.m0["gm"], name="gm", tissue=t_gm)
     csf = FreeWater(m0=ph.m0["csf"], tissue=t_csf)
@@ -112,8 +112,8 @@ def test_a_windowed_multi_seed_pack_replays_as_dmipy_sims_phantom_composition():
     class within window 0 loads ``windows=range(1)`` and the page's contraction over 200 voxels equals
     ``Phantom.compose(...).replay`` of the same packs to float precision (1e-6 in M0 units; measured 7e-8). The
     sheath's field is the composition's ``scanner=ph.scanner_field``; the same composition without it
-    (``scanner=None``, the ideal machine's key ``ph.scanner``) differs by more than 1e-5, so the agreement holds the
-    field tier to account (disco-space#36)."""
+    (``scanner=None``, the ideal machine's key ``ph.scanner``) is refused by dmipy-sim, since the tissue's
+    susceptibility needs a field to act in (disco-space#36)."""
     cfg = P.config(os.path.join(P.HERE, "brain.toml"))
     cfg["asset"] = {"local": FIXTURE}
     brain = B.Brain(cfg)
@@ -127,8 +127,8 @@ def test_a_windowed_multi_seed_pack_replays_as_dmipy_sims_phantom_composition():
     live = np.isfinite(ref[:, 0])
     assert live.sum() > 150
     assert np.max(np.abs(got[live] - ref[live])) < 1e-6
-    _, bare = compose_reference(brain, meas, ph, scanner=ph.scanner)
-    assert np.max(np.abs(got[live] - bare[live])) > 1e-5
+    with pytest.raises(ValueError, match="no scanner field"):
+        compose_reference(brain, meas, ph, scanner=ph.scanner)
 
 
 @has_fixture
@@ -143,7 +143,7 @@ def test_prepare_is_kept_per_tissue_and_field_and_the_m0_is_the_devices(brain):
     k1 = brain.prepare(meas, ph)
     k2 = brain.cached(meas, B.Brain.physics_from(cfg, {**v, "m0_gm": 0.5}))
     assert k2.seconds == 0.0 and k2.m0["gm"] == 0.5 and k1.m0["gm"] == v["m0_gm"] and k2.wm is k1.wm
-    assert brain.cached(meas, B.Brain.physics_from(cfg, {**v, "rho": 2 * v["rho"]})) is None
+    assert brain.cached(meas, B.Brain.physics_from(cfg, {**v, "rho2": 2 * v["rho2"]})) is None
     only_gm = {**v, "m0_wm": 0.0, "m0_csf": 0.0}
     a = brain.replay(meas, B.Brain.physics_from(cfg, only_gm), brain.cached(meas, B.Brain.physics_from(cfg, only_gm)))
     b = brain.replay(meas, B.Brain.physics_from(cfg, {**only_gm, "m0_gm": 0.5 * v["m0_gm"]}), brain.cached(meas, B.Brain.physics_from(cfg, {**only_gm, "m0_gm": 0.5 * v["m0_gm"]})))
@@ -367,7 +367,7 @@ def test_the_reservation_prices_the_responses_the_page_has_not_cached(monkeypatc
     args = lambda knob, ladder=True: ["clinical b1000 x 30", 1, True, 30, 1, 45.0, 1.25, 0, None, knob, A.IDEAL, 1, ladder, *physics] + [False] * 28
     seven = "field → 7 T (catalogue tissue at that field)"
     cold = A.uncached_responses(*args(P.NO_KNOB))
-    saves = 1002                                              # the 100 ms WM pack's one window
+    saves = B.Brain.saves_spanned(B.declared_segments(WM_PACK), 1)            # the WM pack's first window
     assert cold == [("cold", 31, saves), ("no_field", 31, saves), ("no_field", 31, saves), ("no_field", 31, saves)]
     prot = P.preset_protocol(cfg, "clinical b1000 x 30")
     for (_, meas, ph) in A.response_entries(page, A.plan_runs(cfg, page, *args(P.NO_KNOB)[:4], None, P.NO_KNOB, A.IDEAL, v, [False] * 28), True):
@@ -525,34 +525,28 @@ def test_a_hub_pack_loads_the_windows_reached_and_reloads_for_more(windowed, two
     assert calls[-1] == (two, None) and src.windows_held(whole, seg) == 2
 
 
-HUB_FIXTURE = "hf://SubstrateCommons/parity-fixtures/test-fixtures/windows-fixture.rpk"
-
-
 @pytest.mark.skipif(not os.environ.get("DISCO_HUB_TESTS"), reason="reads the Hub: set DISCO_HUB_TESTS=1")
 @has_fixture
-def test_the_hub_fixture_loads_by_window(windowed, monkeypatch):
-    """The public three-window fixture on the Hub, read by byte range: ``windows=range(1)`` for a class within
-    window 0, then ``range(2)`` when a class reaching window 1 asks, which replaces the cached pack. The fixture has
-    no record in its dataset's manifest, so its declared table is read from its own header (a window-0 read keeps
-    the parent's table)."""
-    from dmipy_sim.replay import ReplayPack
-    table = ReplayPack.load(HUB_FIXTURE, windows=range(1)).segments
-    real = B.declared_segments
-    monkeypatch.setattr(B, "declared_segments", lambda u: dict(n=int(table["n"]), n_t=int(table["n_t"]), T=float(table["T"])) if u == HUB_FIXTURE else real(u))
+def test_a_hub_pack_loads_by_window(windowed):
+    """brain.toml's default GM pack on the Hub (a walk in two windows, its table from its dataset's record), read by
+    byte range: ``windows=range(1)`` for a class within window 0, then ``range(2)`` when a class reaching window 1
+    asks, which replaces the cached pack."""
+    cfg = P.config(os.path.join(P.HERE, "brain.toml"))
+    label, uri = next(iter(B.Brain.pack_menu(cfg, "gm").items()))
     src = B.Brain.__new__(B.Brain)
-    src.cfg = {**windowed.cfg, "packs": {"wm": [{"label": "hub", "uri": HUB_FIXTURE}], "gm": []}}
+    src.cfg = {**windowed.cfg, "packs": {"wm": [], "gm": [{"label": label, "uri": uri}]}}
     src.packs = {}; src.shapes = windowed.shapes
-    seg = src.segments("wm", "hub")
-    assert seg["n"] == 3
+    seg = src.segments("gm", label)
+    assert seg["n"] == 2
     T = float(seg["T"])                                        # classes whose echo sits in window 0, then in window 1
     src.shapes = {**src.shapes, "w0": dict(label="w0", delta=0.2 * T, Delta=0.5 * T, TE=T), "w1": dict(label="w1", delta=0.3 * T, Delta=0.75 * T, TE=1.5 * T)}
     short, long = P.measurements(_class("w0"), src.shapes), P.measurements(_class("w1"), src.shapes)
-    assert src.windows_needed("wm", "hub", short) == 1
-    assert src.windows_needed("wm", "hub", long) == 2
-    one = src.pack("wm", "hub", 1)
-    assert one.windows_present == 1 and one.n_segments == 3
-    two = src.pack("wm", "hub", 2)
-    assert two.windows_present == 2 and src.packs[("wm", "hub")] is two
+    assert src.windows_needed("gm", label, short) == 1
+    assert src.windows_needed("gm", label, long) == 2
+    one = src.pack("gm", label, 1)
+    assert one.windows_present == 1 and one.n_segments == 2
+    two = src.pack("gm", label, 2)
+    assert two.windows_present == 2 and src.packs[("gm", label)] is two
 
 
 @has_fixture
@@ -671,16 +665,72 @@ def test_a_machine_plays_every_pulse_at_its_slew_and_field():
     assert src.response_key(meas, real) != src.response_key(meas, ideal)
 
 
+def left_handed_asset(tmp_path):
+    """The fixture as a left-handed image: every array's third axis reversed and the affine's third column negated
+    with its origin at the old last slice, so every voxel holds the same tissue at the same scanner position."""
+    d = tmp_path / "left"; d.mkdir()
+    man = json.load(open(os.path.join(FIXTURE, "manifest.json")))
+    for f in ("fod_wm.npy", "fractions.npy", "mask.npy", "labels.npy", "stop_mask.npy", "mean_b0.npy"):
+        np.save(d / f, np.ascontiguousarray(np.load(os.path.join(FIXTURE, f))[:, :, ::-1]))
+    A = np.asarray(man["grid"]["affine"], np.float64)
+    n = int(man["grid"]["shape"][2])
+    A[:3, 3] = A[:3, 3] + A[:3, 2] * (n - 1); A[:3, 2] = -A[:3, 2]
+    man["grid"]["affine"] = A.tolist()
+    json.dump(man, open(d / "manifest.json", "w"))
+    import shutil
+    shutil.copy(os.path.join(FIXTURE, "regions.json"), d / "regions.json")
+    return str(d)
+
+
 @has_fixture
-def test_the_head_sits_at_isocentre_at_its_physical_offsets():
-    """The bore grid puts every brain voxel at its affine's place relative to the head centre (the left-handed
-    affine's third index reversed, not mirrored), with non-negative indices a phantom can take."""
-    src = B.Brain(brain_cfg(), asset=FIXTURE)
+@pytest.mark.parametrize("handed", ["right", "left"])
+def test_the_head_sits_at_isocentre_at_its_physical_offsets(tmp_path, handed):
+    """The bore grid puts every brain voxel at its affine's place relative to the head centre, for the fixture's
+    right-handed affine and its left-handed copy, on the voxels' own indices."""
+    asset = FIXTURE if handed == "right" else left_handed_asset(tmp_path)
+    src = B.Brain(brain_cfg(asset), asset=asset)
+    assert (np.linalg.det(src.affine[:3, :3]) < 0) == (handed == "left")
     grid, idx = src.bore_grid
+    np.testing.assert_array_equal(idx, src.vox)
     A = src.affine
     truth = (A[:3, :3] @ src.vox.T).T * 1e-3 + A[:3, 3] * 1e-3
     np.testing.assert_allclose(grid.offset_m(idx) @ np.asarray(grid.to_scanner).T, truth - truth.mean(0), atol=1e-12)
-    assert idx.min() >= 0 and np.all(idx.max(0) < np.asarray(grid.shape))
+
+
+@has_fixture
+def test_a_left_handed_brains_bore_maps_are_the_catalogues_field_at_its_affines_place(tmp_path):
+    """On the fixture's left-handed copy, the bore maps the machines' terms are read from -- the Swoop's field offset,
+    its transmit scale and its own gradient, the Prisma's gradient nonlinearity -- at every sampled brain voxel equal
+    the catalogue's law at ``affine @ [ijk, 1]`` from the head centre, on both sides of the midline (a mirrored head
+    would read the law at the wrong side's places); its left-handed and right-handed copies give every voxel the same values."""
+    from dmipy_sim.phantom.bore import b0_offset_map, b1_scale_map, background_gradient_map, gradient_tensor_map
+    asset = left_handed_asset(tmp_path)
+    left = B.Brain(brain_cfg(asset), asset=asset)
+    right = B.Brain(brain_cfg(), asset=FIXTURE)
+    assert np.linalg.det(left.affine[:3, :3]) < 0
+    grid, idx = left.bore_grid
+    A = left.affine
+    at = (A[:3, :3] @ idx.T).T * 1e-3 + A[:3, 3] * 1e-3
+    d = at - at.mean(0)                                                       # scanner-frame displacement from the head centre
+    near = np.linalg.norm(d, axis=1) < 0.07                                   # inside the Swoop's 8 cm anchor with room
+    rng = np.random.default_rng(3)
+    sides = [np.flatnonzero(near & (d[:, 0] > 0.02)), np.flatnonzero(near & (d[:, 0] < -0.02))]
+    pick = np.concatenate([rng.choice(s, 50, replace=False) for s in sides])
+    pos = grid.positions_m(idx[pick])
+    swoop, prisma = P.limits("hyperfine_swoop_64mT"), P.limits("siemens_magnetom_prisma_3T")
+    b0 = b0_offset_map(swoop, grid)(pos)
+    np.testing.assert_allclose(b0, swoop.b0_offset(d[pick]), rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(b1_scale_map(swoop, grid)(pos), swoop.b1_scale(d[pick]), rtol=1e-12)
+    np.testing.assert_allclose(background_gradient_map(swoop, grid)(pos) @ np.asarray(grid.to_scanner).T,
+                               swoop.b0_gradient(d[pick]), rtol=1e-10, atol=1e-15)
+    R = np.asarray(grid.to_scanner)
+    L_grid = gradient_tensor_map(prisma, grid)(pos)
+    np.testing.assert_allclose(R @ L_grid @ R.T, prisma.gradient_tensor(d[pick]), rtol=1e-10, atol=1e-12)
+    g_r, i_r = right.bore_grid
+    order = np.lexsort(right.vox.T[::-1]); order_l = np.lexsort((left.vox * [1, 1, -1]).T[::-1])
+    inside = near[order_l]                                                    # the same voxels, in the same order, on both
+    np.testing.assert_allclose(b0_offset_map(swoop, g_r)(g_r.positions_m(i_r[order][inside])),
+                               b0_offset_map(swoop, grid)(grid.positions_m(idx[order_l][inside])), rtol=1e-10, atol=1e-15)
 
 
 @has_fixture
@@ -716,7 +766,7 @@ def test_a_machine_plays_each_voxel_its_encoding_class_and_a_representative_exac
         assert np.max(np.abs(b[nz] / b_class[cls[v]][nz] - 1)) < 2 * tol
     pose = B.specimen_pose(src.asset.R, ph.b0_direction)
     wm_pack, gm_pack = src.pack("wm", ph.wm_pack, 1), src.pack("gm", ph.gm_pack, 1)
-    t_wm, t_gm, t_csf = ph.tissues(src.pools(wm_pack), src.pools(gm_pack))
+    t_wm, t_gm, t_csf = ph.tissues(wm_pack, gm_pack)
     reps = [int(np.flatnonzero(cls == c)[0]) for c in range(len(played))]
     reps = [v for v in reps if np.isfinite(factor[tuple(src.vox[v])])][:4]          # a class's first member may hold no signal
     assert reps

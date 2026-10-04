@@ -42,7 +42,7 @@ design note: each term, how it enters each page, its exactness and cost, and wha
 
 **The Replay DWI Explorer** (the third tab) shows what the replay made before the noise and the tractography: the
 ingredient of each tier per voxel (the intra-axonal weight fraction; the walkers' wall contact, a boundary local
-time of 0–58 µm on DiSCo with a contact survival of 0.89–1 at ρ = 1.16 µm/s; the spread of the sheath field's
+time of 0–58 µm on DiSCo with a contact survival of 0.89–1 at ρ₂ = 1.16 µm/s; the spread of the sheath field's
 dephasing phase at the echo, 0.10 rad in strand voxels at 3 T and 0.24 rad at 7 T), then the same walk replayed
 noise-free with the tiers switched on one at a time, A and B, and any layer's signal, its difference to the
 previous layer or B minus A, in the DWI or in the tensor's MD and FA, divided by the replay floor when asked.

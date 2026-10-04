@@ -53,7 +53,7 @@ def test_the_physics_panel_is_a_physics_in_si_or_none_when_off():
     nums = S.catalogue_numbers(CFG, 3.0)
     assert nums[-1].startswith("catalogue values at 3 T") and S.catalogue_numbers(CFG, 0.064)[-1].startswith("the catalogue has no cited")
     ph = S.physics_from(CFG, _values(field=False))
-    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == D.pools(CFG)
+    assert ph.field_T == 3.0 and ph.T2["intra"] == nums[0] * 1e-3 and ph.rho2 == nums[4] * 1e-6 and not ph.field and ph.relaxation and ph.pools == D.pools(CFG)
     assert S.physics_from(CFG, _values(on=False)) is None
     free = S.physics_from(CFG, _values(field_T=7.0, b0_mode=D.FREE_B0, theta=90, phi=90))
     assert abs(free.b0_direction[1] - 1.0) < 1e-12

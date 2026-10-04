@@ -49,13 +49,13 @@ def physics_fields(cfg):
     """The panel's inputs, in the run signature's order."""
     q = pools(cfg)
     return ("on", "field_T", "b0_mode", "theta", "phi", *[f"T2_{p}" for p in q], *[f"T1_{p}" for p in q],
-            "rho", "chi_iso", "chi_aniso", "relaxation", "contact", "field", "offset_cm", "offset_axis")
+            "rho2", "chi_iso", "chi_aniso", "relaxation", "contact", "field", "offset_cm", "offset_axis")
 
 
 def tissue_numbers(cfg):
     """The panel's inputs the catalogue fills in: ms, ms, µm/s, ppm on the page."""
     q = pools(cfg)
-    return (*[f"T2_{p}" for p in q], *[f"T1_{p}" for p in q], "rho", "chi_iso", "chi_aniso")
+    return (*[f"T2_{p}" for p in q], *[f"T1_{p}" for p in q], "rho2", "chi_iso", "chi_aniso")
 
 
 class Disco(P.Source):
@@ -155,11 +155,11 @@ class Disco(P.Source):
             (C("b0_mode", "dropdown", "B0 direction", list(B0_MODES)[0], tuple(B0_MODES) + (FREE_B0,)),
              C("theta", "slider", "polar angle from z (°)", 0, minimum=0, maximum=180, step=1),
              C("phi", "slider", "azimuth from x (°)", 0, minimum=0, maximum=360, step=1)),
-            (C("relaxation", "checkbox", "relaxation (T2, T1)", True), C("contact", "checkbox", "contact (surface relaxivity ρ)", True),
+            (C("relaxation", "checkbox", "relaxation (T2, T1)", True), C("contact", "checkbox", "contact (surface relaxivity ρ₂)", True),
              C("field", "checkbox", "field (myelin susceptibility)", True)),
             tuple(C(f"T2_{p}", "number", f"T2 {p} (ms)", c0[k]) for k, p in enumerate(q)),
             tuple(C(f"T1_{p}", "number", f"T1 {p} (ms)", c0[n + k]) for k, p in enumerate(q)),
-            (C("rho", "number", "ρ (µm/s)", c0[2 * n]), C("chi_iso", "number", "χ_iso of the sheath, the field source (ppm)", c0[2 * n + 1]),
+            (C("rho2", "number", "ρ₂, the walls' transverse surface relaxivity (µm/s)", c0[2 * n]), C("chi_iso", "number", "χ_iso of the sheath, the field source (ppm)", c0[2 * n + 1]),
              C("chi_aniso", "number", "Δχ_a of the sheath (ppm)", c0[2 * n + 2])),
             (C("catalogue_note", "catalogue_note", value=c0[-1]), C("reset", "reset", "reset to the catalogue at this field")),
             (C("offset_cm", "slider", "the phantom's distance from isocentre (cm; a scanner's terms vanish at 0)",
@@ -178,7 +178,7 @@ class Disco(P.Source):
         note = (f"catalogue values at {c['catalogue_field']:g} T" if abs(c["catalogue_field"] - float(field_T)) < 1e-9
                 else f"the catalogue has no cited relaxation at {float(field_T):g} T: nearest is {c['catalogue_field']:g} T, edit as you see fit")
         return ([c["T2"][p] * 1e3 for p in q] + [c["T1"][p] * 1e3 for p in q]
-                + [c["rho"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
+                + [c["rho2"] * 1e6, c["chi_iso"] * 1e6, c["chi_aniso"] * 1e6, note])
 
     @classmethod
     def physics_from(cls, cfg, values, scanner=None):
@@ -202,7 +202,7 @@ class Disco(P.Source):
                                                              field=False, scanner=scanner, offset_m=offset)
         return P.Physics(field_T=field_T, b0_direction=u,
                          T2={p: float(values[f"T2_{p}"]) * 1e-3 for p in q}, T1={p: float(values[f"T1_{p}"]) * 1e-3 for p in q},
-                         rho=float(values["rho"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
+                         rho2=float(values["rho2"]) * 1e-6, chi_iso=float(values["chi_iso"]) * 1e-6, chi_aniso=float(values["chi_aniso"]) * 1e-6,
                          relaxation=bool(values["relaxation"]), contact=bool(values["contact"]), field=bool(values["field"]),
                          scanner=scanner, offset_m=offset)
 
@@ -327,13 +327,13 @@ class Disco(P.Source):
 
     @staticmethod
     def ingredient_layers(ing):
-        """The intra-axonal weight fraction, the walls' contact (the survival at the run's rho with the contact tier,
+        """The intra-axonal weight fraction, the walls' contact (the survival at the run's rho2 with the contact tier,
         else the boundary local time), the field's dephasing spread."""
         if not ing:
             return [None, None, None]
         pool = ("intra-axonal weight fraction (relaxation tier re-weights it)", ing["intra_fraction"], dict(vmin=0, vmax=1))
         if ing.get("contact_survival") is not None:
-            contact = ("contact survival exp(−ρ ℓ / D) at the run's ρ (ℓ the walkers' wall contact)", ing["contact_survival"], dict(cmap="magma", vmax=1))
+            contact = ("contact survival exp(−ρ₂ ℓ / D) at the run's ρ₂ (ℓ the walkers' wall contact)", ing["contact_survival"], dict(cmap="magma", vmax=1))
         elif ing.get("wall_contact_um") is not None:
             contact = ("walkers' wall contact ℓ (boundary local time, µm)", ing["wall_contact_um"], dict(cmap="magma", unit="µm"))
         else:
@@ -454,8 +454,8 @@ class Layout(Disco):
         :meth:`~dmipy_sim.replay.shape_moments.ShapeMoments.tier_maps` on the device columns the replay left
         resident): ``intra_fraction`` (the walker weight in the intra-axonal pool over the voxel's),
         ``wall_contact_um`` (the walkers' boundary local time l under the class's gate, a length; the layout stores
-        it signed as the exponent's term, -l, so the contact tier's weight is exp(rho c / D) = exp(-rho l / D)),
-        ``contact_survival`` (that factor at the run's rho, None without the contact tier), ``field_rad`` (the spread
+        it signed as the exponent's term, -l, so the contact tier's weight is exp(rho2 c / D) = exp(-rho2 l / D)),
+        ``contact_survival`` (that factor at the run's rho2, None without the contact tier), ``field_rad`` (the spread
         over the voxel's walkers of the dephasing phase the sheath's field gives them by the echo at the run's field
         and direction, the exact per-walker phase the kernel applies, in radians; None without the field tier), and
         ``D_walk`` (m^2/s)."""

@@ -267,7 +267,7 @@ B0_TRANSVERSE = (1.0, 0.0, 0.0)
 
 def catalogue(field_T, pools=CATALOGUE_POOLS):
     """dmipy-sim's canonical white matter at the catalogue field nearest ``field_T`` (in log distance): ``T2`` and
-    ``T1`` per pool of ``pools`` (s), ``rho`` (m/s), the sheath's ``chi_iso`` and ``chi_aniso`` (SI), and
+    ``T1`` per pool of ``pools`` (s), ``rho2`` (m/s), the sheath's ``chi_iso`` and ``chi_aniso`` (SI), and
     ``catalogue_field``, the field the numbers were cited at (the page says so when it is not the chosen one)."""
     import warnings
     from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
@@ -281,7 +281,7 @@ def catalogue(field_T, pools=CATALOGUE_POOLS):
     if unknown:
         raise ValueError(f"the catalogue has no relaxation for the pools {unknown}; it knows {CATALOGUE_POOLS}")
     return dict(catalogue_field=near, T2={q: float(w[f"T2_{q}"]) for q in pools}, T1={q: float(w[f"T1_{q}"]) for q in pools},
-                rho=float(w["rho2"]), chi_iso=float(w["chi_iso_myelin"]), chi_aniso=float(w["delta_chi_a"]))
+                rho2=float(w["rho2"]), chi_iso=float(w["chi_iso_myelin"]), chi_aniso=float(w["delta_chi_a"]))
 
 
 def b0_direction(theta_deg, phi_deg):
@@ -293,7 +293,7 @@ def b0_direction(theta_deg, phi_deg):
 @dataclass(frozen=True)
 class Physics:
     """The tissue and the scanner a replay is evaluated at: the field (T) and its direction in the substrate frame,
-    T2 and T1 per seeded pool (s), the walls' surface relaxivity ``rho`` (m/s), the sheath's ``chi_iso`` and
+    T2 and T1 per seeded pool (s), the walls' surface relaxivity ``rho2`` (m/s), the sheath's ``chi_iso`` and
     ``chi_aniso`` (SI, the field source); ``relaxation`` / ``contact`` / ``field`` switch the three tiers, so a tier
     is a knob the page can turn off one at a time. :meth:`tissue` is the :class:`dmipy_sim.spec.tissue.Tissue` for
     the replay (None when every tier is off: bare diffusion). ``scanner`` is the machine (a catalogue key; None: the
@@ -302,7 +302,7 @@ class Physics:
     field_T: float
     T2: dict
     T1: dict
-    rho: float
+    rho2: float
     chi_iso: float
     chi_aniso: float
     b0_direction: tuple = B0_ALONG_Z
@@ -326,7 +326,7 @@ class Physics:
         for what, m in (("T2", self.T2), ("T1", self.T1)):
             if any(not (0 < float(v) < 100) for v in m.values()):
                 raise ValueError(f"{what} is seconds per pool, got {m}")
-        if self.rho < 0:
+        if self.rho2 < 0:
             raise ValueError("the surface relaxivity is non-negative")
         u = np.asarray(self.b0_direction, np.float64)
         if u.shape != (3,) or not np.isclose(np.linalg.norm(u), 1.0, atol=1e-6):
@@ -359,7 +359,7 @@ class Physics:
         first = self.pools[0]
         T2 = {**self.T2, **{q: self.T2[first] for q in unseeded}}; T1 = {**self.T1, **{q: self.T1[first] for q in unseeded}}
         return Tissue(T2=T2 if self.relaxation else None, T1=T1 if self.relaxation else None,
-                      rho=self.rho if self.contact else None, chi_iso=self.chi_iso if self.field else None,
+                      rho2=self.rho2 if self.contact else None, chi_iso=self.chi_iso if self.field else None,
                       chi_aniso=self.chi_aniso if self.field else 0.0)
 
     def label(self):

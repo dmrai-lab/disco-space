@@ -13,7 +13,7 @@ plotly>=5.20
 pillow>=10
 gradio==6.28.0
 dipy>=1.9                       # dmipy-fit's tensor fit for the response function reads a dipy GradientTable
-# dmipy-sim: dmipy-sim#556 split into its own PRs, merged together on split/scanner-integration (disco-space#27 lists them); re-pin to main once they merge
-dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@8390a2e57c9dc1c38bcefb251755cd0aa28071b8
+# dmipy-sim: main at the merge of dmipy-sim#598 (the field declared by the spec's pools)
+dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@1b79d2e06a958578bc523c84bacf54bae86fbb95
 dmipy-fit @ git+https://github.com/dmrai-lab/dmipy-fit@c3dcc546595cbde8e8e7c7bb2ff4e87f099d5dab
 dmipy-tract @ git+https://github.com/dmrai-lab/dmipy-tract@7da22c3a9473c50a08cc7c6246ec16b68a64d877

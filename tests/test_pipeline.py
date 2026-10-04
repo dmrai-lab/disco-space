@@ -196,19 +196,19 @@ def test_the_physics_is_the_catalogue_at_the_nearest_field_with_the_tiers_as_swi
     ph = P.Physics.at(3.0)
     assert ph.pools == ("intra", "extra")
     tis = ph.tissue()
-    assert tis.T2 == two["T2"] and tis.T1 == two["T1"] and tis.rho == c3["rho"] and tis.chi_iso == c3["chi_iso"] and tis.chi_aniso == c3["chi_aniso"]
+    assert tis.T2 == two["T2"] and tis.T1 == two["T1"] and tis.rho2 == c3["rho2"] and tis.chi_iso == c3["chi_iso"] and tis.chi_aniso == c3["chi_aniso"]
     filled = ph.tissue(unseeded=("myelin",))                              # the unseeded spec pool takes the first pool's value
     assert set(filled.T2) == {"intra", "extra", "myelin"} and filled.T2["myelin"] == two["T2"]["intra"]
     assert not ph.bare and "relaxation+contact+field" in ph.label()
     no_field = P.Physics.at(7.0, field=False, b0_direction=P.b0_direction(90, 0))
-    assert no_field.tissue().chi_iso is None and no_field.tissue().chi_aniso == 0.0 and no_field.tissue().rho == c3["rho"]
+    assert no_field.tissue().chi_iso is None and no_field.tissue().chi_aniso == 0.0 and no_field.tissue().rho2 == c3["rho2"]
     np.testing.assert_allclose(no_field.b0_direction, (1, 0, 0), atol=1e-12)
     bare = P.Physics.at(3.0, relaxation=False, contact=False, field=False)
     assert bare.bare and bare.tissue() is None and bare.label() == "bare diffusion"
     assert P.tissue_and_scanner(bare) == (None, None) and P.tissue_and_scanner(None) == (None, None)
     assert P.tissue_and_scanner(no_field)[1] is None and P.tissue_and_scanner(ph)[1] == 3.0    # the field goes with the field tier
     only_relax = P.Physics.at(3.0, contact=False, field=False, T2={"intra": 0.08, "extra": 0.08})
-    assert only_relax.tissue().T2["intra"] == 0.08 and only_relax.tissue().rho is None
+    assert only_relax.tissue().T2["intra"] == 0.08 and only_relax.tissue().rho2 is None
     with pytest.raises(ValueError, match="tesla"):
         P.Physics.at(3000.0)
     with pytest.raises(ValueError, match="same pools"):

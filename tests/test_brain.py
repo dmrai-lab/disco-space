@@ -61,22 +61,15 @@ def test_the_fixture_loads_in_the_assets_layout(brain):
     assert np.allclose(prot.directions[prot.n_b0:][0], a.R.T @ first) or np.isclose(np.abs(prot.directions[prot.n_b0:] @ (a.R.T @ first)).max(), 1.0)
 
 
-@has_fixture
-@has_packs
-def test_the_replay_is_dmipy_sims_phantom_composition(brain):
-    """At the scan's protocol, 3 T with every tier on (relaxation, contact, the sheath's field along the bore), noise
-    off: the Space's float32 contraction over 200 voxels equals ``Phantom.compose(...).replay(seq, pose=...)`` of the
-    same packs, tissue, fractions and FODs to 1e-5 in M0 units."""
+def compose_reference(brain, meas, ph, *, scanner, n=200):
+    """``(got, ref)`` on ``n`` voxels drawn with seed 0, in M0 units: the page's contraction (:meth:`Brain.prepare`,
+    :meth:`Brain.replay`) and dmipy-sim's ``Phantom.compose(...).replay(seq, scanner=scanner, pose=...)`` of the
+    same packs as loaded, tissue, fractions and FODs, NaN where a voxel carries no signal."""
     from dmipy_sim.phantom import FreeWater, Grid, Inert, ODF, PackSubstrate, Phantom
-    cfg = brain.cfg
-    ph = B.Brain.physics_from(cfg, default_values(cfg))
-    assert ph.relaxation and ph.contact and ph.field and ph.field_T == 3.0
-    prot = B.Brain.protocol(cfg, B.Brain.presets(cfg)[0])
-    meas = brain.validate(prot, ph)
-    k = brain.prepare(meas, ph)
-    dwi, floor, factor, _ = brain.replay(meas, ph, k)
-    pick = np.sort(np.random.default_rng(0).choice(len(brain.vox), 200, replace=False))
-    ijk = brain.vox[pick]; n = len(ijk)
+    dwi, floor, factor, _ = brain.replay(meas, ph, brain.prepare(meas, ph))
+    assert floor.max() == 0 and np.nanmax(dwi) <= 1 + 1e-5
+    pick = np.sort(np.random.default_rng(0).choice(len(brain.vox), n, replace=False))
+    ijk = brain.vox[pick]
     fr = brain.asset.fractions[tuple(ijk.T)].astype(np.float64); fod = brain.asset.fod[tuple(ijk.T)].astype(np.float64)
     wm_pack, gm_pack = brain.pack("wm", ph.wm_pack, 1), brain.pack("gm", ph.gm_pack, 1)
     t_wm, t_gm, t_csf = ph.tissues(brain.pools(wm_pack), brain.pools(gm_pack))
@@ -89,12 +82,53 @@ def test_the_replay_is_dmipy_sims_phantom_composition(brain):
                               remainder=Inert(), orientation={wm: ODF(fod.reshape(n, 1, 1, 45), basis="tournier07"),
                                                               gm: ODF(iso.reshape(n, 1, 1, 45), basis="tournier07")})
     pose = B.specimen_pose(brain.asset.R, ph.b0_direction)
-    ref = phantom.replay(brain.sequence(meas, np.arange(len(meas.bvals)), pose), scanner=ph.scanner_field, pose=pose)[:, 0, 0, :]
+    ref = phantom.replay(brain.sequence(meas, np.arange(len(meas.bvals)), pose), scanner=scanner, pose=pose)[:, 0, 0, :]
     got = (dwi * factor[..., None])[tuple(ijk.T)]
+    assert (np.isfinite(got[:, 0]) == np.isfinite(ref[:, 0])).all()
+    return got, ref
+
+
+@has_fixture
+@has_packs
+def test_the_replay_is_dmipy_sims_phantom_composition(brain):
+    """At the scan's protocol, 3 T with every tier on (relaxation, contact, the sheath's field along the bore), noise
+    off: the Space's float32 contraction over 200 voxels equals ``Phantom.compose(...).replay(seq, pose=...)`` of the
+    same packs, tissue, fractions and FODs to 1e-5 in M0 units, the field given as ``scanner=ph.scanner_field``."""
+    cfg = brain.cfg
+    ph = B.Brain.physics_from(cfg, default_values(cfg))
+    assert ph.relaxation and ph.contact and ph.field and ph.field_T == 3.0
+    meas = brain.validate(B.Brain.protocol(cfg, B.Brain.presets(cfg)[0]), ph)
+    got, ref = compose_reference(brain, meas, ph, scanner=ph.scanner_field)
     live = np.isfinite(ref[:, 0])
-    assert live.sum() > 150 and (np.isfinite(got[:, 0]) == live).all()
+    assert live.sum() > 150
     assert np.max(np.abs(got[live] - ref[live])) < 1e-5
-    assert floor.max() == 0 and np.nanmax(dwi) <= 1 + 1e-5
+
+
+@pytest.mark.skipif(not os.environ.get("DISCO_HUB_TESTS"), reason="reads the Hub: set DISCO_HUB_TESTS=1")
+@has_fixture
+def test_a_windowed_multi_seed_pack_replays_as_dmipy_sims_phantom_composition():
+    """The page's default packs (brain.toml's first menu entries: the WM walk of 1 s in 125 ms windows from several
+    seeded walks, the GM walk of 250 ms in 125 ms windows), read from the Hub by window, every tier on at 3 T: a
+    class within window 0 loads ``windows=range(1)`` and the page's contraction over 200 voxels equals
+    ``Phantom.compose(...).replay`` of the same packs to float precision (1e-6 in M0 units; measured 7e-8). The
+    sheath's field is the composition's ``scanner=ph.scanner_field``; the same composition without it
+    (``scanner=None``, the ideal machine's key ``ph.scanner``) differs by more than 1e-5, so the agreement holds the
+    field tier to account (disco-space#36)."""
+    cfg = P.config(os.path.join(P.HERE, "brain.toml"))
+    cfg["asset"] = {"local": FIXTURE}
+    brain = B.Brain(cfg)
+    ph = B.Brain.physics_from(cfg, default_values(cfg))
+    assert ph.relaxation and ph.contact and ph.field and ph.field_T == 3.0 and ph.scanner is None
+    meas = brain.validate(P.Protocol((P.Shell(B.SCAN, 1000, 6), P.Shell(B.SCAN, 2500, 6)), n_b0=1), ph)
+    got, ref = compose_reference(brain, meas, ph, scanner=ph.scanner_field)
+    wm = brain.pack("wm", ph.wm_pack, 1)
+    walks = wm.segments["walks"]
+    assert wm.windows_present == 1 and wm.n_segments > 1 and len(walks) == 1 and len(walks[0]["seed"]) > 1
+    live = np.isfinite(ref[:, 0])
+    assert live.sum() > 150
+    assert np.max(np.abs(got[live] - ref[live])) < 1e-6
+    _, bare = compose_reference(brain, meas, ph, scanner=ph.scanner)
+    assert np.max(np.abs(got[live] - bare[live])) > 1e-5
 
 
 @has_fixture

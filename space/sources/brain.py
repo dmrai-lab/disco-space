@@ -796,7 +796,7 @@ class Brain(P.Source):
 
     @classmethod
     def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=(), scanner=None):
-        """The GPU seconds a run reserves: ``[budget]`` of the configuration, measured on the L40S with the BATMAN
+        """The GPU seconds a run reserves: ``[budget]`` of the configuration, measured on an L40S with the BATMAN
         fixture (tools/measure_brain.py): a fixed part (the worker's start, noise, the reconstruction's fixed cost, the
         handoff), a part per measurement (the contraction and the reconstruction scale with the rows), the tracking
         and the truth's tracking per density, the ladder's two rungs of contraction, B (a second run whose truth is A's),

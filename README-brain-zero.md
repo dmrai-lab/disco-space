@@ -49,7 +49,7 @@ reservation is killed. Only the device part of a run holds the GPU, with the pac
 cached (part of the reservation shown, which falls once a run has cached them); the page's files and figures after
 it do not.
 
-Not re-measured at the current pins (dmipy-sim 1b79d2e; the tables below name their own). Measured on the L40S with the BATMAN development fixture (96 x 96 x 60 at 2.5 mm, 90,205 brain voxels, 36,605 in the
+Not re-measured at the current pins (dmipy-sim 1b79d2e; the tables below name their own). Measured on an L40S with the BATMAN development fixture (96 x 96 x 60 at 2.5 mm, 90,205 brain voxels, 36,605 in the
 WM stop mask; dmipy-sim 7f6f1fa, dmipy-fit 0c7dde8 with the single-tissue reconstruction, dmipy-tract 7da22c3;
 `tools/measure_brain.py`, 2026-09-30), steady state, seconds:
 

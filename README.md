@@ -121,7 +121,7 @@ JAX_PLATFORMS=cuda XLA_FLAGS=--xla_gpu_deterministic_ops=true pytest tests/test_
 **Determinism.** The image runs with `XLA_FLAGS=--xla_gpu_deterministic_ops=true` (the Dockerfile sets it): without it
 the GPU scatter-add of the replay differs between runs by up to 5e-7 on the normalised signal, which the CSD
 amplifies to 1e-2 on the SH coefficients and the tracker into a few different streamlines (Pearson moved by 1e-5).
-With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2.31 s on the L40S).
+With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2.31 s on an L40S).
 
 ## ZeroGPU
 
@@ -141,7 +141,7 @@ a queue on one card.
 **The SNR is defined at M0**, the bare signal of the fullest water voxel, and each voxel's noise follows its own
 b = 0 signal: on DiSCo 364 at 3 T with every tier the b = 0 signal is 0.32–0.38 of M0 (T2 near TE, the walls'
 contact in the densest strand voxels), so SNR 30 at M0 is SNR 11 at b = 0 and the connectome's Pearson vs strand
-count goes from 0.924 (bare, or SNR 80 at M0) to 0.912; noiseless it is 0.927 (measured on the L40S, 2026-09-30). Deploy with `tools/deploy.py --zero`
+count goes from 0.924 (bare, or SNR 80 at M0) to 0.912; noiseless it is 0.927 (measured on an L40S, 2026-09-30). Deploy with `tools/deploy.py --zero`
 (`README-zero.md`, `requirements-zero.txt`, the root `app.py`).
 
 **The brain Space** (`rfick/brain-zero`, disco-space#8) is this repository deployed with
@@ -166,7 +166,7 @@ Two runs: the first with an empty Hub cache, the second right after it.
 | whole pipeline | 19.2 | 3.18 | 13.6 | 4.51 |
 
 Score in both runs: Pearson 0.9270634171621878 vs strand count, 0.929 vs cross-sectional area; 120 of 120 pairs
-connected (25 in the ground truth: 95 false, 0 missed), the same Pearson to the last digit as the L40S and L4 runs
+connected (25 in the ground truth: 95 false, 0 missed), the same Pearson to the last digit as the runs on an L40S and an L4
 below. The replay of the DiSCo 364 protocol from the layout is within 2.01e-7 of the published bare reference volume
 on every one of the 31,802 voxels with signal (1.89e-7 at 3 T and 1.91e-7 at 7 T with every tier on), in both runs.
 

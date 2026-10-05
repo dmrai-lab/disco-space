@@ -97,7 +97,7 @@ machines = [
 ]
 default_offset_cm = 7.9
 max_offset_cm = 7.9
-delivery_per_meas = 0.0036   # s per measurement per replay: bore.delivered_moments over DiSCo's 31,802 live voxels, 1.3 s at 364 (gaia's CPU)
+delivery_per_meas = 0.0036   # s per measurement per replay: bore.delivered_moments over DiSCo's 31,802 live voxels, 1.3 s at 364 (a CPU host)
 
 # The mode: demo = the prebaked shape-moment layout (the hosted Spaces; seconds; the stored pulse
 # timings), full = the columnar replay pack itself (minutes per volume; any timing; the scheme upload), read from

@@ -71,7 +71,7 @@ played. A machine enters by replacing `g u` with the delivered vector and adding
   group** (the classes sharing a grid, an RF schedule and a readout). DiSCo has two groups, the six PGSE classes at
   TE 53.5 ms and the stimulated echo, so two `(n_tiles, 128, 3)` float32 columns of 1.9 GB each, written in one pass
   over the columnar pack by `dmipy_sim.replay.shape_moments.stamp_background` without touching any other column.
-  The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on gaia's CPU. They are published at
+  The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on a CPU host. They are published at
   `SubstrateCommons/disco-replay` revision 2db4e78, the revision `config.toml` pins.
 - *Transmit:* each voxel's signal is multiplied by the crushed echo's pathway amplitude at its scale over the nominal
   one (`epg.transmit_amplitude`): `sin^3(90 kappa)` for the spin echo, `0.5 sin^3(90 kappa)` over `0.5` for the
@@ -92,7 +92,7 @@ composes its own class's responses with its FOD and fractions. This is exactly `
 scanner=ScannerLimits, encoding_tolerance=tol)`, which the brain's tests hold it to.
 
 Measured at this pin on MASiVar's head (71,052 voxels, the scan's 485 measurements, the default packs: CACTUS 1 s in
-125 ms windows, grey-matter spheres 250 ms; every tier on; `tools/measure_scanners.py`, JAX on gaia's GH200, the
+125 ms windows, grey-matter spheres 250 ms; every tier on; `tools/measure_scanners.py`, JAX on a GH200, the
 contraction in torch on the same device, 2026-10-04):
 
 | | encoding classes at 1 % of b | `prepare` (pose responses), s | of it WM / GM, s | replay (contraction) first / steady, s | image vs the ideal scanner at its field, M0 units, median / max |
@@ -130,8 +130,8 @@ contraction in torch on the same device, 2026-10-04):
     **9,752 encoding classes** at the menu's 1 % of b, and 665 at 3 %. The background is binned to half the tolerance
     of the commanded gradient, and the Swoop's `g0` (up to 1.4 mT/m at 8 cm against a 23 mT/m commanded gradient)
     spans many such bins across a head. The earlier figure of 63 classes was a 1,312-voxel subsample at 3 %.
-  - **Cost per class** (the default packs, every tier, the Swoop's field; JAX): WM 104-166 s and GM 4-21 s on gaia's
-    GH200, three classes; WM 484-560 s and GM 51-52 s on gaia's CPU (8 threads, a shared box), two classes.
+  - **Cost per class** (the default packs, every tier, the Swoop's field; JAX): WM 104-166 s and GM 4-21 s on a
+    GH200, three classes; WM 484-560 s and GM 51-52 s on a CPU host (8 threads, a shared box), two classes.
   - So one protocol at one tissue and field is about 9,752 x 2.5 min, two weeks of one GPU (a day at 3 %). The
     page shows this reason under its scanner menu (`Brain.refused_machines`). Whether to cache the default
     protocol's classes or to keep the Swoop to the DiSCo page is the owner's decision. On the DiSCo page the Swoop is
@@ -150,7 +150,7 @@ contraction in torch on the same device, 2026-10-04):
 All runs are noiseless and the reference is the ideal scanner at the machine's field and direction, so only the
 delivered gradient and the transmit scale differ.
 
-**DiSCo, phantom centre 7.9 cm from isocentre along R-L.** Re-measured at this pin on gaia's GH200 from the published
+**DiSCo, phantom centre 7.9 cm from isocentre along R-L.** Re-measured at this pin on a GH200 from the published
 layout at revision 2db4e78 (`tools/scanner_disco_effects.py`, `LAYOUT=` its local copy), CSD order 8, 659,840 seeds;
 every number below is the previous pin's to the digits shown.
 

@@ -152,7 +152,7 @@ machinery are the same; the source (`space/sources/brain.py`) is a real brain co
 ## Measured
 
 **The gate at the current pins** (dmipy-sim 1b79d2e, dmipy-fit c3dcc54, dmipy-tract 7da22c3, the layout at dataset
-revision 2db4e78): DiSCo 364, noiseless, 659,840 seeds, deterministic XLA ops, JAX on gaia's GH200 (a shared box,
+revision 2db4e78): DiSCo 364, noiseless, 659,840 seeds, deterministic XLA ops, JAX on a GH200 (a shared box,
 XLA memory fraction 0.3), 2026-10-04; `tests/test_acceptance.py`, 7 of 7 passed in each of two runs.
 
 Two runs: the first with an empty Hub cache, the second right after it.

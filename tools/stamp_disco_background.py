@@ -1,7 +1,7 @@
 """Stamp the background moments onto DiSCo's shape-moment layout (dmipy-sim's shape_moments.stamp_background): one
 pass over the columnar source, the bg_<g>.npy columns and the manifest's background and RF schedules written into
 DIR, which holds the layout's manifest.json and tiles.npy (the rest of the layout is not read and not touched; copy
-the new columns and manifest beside it). Measured 2026-10-03 on gaia's CPU from the Hub: 42.4 GB read, 1,016 s.
+the new columns and manifest beside it). Measured on a CPU host, from the Hub: 42.4 GB read, 1,016 s.
 
     python tools/stamp_disco_background.py DIR
 """

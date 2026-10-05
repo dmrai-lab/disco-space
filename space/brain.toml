@@ -145,7 +145,7 @@ per_meas = 0.03               # the contraction and the reconstruction per measu
 ladder_per_meas = 0.002       # the ladder's rungs of contraction (L40S 0.5 s at 495 x 1.5 / 495)
 margin = 1.3
 # The packs' pose responses the GPU worker computes when the page has them not cached (Brain.responses), JAX on
-# the CPU: fixed + per_meas x n per entry, bounding every measurement on gaia's CPU (8 threads; the pool's worker has
+# the CPU: fixed + per_meas x n per entry, bounding every measurement on a CPU host (8 threads; the pool's worker has
 # 192 CPUs, taken as x 1.0) over the scan (113), clinical (31) and two 4 x 128 + 10 custom protocols (522; TE 100 ms
 # alone and four mixed classes), fields 0.064-12 T. cold: a field band not compiled in this process (the scan at
 # 11.7 T 16.6 s, at 11.7 T with chi x 1.1 29.4 s, 4 x 128 at TE 100 ms and 12 T 49.9 s); warm: a compiled band at
@@ -154,7 +154,7 @@ margin = 1.3
 # number of the WM pack's saves the entry's acquisition spans, k (n_t - 1) + 1 for the k windows of n_t saves it
 # reaches (Brain.windows_needed, Brain.saves_spanned; a one-window pack's n_t): per_save is seconds per save spanned,
 # priced independent of the measurement count: the slope of prepare's seconds over the saves at one protocol, the 485
-# measurements of MASiVar's (the measurements' share stays in per_meas). Measured on gaia's CPU (4 threads,
+# measurements of MASiVar's (the measurements' share stays in per_meas). Measured on a CPU host (4 threads,
 # tools/measure_brain.py --saves): prepare on the 100 ms legacy pack (1,002 saves) and the 1 s Swoop pack's prefixes
 # of 100 / 204 ms (ReplayPack.prefix per shard: 1,303 / 2,656 saves), three runs, the third adding the 85 ms prefix
 # (1,107 saves) and playing the d17-D30 class instead of the scan's. With the field
@@ -166,7 +166,7 @@ response_warm = { fixed = 2.5, per_meas = 0.04, per_save = 0.0016 }
 response_no_field = { fixed = 0.5, per_meas = 0.012, per_save = 0.0016 }
 # On a machine every encoding class's rows play their own amplitude, so its shells no longer share the expansion's
 # bodies: a class of the scan's 485 measurements on the 100 ms CACTUS pack at 3 T with every tier took 25 s against
-# 4.5 s for the commanded protocol (gaia's CPU, 8 threads, the Prisma at 6 cm, its slew), so an entry's rows count
+# 4.5 s for the commanded protocol (a CPU host, 8 threads, the Prisma at 6 cm, its slew), so an entry's rows count
 # once per class times this (Brain.responses).
 response_per_class = 5.6
 [budget.track]                # one tracking of the WM at density d, the run's or the truth's (L40S steady x 1.5)

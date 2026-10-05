@@ -55,7 +55,7 @@ WM stop mask; dmipy-sim 7f6f1fa, dmipy-fit 0c7dde8 with the single-tissue recons
 
 | stage | 113 measurements | 495 measurements (five shells x 96) |
 |---|---|---|
-| the packs' responses, every tier, on the host CPU (not charged) | 4.9-6.1 (gaia, 8 threads) | 7.5-7.9 (gaia, 8 threads) |
+| the packs' responses, every tier, on the host CPU (not charged) | 4.9-6.1 (8 threads) | 7.5-7.9 (8 threads) |
 | the replay (the contraction on the device) | 0.04 | 0.17 |
 | noise | 0.35 | 1.4 |
 | reconstruction (single-tissue: tournier07 response + CSD) | 3.7 | 8.0 |

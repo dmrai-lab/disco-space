@@ -133,9 +133,9 @@ max_angle = 45.0
 
 # The GPU reservation model (Brain.estimated_seconds): a run = fixed + per_meas x n + track[d] (A's tracking), plus
 # track[d] for the truth (the input FOD tracked the same way, shared by B), per_meas_ladder x n for the ladder, B = a
-# run without the worker's start, track[d] per extra key; times margin. Refit from tools/measure_brain.py on the L40S
+# run without the worker's start, track[d] per extra key; times margin. Refit from tools/measure_brain.py on an L40S
 # with the BATMAN fixture (90,205 voxels, 36,605 WM seeds per density^3; README-brain-zero.md has the table), each
-# device stage x 1.5 for the pool (DiSCo's CSD and tracking ran 1.1-1.3x slower on the pool than on the L40S), the
+# device stage x 1.5 for the pool (DiSCo's CSD and tracking ran 1.1-1.3x slower on the pool than on an L40S), the
 # worker's start and a multi-GB payload's handoff 12 s. The single-tissue reconstruction's cost is in per_meas
 # (8.0 s at 495 measurements); refit when dmipy-fit#39's multi-tissue path runs. Seconds.
 [budget]

@@ -72,7 +72,7 @@ played. A machine enters by replacing `g u` with the delivered vector and adding
   TE 53.5 ms and the stimulated echo, so two `(n_tiles, 128, 3)` float32 columns of 1.9 GB each, written in one pass
   over the columnar pack by `dmipy_sim.replay.shape_moments.stamp_background` without touching any other column.
   The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on a CPU host. They are published at
-  `SubstrateCommons/disco-replay` revision 2db4e78, the revision `config.toml` pins.
+  `SubstrateCommons/disco-replay` revision afe5589, the revision `config.toml` pins.
 - *Transmit:* each voxel's signal is multiplied by the crushed echo's pathway amplitude at its scale over the nominal
   one (`epg.transmit_amplitude`): `sin^3(90 kappa)` for the spin echo, `0.5 sin^3(90 kappa)` over `0.5` for the
   stimulated echo.
@@ -151,7 +151,7 @@ All runs are noiseless and the reference is the ideal scanner at the machine's f
 delivered gradient and the transmit scale differ.
 
 **DiSCo, phantom centre 7.9 cm from isocentre along R-L.** Re-measured at this pin on a GH200 from the published
-layout at revision 2db4e78 (`tools/scanner_disco_effects.py`, `LAYOUT=` its local copy), CSD order 8, 659,840 seeds;
+layout at revision afe5589 (`tools/scanner_disco_effects.py`, `LAYOUT=` its local copy), CSD order 8, 659,840 seeds;
 every number below is the previous pin's to the digits shown.
 
 | machine | protocol (what it can play) | connectome Pearson vs strand count, ideal -> machine | direction-mean shell change (median, 1-99 %) | per-measurement abs(dS), median / 99 % | S0 |

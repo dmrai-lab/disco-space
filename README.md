@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
-license: mit
+license: agpl-3.0
 short_description: DiSCo replay, any acquisition, a connectome, while you wait
 ---
 
@@ -205,3 +205,7 @@ once per process, then 49.6 s for DiSCo 364 at SNR 30 including every compile: r
 tracking 32.4, score 0.3; Pearson 0.924 / 0.926). A custom two-shell protocol (77 measurements) right after: 34 s
 wall, 11.8 s in the pipeline (replay 1.4, CSD 4.3, tracking 5.2), Pearson 0.904. The `.tck` (290 MB), the DWI with
 its table and the FOD field download from the page.
+
+## License
+
+Dual-licensed: **GNU AGPL-3.0** for open-source use, or a **commercial license** for proprietary use; see [LICENSING.md](LICENSING.md) (commercial: rutger.fick@dmrai-lab.org).

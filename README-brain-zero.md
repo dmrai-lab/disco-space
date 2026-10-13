@@ -8,7 +8,7 @@ sdk_version: 6.28.0
 app_file: app.py
 pinned: false
 startup_duration_timeout: 1h
-license: mit
+license: agpl-3.0
 short_description: A real brain replayed from packs, to an 84-region connectome
 ---
 

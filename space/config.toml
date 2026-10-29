@@ -68,16 +68,17 @@ TE = 0.0535
 
 # The b-tensor class: three gradient shapes on the spin echo, each in both encoding windows (six stored terms), so one
 # class plays every linear, planar and spherical encoding of them at any rotation and b (space/tensor.py). The shapes
-# are the three axes of NOW's maximum-b spherical encoding (Sjolund et al. 2015) at TE 53.5 ms under a Prisma-class
-# scanner (80 mT/m, 200 T/m/s per axis; a 4 ms window for the 180), the physical gradient in `waveform` (data/).
-[tensor]
-class = "qte-now-80"
+# are the three axes of NOW's maximum-b spherical encoding (Sjolund et al. 2015) at TE 53.5 ms designed at 80 mT/m and
+# 200 T/m/s per axis (a 4 ms window for the 180), the physical gradient in `waveform` (data/); rotated, a linear or
+# spherical row at b 2000 needs about 124 mT/m on one axis: Connectome-class hardware. delta / Delta are the scheme's
+# nominal encoding windows (the CSD and the scheme never read them: a b-tensor run fits maps, not FODs).
+[shapes."qte-now-80"]
+label = "b-tensor class qte-now-80: NOW spherical encoding at TE 53.5 ms, 80 mT/m and 200 T/m/s per axis (Connectome-class when rotated)"
+kind = "tensor"
 waveform = "classes/qte-now-80.npy"
-label = "b-tensor class qte-now-80: NOW spherical encoding at TE 53.5 ms, 80 mT/m and 200 T/m/s per axis"
-bvalues = [500, 1000, 2000]
-directions = 30
-gpu_seconds = 60
-about = """**One stored class, every b-tensor.** The three shapes below are stored once per walker (six vectors: each shape before and after the 180). A linear, planar or spherical encoding at any orientation and b is a choice of the three shapes' levels, and the layout replays it from the same stored vectors, exact in the substrate rather than a Gaussian approximation. The maps: MD, the first cumulant of the spherical powder average, and the microscopic FA from the linear against the spherical powder average, both fitted over the chosen b-values (Lasič et al. 2014; Szczepankiewicz et al. 2016)."""
+delta = 0.0229
+Delta = 0.0253
+TE = 0.0535
 
 # DiSCo's own protocol: which timing class each shell of the dataset's gradient table plays (b in s/mm^2, the
 # table's rows are assigned to the nearest b here).
@@ -105,6 +106,14 @@ shape = "d8-D20"
 [presets."cosine OGSE 50 Hz b1000 x 60"]
 table = "protocols/ogse"
 shape = "cos-f50-T20"
+# Tensor-valued encoding: linear and spherical b-tensors interleaved at four b-values on the b-tensor class, the
+# b-values and direction counts of Szczepankiewicz et al. 2019's clinical protocol (6, 6, 10, 16 per encoding); the
+# same axes for both encodings at each b; one b = 0 row. Its run fits FA (DTI on the linear rows), MD and the
+# microscopic FA (the powder averages), not a connectome.
+[presets."b-tensor: linear + spherical (Szczepankiewicz 2019), b 100-2000 s/mm²"]
+shape = "qte-now-80"
+n_b0 = 1
+tensor = { bvalues = [100, 700, 1400, 2000], directions = [6, 6, 10, 16], encodings = ["LTE", "STE"] }
 
 # The tissue and the scanner: the field presets the page offers (T), the default field,
 # and whether a run starts with the tiers on. Tissue defaults come from dmipy-sim's white-matter catalogue at the

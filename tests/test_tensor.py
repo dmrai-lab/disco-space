@@ -8,8 +8,7 @@ from space import pipeline as P
 from space import tensor as T
 
 CFG = P.config()
-TC = T.config(CFG)
-pytestmark = pytest.mark.skipif(TC is None, reason="no [tensor] class in the configuration")
+TC = next(sh for sh in CFG["shapes"].values() if sh.get("kind") == "tensor")
 
 
 def _rows(bvals=(500.0, 1000.0, 2000.0), n=12):
@@ -62,3 +61,23 @@ def test_the_maps_recover_a_known_microscopic_anisotropy(bvals):
     md, got = T.md_ufa(pw, list(bvals))
     assert abs(float(md.ravel()[0]) - D_iso) < 0.03 * D_iso
     assert abs(float(got.ravel()[0]) - mufa) < 0.03
+
+
+def test_the_tensor_preset_is_linear_and_spherical_rows_on_the_class_and_flags_a_prisma():
+    """The preset: one b = 0 row, then LTE and STE interleaved at b 100, 700, 1400, 2000 with 6, 6, 10, 16 axes, every
+    row's b-tensor the one asked for as dmipy-sim reads it off the sequence the Layout plays; rotated, the rows need
+    more than a Prisma's 80 mT/m on one axis, so the page flags that machine and passes the ideal scanner."""
+    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
+    from space import classes as C
+    name = next(n for n in CFG["presets"] if "tensor" in CFG["presets"][n])
+    p = P.preset_protocol(CFG, name)
+    assert p.tensor and p.n_b0 == 1 and [(s.encoding, s.b, s.n_dirs) for s in p.shells] == [
+        (e, b, n) for b, n in ((100.0, 6), (700.0, 6), (1400.0, 10), (2000.0, 16)) for e in ("LTE", "STE")]
+    m = P.measurements(p, CFG["shapes"])
+    G = C.tensor_rows(TC, m.encoding, m.bvals, m.dirs)
+    b, b_delta, _ = btensor_invariants(calc_btensor(T._sequence(G)))
+    np.testing.assert_allclose(b[1:] / 1e6, m.bvals[1:], rtol=1e-6)
+    np.testing.assert_allclose(b_delta[m.encoding == "LTE"], 1.0, atol=1e-6); np.testing.assert_allclose(b_delta[m.encoding == "STE"], 0.0, atol=1e-6)
+    rows = P.playable(p, CFG["shapes"], "siemens_magnetom_prisma_3T")
+    assert not all(r[-1] for r in rows) and all(r[-1] for r in P.playable(p, CFG["shapes"], None))
+    assert 0.10 < max(r[4] for r in rows) < 0.14                                   # ~124 mT/m at b 2000

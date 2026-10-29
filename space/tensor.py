@@ -31,11 +31,6 @@ N_T = 1000
 TE = 0.0535
 
 
-def config(cfg):
-    """The configuration's ``[tensor]`` table (None without one)."""
-    return cfg.get("tensor")
-
-
 @functools.lru_cache(maxsize=None)
 def _waveform(path):
     G = np.load(path)
@@ -198,3 +193,36 @@ def md_ufa(pw, bvals):
     with np.errstate(divide="ignore", invalid="ignore"):
         ufa = np.sqrt(1.5) * np.sqrt(6.0 * x / (3.0 * md ** 2 + 6.0 * x))
     return np.where(bad, np.nan, md), np.where(bad, np.nan, ufa)
+
+
+def dti_fa(S, enc, bs, axes, b_max=1400.0):
+    """FA per voxel of the diffusion tensor fitted log-linearly to the linear rows at b <= ``b_max`` (s/mm^2) and the
+    b = 0 rows (``S`` S/S0 ``(..., n)``, ``axes`` each row's encoding axis); NaN where a signal is not positive."""
+    m = (np.asarray(enc) == "LTE") & (np.asarray(bs) <= b_max)
+    if m.sum() < 6:
+        raise ValueError(f"a tensor fit needs six or more linear rows at b <= {b_max:g}, got {int(m.sum())}")
+    g = np.asarray(axes, np.float64)[m]; b = np.asarray(bs, np.float64)[m] * 1e-3
+    X = -b[:, None] * np.stack([g[:, 0] ** 2, g[:, 1] ** 2, g[:, 2] ** 2, 2 * g[:, 0] * g[:, 1], 2 * g[:, 0] * g[:, 2],
+                                2 * g[:, 1] * g[:, 2]], 1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        y = np.log(S[..., m])
+    d = np.einsum("pk,...k->...p", np.linalg.pinv(X), y)
+    D = np.stack([np.stack([d[..., 0], d[..., 3], d[..., 4]], -1), np.stack([d[..., 3], d[..., 1], d[..., 5]], -1),
+                  np.stack([d[..., 4], d[..., 5], d[..., 2]], -1)], -2)
+    ok = np.isfinite(D).all(axis=(-1, -2))
+    ev = np.full(D.shape[:-1], np.nan); ev[ok] = np.linalg.eigvalsh(D[ok])
+    md = ev.mean(-1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.sqrt(1.5 * ((ev - md[..., None]) ** 2).sum(-1) / (ev ** 2).sum(-1))
+
+
+def maps(dwi, meas, signal):
+    """What a b-tensor run reconstructs, per voxel where ``signal``: ``fa`` (:func:`dti_fa` on the linear rows), ``md``
+    and ``ufa`` (:func:`md_ufa` on the powder averages), and ``powder`` ``{(encoding, b): S/S0}`` with ``bvals``, the
+    b-values the encodings share."""
+    enc, bs = np.asarray(meas.encoding), np.asarray(meas.bvals, np.float64)
+    bvals = sorted(set(float(b) for b, e in zip(bs, enc) if e == "LTE") & set(float(b) for b, e in zip(bs, enc) if e == "STE"))
+    S = np.where(signal[..., None], dwi, np.nan)
+    pw = {(e, b): np.nanmean(S[..., (enc == e) & (bs == b)], axis=-1) for e in ("LTE", "STE") for b in bvals}
+    md, ufa = md_ufa(pw, bvals)
+    return dict(fa=dti_fa(S, enc, bs, meas.dirs), md=md, ufa=ufa, powder=pw, bvals=bvals)

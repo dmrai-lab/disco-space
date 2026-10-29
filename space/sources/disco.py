@@ -9,6 +9,7 @@ page's texts, the tissue panel of the white-matter catalogue, the regions, the g
 """
 from __future__ import annotations
 
+import functools
 import os
 import time
 
@@ -344,6 +345,43 @@ class Disco(P.Source):
         return [pool, contact, fld]
 
 
+@functools.lru_cache(maxsize=2)
+def strand_configuration(tck=None, shape=(40, 40, 40), *, angle_deg=30.0, share=0.10):
+    """The ground truth's fibre configuration per voxel from the released strand trajectories (voxel units):
+    ``(n_dirs, dispersion, length)`` -- the distinct strand directions crossing the voxel (the strands' length-weighted
+    mean tangents in it, clustered at ``angle_deg``, a direction counted when it carries at least ``share`` of the voxel's
+    strand length), ``1 - lambda_1 / trace`` of the length-weighted dyadic tensor of the tangents, and the strand length
+    in the voxel (voxel units)."""
+    from dmipy_sim.io.strands import read_tck
+    strands = read_tck(tck or os.path.join(P.DATA_DIR, "DiSCo_Strands_Trajectories.tck"), coordinate_unit_m=1.0)
+    n_vox = int(np.prod(shape))
+    Tm = np.zeros((n_vox, 3, 3)); per = {}
+    for c in strands:
+        c = np.asarray(c, float)
+        if len(c) < 2:
+            continue
+        seg = np.diff(c, axis=0); mid = 0.5 * (c[1:] + c[:-1]); L = np.linalg.norm(seg, axis=1); ok = L > 0
+        t = seg[ok] / L[ok, None]; ijk = np.floor(mid[ok]).astype(int); inside = np.all((ijk >= 0) & (ijk < np.asarray(shape)), axis=1)
+        v = np.ravel_multi_index(ijk[inside].T, shape); w = L[ok][inside]; t = t[inside]
+        np.add.at(Tm, v, (t[:, :, None] * t[:, None, :]) * w[:, None, None])
+        for vox in np.unique(v):
+            k = v == vox
+            per.setdefault(int(vox), []).append((np.linalg.eigh(np.einsum("n,ni,nj->ij", w[k], t[k], t[k]))[1][:, -1], float(w[k].sum())))
+    ev = np.linalg.eigvalsh(Tm); tr = ev.sum(-1)
+    disp = np.where(tr > 0, 1.0 - ev[:, -1] / np.maximum(tr, 1e-30), np.nan)
+    ndirs = np.zeros(n_vox, int); cos = np.cos(np.radians(angle_deg))
+    for vox, items in per.items():
+        items = sorted(items, key=lambda x: -x[1]); total = sum(w for _, w in items); clusters = []
+        for d, w in items:
+            for cl in clusters:
+                if abs(d @ cl[0]) >= cos:
+                    cl[1] += w; break
+            else:
+                clusters.append([d, w])
+        ndirs[vox] = sum(1 for _, w in clusters if w >= share * total)
+    return ndirs.reshape(shape), disp.reshape(shape), tr.reshape(shape)
+
+
 PAIRS = np.triu_indices(N_REGIONS, 1)                # the 120 region pairs
 
 
@@ -381,8 +419,7 @@ class Layout(Disco):
         super().__init__(cfg)
         d = cfg["data"]
         uri = local or f"hf://{d['repo']}/{d['layout']}"
-        self.tensor = T.config(cfg)                          # the b-tensor class ([tensor]), read beside the timing classes
-        names = list(self.shapes) + ([self.tensor["class"]] if self.tensor else [])
+        names = list(self.shapes)
         self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=names)
         self.resident = P.resident(cfg)
         want = d.get("manifest_sha256")
@@ -396,10 +433,8 @@ class Layout(Disco):
             raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {list(self.layout.partitions)}")
         for name, sh in self.shapes.items():                 # each class's waveform is the stored partition's
             got_name, _ = self.layout.fit(C.template(sh), partition=name)
-            if not self.layout.partitions[name].is_constant and C.kind(sh) != "ogse":
+            if not self.layout.partitions[name].is_constant and C.kind(sh) not in ("ogse", "tensor"):
                 raise ValueError(f"class {name}: the layout stores shaped terms, the config a square-pulse {C.kind(sh)}")
-        if self.tensor:                                      # the b-tensor class's three shapes are the stored six terms'
-            self.layout.fit(T.template(self.tensor), partition=self.tensor["class"])
         m = self.layout.manifest
         self.tiers = bool(m.get("tiers"))
         self.M0 = self.layout.weights.sum(1).reshape(self.layout.grid.shape)   # every voxel's walker weight: the bare b = 0 signal
@@ -444,10 +479,16 @@ class Layout(Disco):
             C.kind(self.shapes[name])
         return meas
 
-    def sequence(self, name, bvals, dirs):
-        """The rows on class ``name`` (b in s/mm^2) as the class's waveform at their amplitudes and directions."""
+    def sequence(self, name, bvals, dirs, encodings=None):
+        """The rows on class ``name`` (b in s/mm^2) as the class's waveform at their amplitudes and directions; on a
+        b-tensor class each row's ``encodings`` entry (``b0``, ``LTE``, ``STE``) about its direction."""
         from .. import classes as C
-        return C.play(self.shapes[name], np.asarray(bvals, np.float64) * 1e6, dirs)
+        sh = self.shapes[name]
+        if C.kind(sh) == "tensor":
+            if encodings is None:
+                raise ValueError(f"class {name} is a b-tensor class: its rows name their encodings")
+            return T._sequence(C.tensor_rows(sh, encodings, bvals, dirs))
+        return C.play(sh, np.asarray(bvals, np.float64) * 1e6, dirs)
 
     def delivered(self, name, seq, physics):
         """What the run's machine delivers at every voxel with rows for the class ``name`` playing ``seq``: the layout's
@@ -465,7 +506,7 @@ class Layout(Disco):
         b0 = physics.b0_direction if physics else P.B0_ALONG_Z
         for name in np.unique(meas.shape):
             rows = meas.shape == name
-            seq = self.sequence(name, meas.bvals[rows], meas.dirs[rows])
+            seq = self.sequence(name, meas.bvals[rows], meas.dirs[rows], None if meas.encoding is None else meas.encoding[rows])
             img, f = self.layout.image(seq, partition=str(name), backend=self.backend, resident=self.resident, tissue=tissue,
                                        scanner=scanner, b0_direction=b0, delivered=self.delivered(str(name), seq, physics))
             S[..., rows] = img * self.M0[..., None]       # the voxel's signal: its walkers' weight times the normalised one
@@ -476,23 +517,6 @@ class Layout(Disco):
     def release(self):
         if not self.resident:
             self.layout.release()
-
-    def tensor_replay(self, bvals, n_dirs, physics=None):
-        """The b-tensor class's acquisition (:func:`space.tensor.rows`: a b = 0 row, then ``n_dirs`` linear, planar and
-        spherical rows at each b in s/mm^2) replayed over the whole grid: ``(S/S0 (..., n), encoding (n,), b (n,),
-        seconds)``, S0 the b = 0 row at the same tissue and scanner (NaN where the voxel has no walkers)."""
-        if not self.tensor:
-            raise ValueError("this configuration has no b-tensor class ([tensor])")
-        t0 = time.perf_counter()
-        seq, enc, bs = T.rows(self.tensor, bvals, n_dirs)
-        tissue, scanner = P.tissue_and_scanner(physics, self.unseeded)
-        b0 = physics.b0_direction if physics else P.B0_ALONG_Z
-        img, _ = self.layout.image(seq, partition=self.tensor["class"], backend=self.backend, resident=self.resident,
-                                   tissue=tissue, scanner=scanner, b0_direction=b0)
-        S = np.asarray(img, np.float64).reshape(self.mask.shape + (len(enc),))
-        with np.errstate(divide="ignore", invalid="ignore"):
-            S = np.where(self.M0[..., None] > 0, S / S[..., :1], np.nan)
-        return S, enc, bs, time.perf_counter() - t0
 
     def ingredients(self, meas, physics=None, prepared=None):
         """What each tier multiplies into the sum, per voxel, for the run's first class (the layout's
@@ -610,7 +634,9 @@ class Columns(Disco):
         G = np.zeros((len(meas.bvals), C.N_T, 3), np.float32); tmpl = None
         for name in np.unique(meas.shape):
             rows = meas.shape == name
-            if name in self.shapes:
+            if name in self.shapes and C.kind(self.shapes[name]) == "tensor":
+                seq = T._sequence(C.tensor_rows(self.shapes[name], meas.encoding[rows], meas.bvals[rows], meas.dirs[rows]))
+            elif name in self.shapes:
                 seq = C.play(self.shapes[name], meas.bvals[rows] * 1e6, meas.dirs[rows])
             else:
                 seq = d.pgse(meas.dirs[rows].tolist(), meas.delta[rows], meas.Delta[rows], bvalues=meas.bvals[rows] * 1e6, TE=TE,

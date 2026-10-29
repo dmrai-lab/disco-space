@@ -31,7 +31,6 @@ from dataclasses import replace
 
 from . import pipeline as P
 from . import sources
-from . import tensor as T
 from . import viewers as V
 
 MAX_SHELLS = 4
@@ -566,73 +565,10 @@ def _widget(c):
     raise ValueError(f"unknown control kind {c.kind!r}")
 
 
-TENSOR_TISSUE = {"bare diffusion": None, "white matter at 3 T": 3.0, "white matter at 7 T": 7.0}
-
-
-def tensor_compute(bvals, n_dirs, tissue):
-    """The device part of a b-tensor run: the class's rows (:func:`space.tensor.rows`) over the whole grid, reduced to
-    what crosses back to the page: the powder averages and the MD and muFA maps."""
-    st = _load(); src = st["source"]
-    if src is None:
-        raise ValueError(f"the source did not load: {st.get('error')}")
-    bvals = sorted(float(b) for b in bvals)
-    if not bvals:
-        raise ValueError("choose at least one b-value")
-    field = TENSOR_TISSUE[tissue]
-    physics = None if field is None else P.Physics.at(field)
-    S, enc, bs, secs = src.tensor_replay(bvals, int(n_dirs), physics)
-    src.release()
-    pw = T.powder(S, enc, bs, bvals)
-    md, ufa = T.md_ufa(pw, bvals)
-    return dict(pw=pw, md=md, ufa=ufa, bvals=bvals, n_dirs=int(n_dirs), tissue=tissue, seconds=secs, n_rows=int(len(enc)))
-
-
-def tensor_views(payload, z):
-    """The powder averages, MD and muFA at axial slice ``z`` (nothing before a run)."""
-    if not payload:
-        return None, None, None
-    z = int(z)
-    bs = ", ".join(f"{b:g}" for b in payload["bvals"])
-    return (V.tensor_panel(payload["pw"], payload["bvals"], z),
-            V.map_slice(payload["md"], z, f"MD: the spherical powder average's first cumulant over b = {bs}", cmap="magma", vmin=0.0, vmax=3.0, unit="µm²/ms"),
-            V.map_slice(payload["ufa"], z, f"µFA: linear against spherical over b = {bs}", vmin=0.0, vmax=1.0))
-
-
-def tensor_table(tc, bvals, n_dirs):
-    """The acquisition as built, per encoding and b: rows, the b and b_delta dmipy-sim reads off the sequence, and
-    the peak gradient on any axis (mT/m)."""
-    seq, enc, bs = T.rows(tc, sorted(float(b) for b in bvals), int(n_dirs))
-    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
-    b, b_delta, _ = btensor_invariants(calc_btensor(seq))
-    peak = np.abs(np.asarray(seq.G, np.float64)).max(axis=(1, 2))
-    out = []
-    for e in T.ENCODINGS:
-        for bv in sorted(set(bs[enc == e].tolist())):
-            m = (enc == e) & (bs == bv)
-            out.append([e, f"{bv:g}", int(m.sum()), f"{float(np.mean(b[m])) / 1e6:.1f}", f"{float(np.mean(b_delta[m])):+.3f}",
-                        f"{float(peak[m].max()) * 1e3:.1f}"])
-    return out
-
-
-def run_tensor(compute_fn, cfg, bvals, n_dirs, tissue, z):
-    """The b-tensor button: the device part through ``compute_fn``, then the views and the table here."""
-    t0 = time.perf_counter()
-    try:
-        payload = compute_fn(bvals, n_dirs, tissue)
-    except Exception as e:                               # shown on the page; the page stays up
-        return None, None, None, None, f"**The b-tensor run failed:** {e}", []
-    wall = time.perf_counter() - t0
-    views = tensor_views(payload, z)
-    text = (f"**{payload['n_rows']} measurements** ({payload['n_dirs']} axes per encoding and b, {payload['tissue']}) replayed over the "
-            f"whole 40³ grid from one stored class: {payload['seconds']:.1f} s on the device, {wall:.1f} s with the hand-over.")
-    return (payload, *views, text, tensor_table(T.config(cfg), bvals, n_dirs))
-
-
-def build(runner=None, cfg=None, tensor_runner=None):
+def build(runner=None, cfg=None):
     """The Blocks of the configured source (``cfg``, else :func:`space.pipeline.config`). ``runner`` wraps
     :func:`compute` for the run button (the ZeroGPU entry passes ``spaces.GPU(...)``): the device part of a run; the
-    page looks up its cache before it and draws from its payload after it, in this process. ``tensor_runner`` wraps
-    :func:`tensor_compute` the same way for the b-tensor tab (shown when the configuration has a ``[tensor]`` class)."""
+    page looks up its cache before it and draws from its payload after it, in this process."""
     import gradio as gr
     cfg = cfg or P.config()
     S = sources.source_class(cfg)
@@ -760,28 +696,6 @@ def build(runner=None, cfg=None, tensor_runner=None):
                     with gr.Column():
                         tck = gr.File(label="tractograms (.tck, MRtrix): every streamline, and a 10k sample", file_count="multiple")
                         volumes = gr.File(label=d["volumes_label"], file_count="multiple")
-            tc = T.config(cfg) if getattr(S, "mode", None) == "demo" else None
-            if tc:
-                with gr.Tab("4 · b-tensor encoding"):
-                    gr.Markdown(tc["about"])
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            t_b = gr.CheckboxGroup([f"{b:g}" for b in tc["bvalues"]], value=[f"{b:g}" for b in tc["bvalues"]], label="b (s/mm²)")
-                            t_n = gr.Slider(6, 60, value=int(tc["directions"]), step=1, label="axes per encoding and b (directions, plane normals, rotations)")
-                            t_tissue = gr.Radio(list(TENSOR_TISSUE), value=list(TENSOR_TISSUE)[0], label="tissue and field (the catalogue's white matter, field along z)")
-                            t_go = gr.Button("replay the linear, planar and spherical encodings", variant="primary")
-                            t_text = gr.Markdown()
-                            t_z = gr.Slider(0, 39, value=20, step=1, label="axial slice z")
-                        with gr.Column(scale=2):
-                            t_wave = gr.Image(value=V.tensor_waveform(T.waveform(tc), T._grid().dt, T._grid().effective_gate, tc["label"]),
-                                              label="the class: three shapes, any b-tensor of them a choice of levels", type="pil")
-                            t_table = gr.Dataframe(headers=["encoding", "b (s/mm²)", "rows", "b as built", "b_Δ as built", "peak per axis (mT/m)"],
-                                                   label="the acquisition as dmipy-sim reads it off the sequence", interactive=False)
-                    t_panel = gr.Image(label="powder averages", type="pil")
-                    with gr.Row():
-                        t_md = gr.Image(label="MD", type="pil")
-                        t_ufa = gr.Image(label="µFA", type="pil")
-                    t_state = gr.State(None)
         compute_fn = compute if runner is None else runner(compute)      # the device part alone runs under a pool's GPU
 
         def run_with_progress(*args, progress=gr.Progress()):
@@ -827,11 +741,6 @@ def build(runner=None, cfg=None, tensor_runner=None):
         for ctl in (z_slider, m_slider, overlay, which):
             ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view, truth_view, fractions_view], show_progress="hidden")
         gt_tab.select(ground_truth_views, outputs=[strands_view, gt_matrix])
-        if tc:
-            t_fn = tensor_compute if tensor_runner is None else tensor_runner(tensor_compute)
-            t_go.click(lambda b, n, ti, z: run_tensor(t_fn, cfg, [float(x) for x in b], n, ti, z), inputs=[t_b, t_n, t_tissue, t_z],
-                       outputs=[t_state, t_panel, t_md, t_ufa, t_text, t_table], concurrency_limit=1, api_name="run_tensor")
-            t_z.change(tensor_views, inputs=[t_state, t_z], outputs=[t_panel, t_md, t_ufa], show_progress="hidden")
         demo.load(lambda: (_load().get("error") and f"**the source did not load:** {_load()['error']}") or "", outputs=headline)
     return demo
 

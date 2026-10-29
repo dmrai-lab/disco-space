@@ -11,7 +11,7 @@ import functools
 
 import numpy as np
 
-KINDS = ("pgse", "pgste", "ogse")
+KINDS = ("pgse", "pgste", "ogse", "tensor")
 N_T = 1000                                           # the layout's grid: 1000 samples over the echo time
 
 
@@ -43,10 +43,33 @@ def _template(key):
 
 
 def template(sh):
-    """The class's waveform along z, one row (a ScannerSequence): ``pgse`` square lobes ``delta`` wide ``Delta`` apart
+    """The class's waveform along z, one row (a ScannerSequence); a ``tensor`` class is its three shapes, one row each
+    along its own axis (:func:`space.tensor.template`): ``pgse`` square lobes ``delta`` wide ``Delta`` apart
     at ``TE``; ``pgste`` square lobes storing for ``TM = Delta - delta``; ``ogse`` a cosine of ``frequency`` (Hz) over
     ``duration`` (s) on each side of the 180, built at ``b_built`` (s/mm^2) with ``slew_rate`` (T/m/s) edges."""
+    if kind(sh) == "tensor":
+        from . import tensor as T
+        return T.template(sh)
     return _template(_key(sh))
+
+
+def tensor_rows(sh, encodings, bvals, dirs):
+    """The rows of a ``tensor`` class: each row's encoding (``b0``, ``LTE``, ``STE``) at its b (s/mm^2) about its axis,
+    the physical gradient ``(n, 1000, 3)`` (T/m) -- the class's waveform times the row's level matrix
+    (:func:`space.tensor.levels`); a b = 0 row plays nothing."""
+    from . import tensor as T
+    W = T.waveform(sh)
+    G = np.zeros((len(encodings), N_T, 3))
+    for i, (e, b, d) in enumerate(zip(encodings, bvals, dirs)):
+        if e != "b0" and float(b) > 0:
+            G[i] = W @ T.levels(sh, str(e), float(b) * 1e6, d)
+    return G
+
+
+def tensor_peak(sh, encoding, b, n_dirs):
+    """The largest per-axis gradient (T/m) of a tensor shell's rows (``n_dirs`` axes of :func:`space.tensor.fibonacci`)."""
+    from . import tensor as T
+    return float(np.abs(tensor_rows(sh, [encoding] * int(n_dirs), [b] * int(n_dirs), T.fibonacci(int(n_dirs)))).max())
 
 
 def unit_b(sh):
@@ -82,6 +105,8 @@ def play(sh, bvals_SI, dirs):
 def describe(sh):
     """The class's timing in a few words, for the gradient table."""
     k = kind(sh)
+    if k == "tensor":
+        return "b-tensor class (three shapes: linear, planar, spherical at any rotation)"
     if k == "ogse":
         return f"cosine {float(sh['frequency']):g} Hz, {float(sh['duration']) * 1e3:g} ms per side"
     if k == "pgste":

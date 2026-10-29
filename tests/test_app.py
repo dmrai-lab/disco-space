@@ -347,3 +347,9 @@ def test_the_explorer_on_a_b_tensor_run_draws_the_encodings_rows_and_b_minus_a_o
     assert A.explore(ex, "A = bare diffusion", "B − A", A.METRICS[3], 0, 0) is not None
     with pytest.raises(ValueError, match="encodings of its one class"):
         P.retime(P.preset_protocol(CFG, next(n for n, v in CFG["presets"].items() if "tensor" in v)), "d12-D24")
+
+
+def test_every_stage_of_a_run_has_its_text():
+    """The progress text names every stage either kind of run passes (the connectome's and the b-tensor's)."""
+    texts = S.describe(CFG)["stages"]
+    assert set(P.TENSOR_STAGES) <= set(texts) and set(D.Disco.STAGES) <= set(texts)

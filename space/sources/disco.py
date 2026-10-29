@@ -121,7 +121,8 @@ class Disco(P.Source):
             truth_tab="2 · ground truth",
             truth_labels=("the strands", "the ground-truth matrices"),
             stages={"replay": "replaying the grid from the stored walk", "noise": "adding Rician noise", "csd": "fitting CSD (order 8)",
-                    "track": "tracking from the sixteen regions", "score": "scoring the connectome"},
+                    "track": "tracking from the sixteen regions", "score": "scoring the connectome",
+                    "maps": "fitting FA, MD and µFA (the b-tensor run's maps)"},
             fixed=["the DiSCo phantom's geometry and its one stored walk", "the sixteen regions and the ground-truth matrices",
                    "the pulse timing classes of the layout (demo mode)"],
             accuracy=("A replay is a measured approximation of the stored walk, not a rendering: the walk's two halves are replayed "

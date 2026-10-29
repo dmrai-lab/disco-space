@@ -5,8 +5,8 @@ source = "disco"                                 # space/sources/disco.py: the D
 [data]
 repo = "SubstrateCommons/disco-time-segments"   # the public time-segment layout of the DiSCo v2 walk
 layout = "disco"                                 # the layout's prefix in the dataset (dmipy_sim.replay.time_segments, format time_segments/2)
-revision = "5f09eed8baa644d66cd64536301f4d01fe1c7bf8"   # the dataset revision the layout is read at
-manifest_sha256 = ""                             # the layout manifest the page was accepted on (checked at load; set at the gate)
+revision = "7c84a67badeeb8f584c8a98356d2e81820a86eac"   # the dataset revision the layout is read at (with the OGSE class cos-f50-T20)
+manifest_sha256 = "873f9012b4e7fec65edf5c976a65de02bf322ed417ff8d7ee0afbfdd1be735b8"   # the layout manifest the page was accepted on (checked at load)
 pack = "hf://SubstrateCommons/disco-replay/disco"         # the replay pack the layout was contracted from: the acceptance test's reference
 pack_revision = "595f280364bc173e9f319a7ba81ae0b03098d545"
 

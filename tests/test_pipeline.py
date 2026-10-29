@@ -13,10 +13,47 @@ def test_the_config_names_every_shell_and_preset_shape():
     shapes = set(CFG["shapes"])
     assert {s["shape"] for s in CFG["disco"]["shells"]} <= shapes
     for name, preset in CFG["presets"].items():
-        assert {s["shape"] for s in preset["shells"]} <= shapes, name
+        assert preset["shape"] in shapes, name
         assert P.preset_protocol(CFG, name).name == name
     for s in CFG["shapes"].values():
         assert 0 < s["delta"] < s["Delta"] < s["TE"]
+
+
+#: the paper's flagship acquisitions (experiments/disco/disco_acq.py): b = 0 rows, shells (b, directions), class
+FLAGSHIP = {"clinical b1000 x 30": (3, [(1000, 30)], "d12-D24"), "research 3-shell x 90": (9, [(1000, 90), (2000, 90), (3000, 90)], "d17-D30"),
+            "Connectome 2.0 b6000 x 60": (6, [(6000, 60)], "d8-D20"), "cosine OGSE 50 Hz b1000 x 60": (6, [(1000, 60)], "cos-f50-T20")}
+
+
+def test_the_presets_are_the_papers_flagship_tables():
+    """Every preset is its stored gradient table, the paper's own (data/protocols/, the same files the paper replays):
+    its b = 0 rows first, then each shell's directions, every row on the preset's class."""
+    assert set(FLAGSHIP) <= set(CFG["presets"])
+    for name, (n_b0, shells, shape) in FLAGSHIP.items():
+        p = P.preset_protocol(CFG, name)
+        assert p.n_b0 == n_b0 and [(s.b, s.n_dirs) for s in p.shells] == shells and {s.shape for s in p.shells} == {shape}
+        m = P.measurements(p, CFG["shapes"])
+        np.testing.assert_allclose(np.linalg.norm(m.dirs, axis=1), 1.0, atol=1e-6)
+
+
+def test_each_class_plays_its_one_waveform():
+    """A class's rows are its one shape scaled to each row's b along each row's direction: the b of every row is its
+    own; a square PGSE class needs the textbook amplitude; the OGSE class keeps the 200 T/m/s edges of its b = 1000
+    build at every b (the shape is fixed), a b = 0 row plays nothing."""
+    from dmipy_sim.acquisition.waveforms import calc_b
+    from space import classes as C
+    u = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8], [0.0, 0.0, 1.0]])
+    for name, sh in CFG["shapes"].items():
+        b = np.array([500.0, 1000.0, 0.0]) if C.kind(sh) == "ogse" else np.array([1000.0, 3000.0, 0.0])
+        seq = C.play(sh, b * 1e6, u)
+        np.testing.assert_allclose(calc_b(seq), b * 1e6, rtol=1e-5, atol=1e3)
+        G = np.asarray(seq.G, np.float64)
+        assert not G[2].any()
+        if C.kind(sh) == "pgse":
+            assert abs(C.amplitude(sh, 1000) / P.gradient_needed(1000, sh["delta"], sh["Delta"]) - 1) < 0.02, name
+    sh = CFG["shapes"]["cos-f50-T20"]
+    G = np.abs(np.asarray(C.play(sh, [0.5e9, 1e9], u[:2]).G, np.float64)).max(axis=2)
+    np.testing.assert_allclose(G[0] / G[0].max(), G[1] / G[1].max(), atol=1e-6)        # one shape at both b
+    assert 0.2 < C.amplitude(sh, 1000) < 0.3                                             # 0.25 T/m: a 50 Hz cosine is weak in b
 
 
 def test_a_protocols_measurements_are_its_rows_in_order():

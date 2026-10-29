@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 from .. import pipeline as P
+from .. import tensor as T
 
 N_REGIONS = 16
 VOXEL_M = 25e-6                                          # DiSCo's voxel; the strands' coordinate unit
@@ -380,7 +381,9 @@ class Layout(Disco):
         super().__init__(cfg)
         d = cfg["data"]
         uri = local or f"hf://{d['repo']}/{d['layout']}"
-        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=list(self.shapes))
+        self.tensor = T.config(cfg)                          # the b-tensor class ([tensor]), read beside the timing classes
+        names = list(self.shapes) + ([self.tensor["class"]] if self.tensor else [])
+        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=names)
         self.resident = P.resident(cfg)
         want = d.get("manifest_sha256")
         with open(os.path.join(self.layout.path, MANIFEST), "rb") as f:
@@ -388,13 +391,15 @@ class Layout(Disco):
         if want and got != want:
             raise ValueError(f"the layout at {uri} has manifest {got[:12]}, the config pins {want[:12]}")
         self.manifest_sha256 = got
-        missing = [s for s in self.shapes if s not in self.layout.partitions]
+        missing = [s for s in names if s not in self.layout.partitions]
         if missing:
             raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {list(self.layout.partitions)}")
         for name, sh in self.shapes.items():                 # each class's waveform is the stored partition's
             got_name, _ = self.layout.fit(C.template(sh), partition=name)
             if not self.layout.partitions[name].is_constant and C.kind(sh) != "ogse":
                 raise ValueError(f"class {name}: the layout stores shaped terms, the config a square-pulse {C.kind(sh)}")
+        if self.tensor:                                      # the b-tensor class's three shapes are the stored six terms'
+            self.layout.fit(T.template(self.tensor), partition=self.tensor["class"])
         m = self.layout.manifest
         self.tiers = bool(m.get("tiers"))
         self.M0 = self.layout.weights.sum(1).reshape(self.layout.grid.shape)   # every voxel's walker weight: the bare b = 0 signal
@@ -471,6 +476,23 @@ class Layout(Disco):
     def release(self):
         if not self.resident:
             self.layout.release()
+
+    def tensor_replay(self, bvals, n_dirs, physics=None):
+        """The b-tensor class's acquisition (:func:`space.tensor.rows`: a b = 0 row, then ``n_dirs`` linear, planar and
+        spherical rows at each b in s/mm^2) replayed over the whole grid: ``(S/S0 (..., n), encoding (n,), b (n,),
+        seconds)``, S0 the b = 0 row at the same tissue and scanner (NaN where the voxel has no walkers)."""
+        if not self.tensor:
+            raise ValueError("this configuration has no b-tensor class ([tensor])")
+        t0 = time.perf_counter()
+        seq, enc, bs = T.rows(self.tensor, bvals, n_dirs)
+        tissue, scanner = P.tissue_and_scanner(physics, self.unseeded)
+        b0 = physics.b0_direction if physics else P.B0_ALONG_Z
+        img, _ = self.layout.image(seq, partition=self.tensor["class"], backend=self.backend, resident=self.resident,
+                                   tissue=tissue, scanner=scanner, b0_direction=b0)
+        S = np.asarray(img, np.float64).reshape(self.mask.shape + (len(enc),))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            S = np.where(self.M0[..., None] > 0, S / S[..., :1], np.nan)
+        return S, enc, bs, time.perf_counter() - t0
 
     def ingredients(self, meas, physics=None, prepared=None):
         """What each tier multiplies into the sum, per voxel, for the run's first class (the layout's

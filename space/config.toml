@@ -66,6 +66,19 @@ delta = 0.019975
 Delta = 0.020029
 TE = 0.0535
 
+# The b-tensor class: three gradient shapes on the spin echo, each in both encoding windows (six stored terms), so one
+# class plays every linear, planar and spherical encoding of them at any rotation and b (space/tensor.py). The shapes
+# are the three axes of NOW's maximum-b spherical encoding (Sjolund et al. 2015) at TE 53.5 ms under a Prisma-class
+# scanner (80 mT/m, 200 T/m/s per axis; a 4 ms window for the 180), the physical gradient in `waveform` (data/).
+[tensor]
+class = "qte-now-80"
+waveform = "classes/qte-now-80.npy"
+label = "b-tensor class qte-now-80: NOW spherical encoding at TE 53.5 ms, 80 mT/m and 200 T/m/s per axis"
+bvalues = [500, 1000, 2000]
+directions = 30
+gpu_seconds = 60
+about = """**One stored class, every b-tensor.** The three shapes below are stored once per walker (six vectors: each shape before and after the 180). A linear, planar or spherical encoding at any orientation and b is a choice of the three shapes' levels, and the layout replays it from the same stored vectors, exact in the substrate rather than a Gaussian approximation. The maps: MD, the first cumulant of the spherical powder average, and the microscopic FA from the linear against the spherical powder average, both fitted over the chosen b-values (Lasič et al. 2014; Szczepankiewicz et al. 2016)."""
+
 # DiSCo's own protocol: which timing class each shell of the dataset's gradient table plays (b in s/mm^2, the
 # table's rows are assigned to the nearest b here).
 [disco]

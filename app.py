@@ -42,6 +42,20 @@ def gpu_runner(fn):
     return run
 
 
+def tensor_runner(fn):
+    """``fn`` (:func:`space.app.tensor_compute`, the b-tensor tab) under the GPU for ``DISCO_TENSOR_GPU_SECONDS`` (the
+    configuration's ``[tensor] gpu_seconds`` otherwise), deterministic, full precision."""
+    seconds = int(os.environ.get("DISCO_TENSOR_GPU_SECONDS") or A.P.config().get("tensor", {}).get("gpu_seconds", 60))
+
+    @spaces.GPU(duration=seconds)
+    def run(*args):
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        return fn(*args)
+    return run
+
+
 @spaces.GPU(duration=60)
 def probe():
     """What the GPU worker sees: the device, the memory, the layout's files and how fast they read (an API endpoint
@@ -83,7 +97,7 @@ def probe():
 if __name__ == "__main__":
     import gradio as gr
     A._load()                                            # the layout from the Hub, once per container, on the CPU side
-    demo = A.build(runner=gpu_runner)
+    demo = A.build(runner=gpu_runner, tensor_runner=tensor_runner)
     with demo:
         probe_out = gr.Textbox(visible=False)
         gr.Button("probe", visible=False).click(probe, outputs=probe_out, api_name="probe")

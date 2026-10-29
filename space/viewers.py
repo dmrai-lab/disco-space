@@ -318,3 +318,32 @@ def response_curves(true, estimated, note=""):
     axes[1].set_title("GM and CSF" + (f" ({note})" if note else ""), fontsize=9); axes[1].legend(fontsize=7)
     fig.tight_layout()
     return _image(fig)
+
+
+def tensor_panel(pw, bvals, z, encodings=("LTE", "PTE", "STE")):
+    """The b-tensor powder averages at axial slice ``z``: one row per encoding, one column per b (S/S0, one scale)."""
+    plt = _mpl()
+    bvals = [float(b) for b in bvals]
+    fig, axes = plt.subplots(len(encodings), len(bvals), figsize=(2.6 * len(bvals) + 0.8, 2.6 * len(encodings)), squeeze=False)
+    for i, e in enumerate(encodings):
+        for j, b in enumerate(bvals):
+            ax = axes[i, j]
+            im = ax.imshow(np.asarray(pw[(e, b)][:, :, z], np.float64).T, origin="lower", cmap="gray", vmin=0.0, vmax=1.0)
+            ax.set_xticks([]); ax.set_yticks([])
+            ax.set_title(f"{e}, b = {b:g}", fontsize=9)
+    fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.025, label="S/S0, powder average")
+    return _image(fig)
+
+
+def tensor_waveform(G, dt, gate, label):
+    """The class's three shapes as played (physical gradient, mT/m) over the echo time, the 180 marked."""
+    plt = _mpl()
+    t = np.arange(G.shape[0]) * dt * 1e3
+    fig, ax = plt.subplots(figsize=(7.5, 2.8))
+    for k, c in enumerate(AXIS_COLOURS):
+        ax.plot(t, G[:, k] * 1e3, color=c, lw=1.2, label=f"ψ{k + 1}")
+    flip = np.nonzero(np.diff(np.asarray(gate)) != 0)[0]
+    for f in flip:
+        ax.axvline(t[f] + 0.5 * (t[1] - t[0]), color="0.5", ls=":", lw=1)
+    ax.set_xlabel("t (ms)"); ax.set_ylabel("G (mT/m)"); ax.set_title(label, fontsize=9); ax.legend(fontsize=8, ncol=3)
+    return _image(fig)

@@ -398,14 +398,22 @@ class Layout(Disco):
         m = self.layout.manifest
         self.tiers = bool(m.get("tiers"))
         self.M0 = self.layout.weights.sum(1).reshape(self.layout.grid.shape)   # every voxel's walker weight: the bare b = 0 signal
-        if self.tiers:                                   # the pools with walkers are the spec's first n_pools ids
+        if self.tiers:                                   # the pools with walkers: the pool ids of the rows that weigh something
             t = m["tiers"]
             spec_pools = sorted(t["substrate"]["pools"], key=lambda q: q["id"]) if t.get("substrate") else []
-            seeded = tuple(q["name"] for q in spec_pools[:int(t["pools"])])
+            ids = self.seeded_pool_ids()
+            seeded = tuple(q["name"] for q in spec_pools if q["id"] in ids)
             if set(seeded) != set(self.pools):
                 raise ValueError(f"the layout's seeded pools are {seeded}, the config's [physics] pools {self.pools}")
-            self.unseeded = tuple(q["name"] for q in spec_pools[int(t["pools"]):])
+            self.unseeded = tuple(q["name"] for q in spec_pools if q["id"] not in ids)
         self.check_grid(self.layout.grid.shape, "the layout")
+
+    def seeded_pool_ids(self, chunk=1 << 16):
+        """The pool ids of the layout's rows with weight (a padding row weighs nothing), read once in chunks of tiles."""
+        w = self.layout._column("w"); pool = self.layout._column("pool"); ids = set()
+        for s in range(0, self.layout.n_tiles, chunk):
+            q = np.asarray(pool[s:s + chunk]); ids |= set(np.unique(q[np.asarray(w[s:s + chunk]) > 0]).tolist())
+        return ids
 
     def background(self, name):
         """Whether the class's sequence group carries the background vectors a magnet's own gradient needs."""

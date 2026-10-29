@@ -14,8 +14,8 @@ spin-echo grid (TE 53.5 ms), axis k the shape psi_k; the page checks it against 
 
 The maps: MD the first cumulant of the spherical powder average, and the microscopic fractional anisotropy from the
 linear against the spherical powder average (Lasic et al. 2014, Front Phys 2:11; Szczepankiewicz et al. 2016,
-NeuroImage 125:653): ``ln(S_LTE/S_STE) = (2/5) b^2 (D_iso D_Delta)^2`` to second order, fitted over the b-values with a
-cubic term, and muFA is the FA of the axisymmetric microscopic tensor with that ``D_iso`` and ``D_Delta``."""
+NeuroImage 125:653): the gamma model fitted to each powder signal, ``V_LTE - V_STE = (4/5) (D_iso D_Delta)^2``, and
+muFA is the FA of the axisymmetric microscopic tensor with that ``D_iso`` and ``D_Delta``."""
 from __future__ import annotations
 
 import functools
@@ -158,21 +158,43 @@ def powder(S, enc, bs, bvals):
     return {(e, float(b)): np.nanmean(S[..., (enc == e) & (bs == float(b))], axis=-1) for e in ENCODINGS for b in bvals}
 
 
+def gamma_fit(b, y, iters=60):
+    """``(MD, V)`` per voxel of the gamma model ``ln S/S0 = -(MD^2 / V) ln(1 + b V / MD)`` (Lasic et al. 2014;
+    Szczepankiewicz et al. 2016) fitted to ``y`` ``(..., n_b)`` (ln S/S0) at ``b`` ``(n_b,)`` (ms/um^2): a vectorised
+    Gauss-Newton over every voxel at once on ``(MD, r = V / MD^2)``, MD in [1e-4, 5] um^2/ms, r in [1e-6, 50]. The
+    first cumulant is MD, the second V; a model of every order, so a b-range that reaches the third cumulant does not
+    fold it into the second (a cubic cumulant fit over few b-values does, and goes negative)."""
+    sh = y.shape[:-1]; Y = y.reshape(-1, len(b)); n = Y.shape[0]
+    md = np.clip(-np.nan_to_num(Y[:, 0] / b[0]), 1e-3, None); r = np.full(n, 0.1)
+
+    def f(md, r):
+        return -np.log1p(r[:, None] * b[None] * md[:, None]) / r[:, None]
+    for _ in range(int(iters)):
+        F = f(md, r); res = Y - F
+        e1 = 1e-6 * np.maximum(md, 1e-3); e2 = 1e-6
+        J1 = (f(md + e1, r) - F) / e1[:, None]; J2 = (f(md, r + e2) - F) / e2
+        A11 = (J1 * J1).sum(1); A12 = (J1 * J2).sum(1); A22 = (J2 * J2).sum(1) + 1e-12
+        g1 = (J1 * res).sum(1); g2 = (J2 * res).sum(1); det = A11 * A22 - A12 ** 2
+        with np.errstate(divide="ignore", invalid="ignore"):
+            md = np.clip(md + (A22 * g1 - A12 * g2) / det, 1e-4, 5.0); r = np.clip(r + (A11 * g2 - A12 * g1) / det, 1e-6, 50.0)
+    return md.reshape(sh), (r * md ** 2).reshape(sh)
+
+
 def md_ufa(pw, bvals):
-    """``(MD (um^2/ms), muFA)`` per voxel from the powder averages: MD the first cumulant of the spherical signal,
-    ``ln S_STE = -b MD + b^2 V / 2`` fitted over the b-values (``-ln S_STE / b`` at one b); muFA from
-    ``ln(S_LTE/S_STE) = (2/5) b^2 (D_iso D_Delta)^2 + c b^3`` fitted over the b-values (the b^2 term alone at one or
-    two), the FA of the axisymmetric microscopic tensor with that ``D_iso = MD`` and ``D_Delta``; NaN where a signal is
-    not positive."""
+    """``(MD (um^2/ms), muFA)`` per voxel from the powder averages: the gamma model (:func:`gamma_fit`) fitted to the
+    linear and to the spherical powder signal over the b-values, MD their mean first cumulant, ``V_A = V_LTE - V_STE``
+    the anisotropic variance (the orientation dispersion of the microscopic tensors, ``(4/5) (D_iso D_Delta)^2``), and
+    muFA the FA of the axisymmetric microscopic tensor with ``D_iso = MD`` and that ``D_Delta``; 0 where ``V_A`` is not
+    positive (a spherical signal whose variance exceeds the linear one's: on restricted tissue the two waveforms'
+    spectra differ, and the spherical one sees more of the time dependence), NaN where a signal is not positive."""
     keys = sorted(float(x) for x in bvals)                                 # the powder averages' own keys, s/mm^2
     b = np.asarray(keys) * 1e-3                                            # ms/um^2
     with np.errstate(divide="ignore", invalid="ignore"):
-        ste = np.stack([np.log(pw[("STE", k)]) for k in keys], axis=-1)
-        dif = np.stack([np.log(pw[("LTE", k)]) for k in keys], axis=-1) - ste
-    A = np.stack([-b, 0.5 * b ** 2], axis=1) if len(b) >= 2 else -b[:, None]
-    md = np.einsum("k,...k->...", np.linalg.pinv(A)[0], ste)
-    A = np.stack([b ** 2, b ** 3], axis=1) if len(b) >= 3 else b[:, None] ** 2
-    x = np.clip(2.5 * np.einsum("k,...k->...", np.linalg.pinv(A)[0], dif), 0.0, None)   # (D_iso D_Delta)^2, (um^2/ms)^2
+        mL, vL = gamma_fit(b, np.stack([np.log(pw[("LTE", k)]) for k in keys], axis=-1))
+        mS, vS = gamma_fit(b, np.stack([np.log(pw[("STE", k)]) for k in keys], axis=-1))
+    bad = ~np.isfinite(np.stack([np.log(pw[(e, k)]) for e in ("LTE", "STE") for k in keys], axis=-1)).all(-1)
+    md = 0.5 * (mL + mS)
+    x = np.clip(1.25 * (vL - vS), 0.0, None)                              # (D_iso D_Delta)^2, (um^2/ms)^2
     with np.errstate(divide="ignore", invalid="ignore"):
         ufa = np.sqrt(1.5) * np.sqrt(6.0 * x / (3.0 * md ** 2 + 6.0 * x))
-    return md, ufa
+    return np.where(bad, np.nan, md), np.where(bad, np.nan, ufa)

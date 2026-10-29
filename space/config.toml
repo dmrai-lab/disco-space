@@ -8,7 +8,7 @@ layout = "disco"                                 # the layout's prefix in the da
 revision = "7c84a67badeeb8f584c8a98356d2e81820a86eac"   # the dataset revision the layout is read at (with the OGSE class cos-f50-T20)
 manifest_sha256 = "873f9012b4e7fec65edf5c976a65de02bf322ed417ff8d7ee0afbfdd1be735b8"   # the layout manifest the page was accepted on (checked at load)
 pack = "hf://SubstrateCommons/disco-replay/disco"         # the replay pack the layout was contracted from: the acceptance test's reference
-pack_revision = "595f280364bc173e9f319a7ba81ae0b03098d545"
+pack_revision = "8277ff05ea8237a98f1f8bdfe6a86ce37c4fcdc3"
 
 # The timing classes ("shapes"), each ONE waveform the layout stores (space/classes.py builds it with dmipy-sim's own
 # builders on the layout's grid, TE = 53.5 ms, 1000 samples; checked against the layout's partition at load): square

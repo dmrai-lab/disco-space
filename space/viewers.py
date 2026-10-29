@@ -320,18 +320,40 @@ def response_curves(true, estimated, note=""):
     return _image(fig)
 
 
-def tensor_panel(pw, bvals, z, encodings=("LTE", "PTE", "STE")):
-    """The b-tensor powder averages at axial slice ``z``: one row per encoding, one column per b (S/S0, one scale)."""
+def tensor_maps(maps, crossing, z, label="A: "):
+    """A b-tensor run's maps at axial slice ``z``: FA (DTI on the linear rows) beside the microscopic FA, both 0 to 1
+    with the voxels the ground truth's strands cross in two or more directions (``crossing``, boolean on the grid)
+    outlined, and MD (um^2/ms)."""
     plt = _mpl()
-    bvals = [float(b) for b in bvals]
-    fig, axes = plt.subplots(len(encodings), len(bvals), figsize=(2.6 * len(bvals) + 0.8, 2.6 * len(encodings)), squeeze=False)
-    for i, e in enumerate(encodings):
-        for j, b in enumerate(bvals):
-            ax = axes[i, j]
-            im = ax.imshow(np.asarray(pw[(e, b)][:, :, z], np.float64).T, origin="lower", cmap="gray", vmin=0.0, vmax=1.0)
-            ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title(f"{e}, b = {b:g}", fontsize=9)
-    fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.025, label="S/S0, powder average")
+    fig, axes = plt.subplots(1, 3, figsize=(11.0, 3.6))
+    cr = np.asarray(crossing, float)[:, :, z].T
+    for ax, key, title, kw in ((axes[0], "fa", "FA (DTI, linear rows)", dict(vmin=0, vmax=1, cmap="viridis")),
+                               (axes[1], "ufa", "µFA (linear vs spherical powder)", dict(vmin=0, vmax=1, cmap="viridis")),
+                               (axes[2], "md", "MD (µm²/ms)", dict(vmin=0, vmax=1.0, cmap="magma"))):
+        im = ax.imshow(np.asarray(maps[key], np.float64)[:, :, z].T, origin="lower", **kw)
+        if key != "md":
+            ax.contour(cr, levels=[0.5], colors="w", linewidths=0.6)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_title(label + title, fontsize=9)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+    fig.suptitle("white outline: voxels the ground truth's strands cross in two or more directions", fontsize=8)
+    return _image(fig)
+
+
+def powder_curve(maps, ijk, other=None, labels=("A", "B")):
+    """The powder-averaged signal of voxel ``ijk`` against b, linear vs spherical (``other``: B's maps, dashed)."""
+    plt = _mpl()
+    fig, ax = plt.subplots(figsize=(4.6, 3.4))
+    for m, ls, tag in ((maps, "-", labels[0]), (other, "--", labels[1])):
+        if m is None:
+            continue
+        b = [0.0] + list(m["bvals"])
+        for e, c in (("LTE", "C0"), ("STE", "C3")):
+            y = [1.0] + [float(m["powder"][(e, x)][tuple(ijk)]) for x in m["bvals"]]
+            ax.plot(b, y, ls + "o", color=c, ms=3, label=f"{tag} {e}")
+    ax.set_yscale("log"); ax.set_xlabel("b (s/mm²)"); ax.set_ylabel("powder S/S0")
+    ax.set_title(f"voxel {tuple(int(x) for x in ijk)}: µFA {float(maps['ufa'][tuple(ijk)]):.2f}, FA {float(maps['fa'][tuple(ijk)]):.2f}", fontsize=9)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
     return _image(fig)
 
 

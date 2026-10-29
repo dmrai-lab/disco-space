@@ -231,8 +231,16 @@ def protocol_from_scheme(path, *, name="uploaded scheme"):
 
 
 def preset_protocol(cfg, name):
-    """A ``[presets]`` entry of the config as a Protocol."""
+    """A ``[presets]`` entry of the config as a Protocol: a stored gradient table (``table``: ``data/<table>.bvals`` and
+    ``.bvecs``, every row's own b and direction, each shell its rounded b, all on the class ``shape``), or ``shells``
+    of Fibonacci directions after ``n_b0`` b = 0 rows."""
     p = cfg["presets"][name]
+    if "table" in p:
+        bv = np.loadtxt(os.path.join(DATA_DIR, p["table"] + ".bvals")).ravel()
+        dirs = np.loadtxt(os.path.join(DATA_DIR, p["table"] + ".bvecs"))
+        dirs = dirs.T if dirs.shape[0] == 3 else dirs
+        shell = np.round(bv, -1)
+        return protocol_from_rows(bv, dirs, shell, lambda g, rows: Shell(p["shape"], float(g), int(len(rows))), name=name)[0]
     return Protocol(tuple(Shell(s["shape"], float(s["b"]), int(s["n_dirs"])) for s in p["shells"]), n_b0=int(p["n_b0"]), name=name)
 
 
@@ -1015,13 +1023,15 @@ def limits(key):
 def playable(protocol, shapes, scanner=None):
     """Per shell, the gradient it needs and whether ``scanner`` (a catalogue key, or None for no limit) can play it:
     rows of ``(shell, b, delta, Delta, G_needed, G_max or None, ok)`` in SI. A stimulated-echo class needs the same
-    amplitude as its PGSE twin (the same δ and diffusion time)."""
+    amplitude as its PGSE twin (the same δ and diffusion time); an OGSE class the peak of its own waveform
+    (:func:`space.classes.amplitude`; its delta / Delta are the scheme's nominal block and separation)."""
+    from . import classes as C
     G_max = float(limits(scanner).G_max) if scanner else None
     rows = []
     for s in protocol.shells:
         t = dict(delta=s.delta, Delta=s.Delta) if s.free_timing else shapes[s.shape]
         delta, Delta = float(t["delta"]), float(t["Delta"])
-        G = gradient_needed(s.b, delta, Delta)
+        G = C.amplitude(t, s.b) if t.get("kind") == "ogse" else gradient_needed(s.b, delta, Delta)
         rows.append((s.shape, s.b, delta, Delta, G, G_max, G_max is None or G <= G_max))
     return rows
 

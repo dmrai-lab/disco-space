@@ -104,9 +104,11 @@ def gradient_text(cfg, protocol, shapes, scanner):
     """The per-shell gradient table as Markdown, and whether every shell is playable on the menu's ``scanner``."""
     rows = P.playable(protocol, shapes, P.machine(cfg, scanner))
     lines = ["| shell | b (s/mm²) | timing | needs | limit |", "|---|---|---|---|---|"]
+    from . import classes as C
     for name, b, delta, Delta, G, G_max, ok in rows:
         limit = "any" if G_max is None else f"{G_max * 1e3:.0f} mT/m {'✓' if ok else '✗ cannot play'}"
-        lines.append(f"| {name} | {b:g} | δ {delta * 1e3:g} / Δ {Delta * 1e3:g} ms | {G * 1e3:.0f} mT/m | {limit} |")
+        timing = C.describe(shapes[name]) if shapes.get(name, {}).get("kind") == "ogse" else f"δ {delta * 1e3:g} / Δ {Delta * 1e3:g} ms"
+        lines.append(f"| {name} | {b:g} | {timing} | {G * 1e3:.0f} mT/m | {limit} |")
     return "\n".join(lines), all(r[-1] for r in rows)
 
 

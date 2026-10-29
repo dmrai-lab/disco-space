@@ -48,8 +48,7 @@ noise-free with the tiers switched on one at a time, A and B, and any layer's si
 previous layer or B minus A, in the DWI or in the tensor's MD and FA, divided by the replay floor when asked.
 
 **Two modes, one image.** The hosted Spaces run in *demo* mode: the acquisition's pulse timing is one of a few
-stored classes (the shape-moment layout, `disco/moments/` of the dataset, one pass over the pack per class), so a
-run takes seconds and the b-values, directions, SNR, tissue and scanner stay free. The same image beside the
+stored waveforms (the time-segment layout, `SubstrateCommons/disco-time-segments`), so a run takes seconds and the b-values, directions, SNR, tissue and scanner stay free. The same image beside the
 columnar pack runs in *full* mode: every run reads the pack, so δ, Δ, TE and a Camino `.scheme` upload are free,
 and a run takes minutes (the plan on screen says how many). The mode is the container's configuration:
 
@@ -61,12 +60,18 @@ docker run -p 7860:7860 -e DISCO_MODE=full -e DISCO_COLUMNS=/columns -v /path/to
     ghcr.io/dmrai-lab/disco-space                                                        # full: the pack on disk
 ```
 
-**The data path.** `disco/moments/` on the dataset is dmipy-sim's *shape-moment layout*: the replay pack contracted
-once against each PGSE timing class (δ/Δ at TE 53.5 ms, square pulses), so that any b-value and direction on a
-class is a three-term phase per walker. Seven classes are stored (`space/config.toml`, `[shapes]`: six PGSE and one stimulated echo); the layout is
-written by `dmipy_sim.replay.shape_moments.write_shape_moments` from the certified columnar rows and names the
-columnar manifest's sha256 it was contracted from. The replay of DiSCo's protocol from the layout is checked
-against the published reference volume by the gate.
+**The data path.** `SubstrateCommons/disco-time-segments` is dmipy-sim's *time-segment layout* of the v2 DiSCo walk
+(321 M walkers): per walker and term of each stored timing class, the term vector of its path, packed into 11-12-bit
+fields of 32-bit words, beside each sequence group's tier words (pool, gated contact, the field basis's channels) and
+background words. A class is ONE waveform (`space/classes.py` builds it from `[shapes]` with dmipy-sim's own builders
+and checks it against the layout's partition at load): square-lobe PGSE classes, a stimulated echo, and the cosine
+OGSE at 50 Hz (a shaped term, its 200 T/m/s edges as built at b = 1000). A shell plays its class's waveform at its
+b-values and directions; the image streams the packed words to the device a chunk at a time and decodes them in the
+kernel (`[compute] resident = false`), so one class of the whole grid needs about 3.4 GB of anonymous memory on a CPU
+host. The presets are the paper's DiSCo flagship acquisitions, their gradient tables in `data/protocols/` (the files
+the paper replays). The gate (`tests/test_acceptance.py`) replays the pack the layout was contracted from
+(`SubstrateCommons/disco-replay`) walker by walker at 32 voxels and holds the page's S/S0 to 1e-3 of it, for DiSCo's
+protocol bare / 3 T / 7 T and every preset.
 
 ## Layout
 

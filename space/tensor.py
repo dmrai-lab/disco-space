@@ -164,10 +164,11 @@ def md_ufa(pw, bvals):
     ``ln(S_LTE/S_STE) = (2/5) b^2 (D_iso D_Delta)^2 + c b^3`` fitted over the b-values (the b^2 term alone at one or
     two), the FA of the axisymmetric microscopic tensor with that ``D_iso = MD`` and ``D_Delta``; NaN where a signal is
     not positive."""
-    b = np.asarray(sorted(float(x) for x in bvals)) * 1e-3                 # s/mm^2 -> ms/um^2
+    keys = sorted(float(x) for x in bvals)                                 # the powder averages' own keys, s/mm^2
+    b = np.asarray(keys) * 1e-3                                            # ms/um^2
     with np.errstate(divide="ignore", invalid="ignore"):
-        ste = np.stack([np.log(pw[("STE", float(x) * 1e3)]) for x in b], axis=-1)
-        dif = np.stack([np.log(pw[("LTE", float(x) * 1e3)]) for x in b], axis=-1) - ste
+        ste = np.stack([np.log(pw[("STE", k)]) for k in keys], axis=-1)
+        dif = np.stack([np.log(pw[("LTE", k)]) for k in keys], axis=-1) - ste
     A = np.stack([-b, 0.5 * b ** 2], axis=1) if len(b) >= 2 else -b[:, None]
     md = np.einsum("k,...k->...", np.linalg.pinv(A)[0], ste)
     A = np.stack([b ** 2, b ** 3], axis=1) if len(b) >= 3 else b[:, None] ** 2

@@ -41,10 +41,12 @@ def test_the_waveform_is_refocused_and_inside_its_scanner():
     assert np.abs(np.diff(W, axis=0) / g.dt).max() <= 200.0 * 3 * (1 + 1e-6)   # linear interpolation of a 200 T/m/s design
 
 
-def test_the_maps_recover_a_known_microscopic_anisotropy():
+@pytest.mark.parametrize("bvals", [(500.0, 1000.0, 2000.0), (100.0, 700.0, 1400.0, 2000.0)])
+def test_the_maps_recover_a_known_microscopic_anisotropy(bvals):
     """Powder of randomly oriented axisymmetric Gaussian tensors (D_iso 1 um^2/ms, muFA 0.8) played through the rows'
-    own b-tensors: MD within 3 %, muFA within 0.03 over b = 500, 1000, 2000 (the cumulant fits' own truncation)."""
-    seq, enc, bs = _rows(n=30)
+    own b-tensors: MD within 3 %, muFA within 0.03 over the b-values (the cumulant fits' own truncation); the powder
+    averages are read by the b-values as given (700 is not 0.7 x 1e3 in floating point)."""
+    seq, enc, bs = _rows(bvals=bvals, n=30)
     from dmipy_sim.acquisition.waveforms import calc_btensor
     B = calc_btensor(seq) * 1e-9                                       # s/m^2 -> ms/um^2
     D_iso, mufa = 1.0, 0.8
@@ -56,7 +58,7 @@ def test_the_maps_recover_a_known_microscopic_anisotropy():
     D = Dperp * np.eye(3)[None] + (Dpar - Dperp) * u[:, :, None] * u[:, None, :]
     S = np.exp(-np.einsum("mij,cij->mc", B, D)).mean(1)
     S = S / S[0]
-    pw = T.powder(S[None, None, None, :], enc, bs, [500.0, 1000.0, 2000.0])
-    md, got = T.md_ufa(pw, [500.0, 1000.0, 2000.0])
+    pw = T.powder(S[None, None, None, :], enc, bs, list(bvals))
+    md, got = T.md_ufa(pw, list(bvals))
     assert abs(float(md.ravel()[0]) - D_iso) < 0.03 * D_iso
     assert abs(float(got.ravel()[0]) - mufa) < 0.03

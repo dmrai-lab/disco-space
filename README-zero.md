@@ -11,12 +11,16 @@ license: mit
 short_description: DiSCo replay to connectome on the shared GPU pool
 ---
 
-# The DiSCo Space on ZeroGPU
+# The DiSCo replay Space (`rfick/disco-replay`)
 
-The same application as `rfick/disco` (dmrai-lab/disco-space) on Hugging Face's shared GPU pool: the compute backend
-is PyTorch (`DISCO_BACKEND=torch`: dmipy-sim's shape-moment image, dmipy-fit's `csd_tournier07_torch`, dmipy-tract's
-torch tracker), the GPU exists for the duration of one run (`spaces.GPU`), and the layout's tiles are rebuilt on the
-device inside every call from the layout downloaded from the Hub when the container started. Deterministic algorithms are on and TF32 off inside the
+The DiSCo page (dmrai-lab/disco-space) on Hugging Face's shared GPU pool, serving the v2 DiSCo walk through its
+time-segment layout (`SubstrateCommons/disco-time-segments`): the compute backend is PyTorch (`DISCO_BACKEND=torch`:
+dmipy-sim's time-segment image, dmipy-fit's `csd_tournier07_torch`, dmipy-tract's torch tracker), the GPU exists for
+the duration of one run (`spaces.GPU`), and the layout's packed words are streamed to the device a chunk at a time
+inside every call (decoded in the kernel) from the layout downloaded from the Hub when the container started. Its
+acquisitions are the paper's DiSCo flagship set: DiSCo's own 364 measurements, clinical, research, Connectome 2.0 and
+a cosine OGSE at 50 Hz, each one stored waveform of the layout. (Formerly `rfick/disco-zero`; the old address
+redirects.) Deterministic algorithms are on and TF32 off inside the
 call. Source and pins: https://github.com/dmrai-lab/disco-space (`requirements-zero.txt`, `app.py`).
 
 ## GPU quota per visitor

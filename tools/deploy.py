@@ -44,6 +44,12 @@ def readme_for(config):
     return "README-zero.md" if config == DEFAULT_CONFIG else f"README-{os.path.splitext(config)[0]}-zero.md"
 
 
+def requirements_for(config):
+    """The ZeroGPU requirements of a configuration: ``requirements-zero.txt`` for the default (the DiSCo page's pins),
+    ``requirements-<stem>-zero.txt`` else (the brain Space keeps the pins its packs were accepted on)."""
+    return "requirements-zero.txt" if config == DEFAULT_CONFIG else f"requirements-{os.path.splitext(config)[0]}-zero.txt"
+
+
 def set_config(api, space, config):
     """``DISCO_CONFIG`` on the Space: the configuration's name, absent for the default."""
     if config == DEFAULT_CONFIG:
@@ -79,7 +85,7 @@ def main():
         for name in ("app.py", "pyproject.toml"):
             shutil.copy(os.path.join(root, name), staged)
         shutil.copy(os.path.join(root, readme_for(a.config)), os.path.join(staged, "README.md"))
-        shutil.copy(os.path.join(root, "requirements-zero.txt"), os.path.join(staged, "requirements.txt"))
+        shutil.copy(os.path.join(root, requirements_for(a.config)), os.path.join(staged, "requirements.txt"))
         folder = staged
     elif a.base_tag:
         staged = tempfile.mkdtemp(prefix="disco-space-")
@@ -91,7 +97,7 @@ def main():
             g.write(f.read().replace("BASE_TAG", a.base_tag))
         folder = staged
     info = api.upload_folder(folder_path=folder, repo_id=a.space, repo_type="space", ignore_patterns=IGNORE,
-                             delete_patterns=["Dockerfile", "Dockerfile.base", "Dockerfile.space", "entrypoint.sh", "README-*zero.md", "requirements-zero.txt"] if a.zero
+                             delete_patterns=["Dockerfile", "Dockerfile.base", "Dockerfile.space", "entrypoint.sh", "README-*zero.md", "requirements-*zero.txt"] if a.zero
                              else (["Dockerfile.base", "Dockerfile.space"] if a.base_tag else None),
                              commit_message=f"disco-space {sha[:12]}" + (f" on base {a.base_tag[:12]}" if a.base_tag else "") + (f", {a.config}" if a.config != DEFAULT_CONFIG else ""))
     if staged:

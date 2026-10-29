@@ -14,7 +14,7 @@ short_description: A real brain replayed from packs, to an 84-region connectome
 
 # The brain Space on ZeroGPU
 
-The same application as `rfick/disco-zero` (dmrai-lab/disco-space), serving `space/brain.toml` (`DISCO_CONFIG`):
+The same application as `rfick/disco-replay` (dmrai-lab/disco-space), serving `space/brain.toml` (`DISCO_CONFIG`):
 a real brain as a compositional replay phantom. The input is the multi-tissue CSD of one scan, MASiVar `sub-cIs1`
 (OpenNeuro ds003416, Cai et al. MRM 2021, CC0): its white-matter FOD field, its WM / GM / CSF fractions and an
 84-region parcellation, made once offline and published as the dataset `SubstrateCommons/masivar-brain`. Each run

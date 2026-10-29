@@ -125,7 +125,7 @@ With it two runs are bit-identical at a 7 % cost on the replay (2.48 s against 2
 
 ## ZeroGPU
 
-`rfick/disco-zero` is the same application on Hugging Face's shared GPU pool (Gradio SDK, `zero-a10g`; the pool
+`rfick/disco-replay` (formerly `rfick/disco-zero`) is the same application on Hugging Face's shared GPU pool (Gradio SDK, `zero-a10g`; the pool
 handed an RTX PRO 6000 Blackwell MIG slice with 51 GB): `DISCO_BACKEND=torch` switches the layout image, the CSD
 solver and the tracker to their PyTorch kernels (dmipy-sim#510, dmipy-fit#37, dmipy-tract#4), `spaces.GPU` wraps the
 run, the layout is downloaded from the Hub into the parent process once per container and the forked GPU worker inherits

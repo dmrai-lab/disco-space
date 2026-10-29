@@ -221,7 +221,7 @@ def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS) == 480
     text = A.gpu_seconds_text("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS)
     assert f"reserves {ladder} s" in text and "logged out" in text.split("started by")[1].split(".")[0]
-    assert len(A.OUTPUTS) == 30
+    assert len(A.OUTPUTS) == 36                 # the 30 of a connectome run and the b-tensor run's six
 
 
 def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():

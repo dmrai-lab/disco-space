@@ -547,7 +547,8 @@ class Layout(Disco):
 
     def warm(self):
         """DiSCo's own protocol replayed once at the default physics (every class it plays compiled at the row
-        counts the default run uses), then one direction on every other class. When the columns are not kept resident
+        counts the default run uses), then one direction on every other class (on a b-tensor class one row of each
+        encoding). When the columns are not kept resident
         (a pool that drops the device between calls), the padded host arrays are loaded into this process instead, so
         a forked worker inherits them and pays the transfer alone."""
         if not self.resident and self.backend == "torch":
@@ -556,9 +557,13 @@ class Layout(Disco):
         physics = self.default_physics()
         disco = disco_protocol(self.cfg)[0]
         self.replay(P.measurements(disco, self.shapes), physics)
-        rest = [name for name in self.shapes if name not in {s.shape for s in disco.shells}]
+        played = {s.shape for s in disco.shells}
+        rest = [n for n, sh in self.shapes.items() if n not in played and sh.get("kind") != "tensor"]
         if rest:
             self.replay(P.measurements(P.Protocol(tuple(P.Shell(name, 1000.0, 1) for name in rest), n_b0=1, name="warm"), self.shapes), physics)
+        for name in [n for n, sh in self.shapes.items() if sh.get("kind") == "tensor"]:     # a b-tensor class: one row per encoding
+            shells = tuple(P.Shell(name, 1000.0, 1, encoding=e) for e in ("LTE", "STE"))
+            self.replay(P.measurements(P.Protocol(shells, n_b0=1, name="warm"), self.shapes), physics)
 
     def accuracy(self, res=None):
         from .. import classes as C

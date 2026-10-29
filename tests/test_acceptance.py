@@ -3,7 +3,9 @@ the noiseless pipeline scores the connectome within the reference's band with no
 
 The reference (:mod:`space.reference`) is the replay pack the layout was contracted from (``[data] pack``), replayed
 walker by walker -- every band, every field mode, the contact -- at ``[gate] reference_voxels`` voxels spread over its
-index; the page's S/S0 at those voxels must be within ``[gate] reference_max_abs_diff`` of the reference's, for DiSCo's
+index; the page's signal at those voxels, over the voxel's bare b = 0 signal (the quantity both certificates bound;
+S/S0 divides it by the relaxed b = 0 signal, down to 0.3 at 7 T, and is recorded beside it), must be within
+``[gate] reference_max_abs_diff`` of the reference's, for DiSCo's
 own protocol bare and in the catalogue's white matter at 3 T and 7 T, and for every preset (the paper's flagship
 acquisitions, the cosine OGSE among them) bare and at 3 T. It runs where the layout is (``DISCO_LAYOUT`` a local copy,
 else the Hub) and reads the pack's rows at the gate's voxels (``DISCO_PACK`` a local copy, else the Hub); on a CPU
@@ -57,8 +59,8 @@ CASES = [(D.DISCO_364, run) for run in ("bare", "3T", "7T")] + [(name, run) for 
 
 @pytest.mark.parametrize("preset,run", CASES)
 def test_the_layout_is_the_replay_packs_replay_at_the_gates_voxels(layout, pack, preset, run):
-    """S0-normalised at the gate's voxels: the page's replay through the layout (its classes' waveforms, its tiers) is
-    the pack's replay of the same rows, to ``reference_max_abs_diff``."""
+    """At the gate's voxels: the page's replay through the layout (its classes' waveforms, its tiers) is the pack's replay
+    of the same rows, to ``reference_max_abs_diff`` in units of the voxel's bare b = 0 signal."""
     pk, voxels = pack
     protocol = D.Disco.protocol(CFG, preset)
     physics = None if run == "bare" else P.Physics.at(float(run[:-1]))
@@ -72,17 +74,19 @@ def test_the_layout_is_the_replay_packs_replay_at_the_gates_voxels(layout, pack,
         rows = meas.shape == name
         ref[:, rows] = R.replay_at(pk, voxels, layout.sequence(name, meas.bvals[rows], meas.dirs[rows]), tissue, scanner)
     t_ref = time.perf_counter() - t1
-    ref = ref / ref[:, meas.b0].mean(1, keepdims=True)
+    ref_S0 = ref[:, meas.b0].mean(1, keepdims=True)
     got = np.stack([dwi[tuple(v)] for v in voxels])
-    d = np.abs(got - ref)
-    worst = float(np.nanmax(d))
-    print(f"\n{preset} {run}: max |dS/S0| {worst:.2e} over {len(voxels)} voxels x {len(meas.bvals)} measurements; "
+    d = np.abs(got - ref / ref_S0)                                   # S/S0
+    d_S = np.abs(got * ref_S0 - ref)                                 # the signal over the voxel's bare b = 0 signal: what the certificates bound
+    worst, worst_S = float(np.nanmax(d)), float(np.nanmax(d_S))
+    print(f"\n{preset} {run}: max |dS| {worst_S:.2e} (S over the bare b = 0 signal), max |d(S/S0)| {worst:.2e} over "
+          f"{len(voxels)} voxels x {len(meas.bvals)} measurements (S0 down to {float(ref_S0.min()):.3f}); "
           f"layout replay {secs:.1f} s, reference {t_ref:.1f} s")
-    _record(f"{preset} | {run}", dict(worst=worst, median=float(np.nanmedian(d)), voxels=len(voxels), n_meas=int(len(meas.bvals)),
-                                      replay_seconds=secs, reference_seconds=t_ref,
+    _record(f"{preset} | {run}", dict(worst_S=worst_S, worst_S_over_S0=worst, median_S=float(np.nanmedian(d_S)), S0_min=float(ref_S0.min()),
+                                      voxels=len(voxels), n_meas=int(len(meas.bvals)), replay_seconds=secs, reference_seconds=t_ref,
                                       bound=CFG["gate"]["reference_max_abs_diff"], manifest_sha256=layout.manifest_sha256))
     assert np.isfinite(got).all(), "a gate voxel the pack has rows in has no signal from the layout"
-    assert worst < CFG["gate"]["reference_max_abs_diff"]
+    assert worst_S < CFG["gate"]["reference_max_abs_diff"]
 
 
 def test_the_noiseless_pipeline_scores_within_the_references_band(layout):

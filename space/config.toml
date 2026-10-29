@@ -142,7 +142,7 @@ max_steps = 500
 [gate]
 pearson_count_min = 0.90
 missed_pairs_max = 0
-reference_max_abs_diff = 1e-3     # S/S0 from the layout against the replay pack's own replay of the same rows, at the gate's voxels
+reference_max_abs_diff = 1e-3     # the layout's signal against the replay pack's own replay of the same rows at the gate's voxels, over the bare b = 0 signal
 reference_voxels = 32             # voxels spread over the pack's index the reference is replayed at
 
 # The reconstruction: DiSCo is single-fibre white matter, so its CSD is the single-tissue Tournier 2007 one on the

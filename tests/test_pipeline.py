@@ -413,7 +413,7 @@ def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
     meas = P.measurements(P.Protocol((P.Shell("d12-D24", 1000, 3), P.Shell("d8-D20", 2000, 3)), n_b0=1), CFG["shapes"])
     dwi, floor, factor, _ = D.Layout.replay(lay, meas, P.Physics.at(3.0))
     assert [s[2] for s in seen if s[0] == "image"] == [None, None] and [s[5] for s in seen if s[0] == "image"] == [4, 3]
-    np.testing.assert_allclose(dwi, 1.0); np.testing.assert_allclose(factor.ravel(), [0.5, 1.0])
+    np.testing.assert_allclose(dwi, 1.0); np.testing.assert_allclose(factor.ravel(), [0.25, 0.5])   # S0 = 0.5 W over the fullest voxel's W
     seen.clear()
     ph = P.Physics.at(3.0, scanner="siemens_magnetom_prisma_3T", offset_m=(0.0, 0.0, 0.05))
     D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 1000, 3),), n_b0=1), ph)

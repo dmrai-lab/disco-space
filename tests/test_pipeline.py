@@ -43,6 +43,8 @@ def test_each_class_plays_its_one_waveform():
     from space import classes as C
     u = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8], [0.0, 0.0, 1.0]])
     for name, sh in CFG["shapes"].items():
+        if C.kind(sh) == "tensor":                                     # its rows are level matrices: tests/test_tensor.py
+            continue
         b = np.array([500.0, 1000.0, 0.0]) if C.kind(sh) == "ogse" else np.array([1000.0, 3000.0, 0.0])
         seq = C.play(sh, b * 1e6, u)
         np.testing.assert_allclose(calc_b(seq), b * 1e6, rtol=1e-5, atol=1e3)

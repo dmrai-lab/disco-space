@@ -224,7 +224,8 @@ class Disco(P.Source):
             out[f"SNR → {v}"] = ("snr", float(v))
         out["noise → off"] = ("snr", None)
         for name, sh in cfg["shapes"].items():
-            out[f"every shell's pulse timing → {name} ({sh['label']})"] = ("shape", name)
+            if sh.get("kind") != "tensor":               # the b-tensor class is its own acquisition (encodings, not shells)
+                out[f"every shell's pulse timing → {name} ({sh['label']})"] = ("shape", name)
         return out
 
     @classmethod

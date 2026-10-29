@@ -369,3 +369,15 @@ def tensor_waveform(G, dt, gate, label):
         ax.axvline(t[f] + 0.5 * (t[1] - t[0]), color="0.5", ls=":", lw=1)
     ax.set_xlabel("t (ms)"); ax.set_ylabel("G (mT/m)"); ax.set_title(label, fontsize=9); ax.legend(fontsize=8, ncol=3)
     return _image(fig)
+
+
+def map_picker(sl, scale, *, vmin=0.0, vmax=1.0, cmap="viridis"):
+    """A 2-D map ``sl`` (x, y) as an image ``scale`` pixels per voxel with y up and no margins, so a click's pixel names
+    its voxel exactly (``x // scale``, ``ny - 1 - y // scale``); NaN grey."""
+    from PIL import Image
+    import matplotlib
+    a = np.asarray(sl, np.float64).T[::-1]                       # rows top to bottom = y from high to low
+    rgba = matplotlib.colormaps[cmap]((np.clip(np.nan_to_num(a, nan=vmin), vmin, vmax) - vmin) / (vmax - vmin))
+    rgba[~np.isfinite(a)] = (0.5, 0.5, 0.5, 1.0)
+    img = (np.repeat(np.repeat(rgba[..., :3], int(scale), axis=0), int(scale), axis=1) * 255).astype(np.uint8)
+    return Image.fromarray(img)

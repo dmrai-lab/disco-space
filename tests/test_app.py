@@ -8,6 +8,7 @@ import pytest
 
 from space import app as A
 from space import pipeline as P
+from space import viewers as V
 from space.sources import disco as D
 
 CFG = P.config()
@@ -68,7 +69,8 @@ def test_a_knob_changes_one_thing_of_a():
     v = _values()
     prot = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS)
     ks = S.knobs(CFG)
-    assert ks[A.NO_KNOB] is None and len(ks) == 1 + 5 + 2 + 3 + 1 + 3 + len(CFG["shapes"])
+    timing = [n for n, sh in CFG["shapes"].items() if sh.get("kind") != "tensor"]
+    assert ks[A.NO_KNOB] is None and len(ks) == 1 + 5 + 2 + 3 + 1 + 3 + len(timing)
     for name, change in ks.items():
         if change is None:
             continue
@@ -230,15 +232,16 @@ def test_the_explorer_draws_layers_differences_and_metrics_from_its_state():
     rng = np.random.default_rng(0)
     bare = rng.uniform(0.3, 1.0, (4, 4, 2, 13)).astype(np.float16); a = (bare * 0.98).astype(np.float16); b = (bare * 0.97).astype(np.float16)
     md = rng.random((4, 4, 2)).astype(np.float16); fa = rng.random((4, 4, 2)).astype(np.float16)
-    ex = dict(layers=[("bare diffusion", bare), ("A = bare + field", a), ("B = A with field → 7 T", b)], metrics={k: (md, fa) for k in ("bare diffusion", "A = bare + field", "B = A with field → 7 T")},
+    ex = dict(layers=[("bare diffusion", bare), ("A = bare + field", a), ("B = A with field → 7 T", b)], metrics={k: (md, fa, None) for k in ("bare diffusion", "A = bare + field", "B = A with field → 7 T")},
               floor=np.full((4, 4, 2), 0.01, np.float32), meas=m, mask=np.ones((4, 4, 2), bool),
               ingredients=S.ingredient_layers(dict(intra_fraction=rng.random((4, 4, 2)), wall_contact_um=rng.random((4, 4, 2)), contact_survival=None, field_rad=None, D_walk=6e-10)),
               differences=P.layer_differences([("bare diffusion", bare.astype(np.float32)), ("A", a.astype(np.float32)), ("B", b.astype(np.float32))], m, np.ones((4, 4, 2), bool)),
               snr=None, physics=None)
     for mode in A.EXPLORE_MODES:
-        for metric in A.METRICS:
+        for metric in A.METRICS[:3]:
             img = A.explore(ex, "A = bare + field", mode, metric, 1, 5)
             assert img is not None and img.size[0] > 100, (mode, metric)
+    assert A.explore(ex, "A = bare + field", "signal", A.METRICS[3], 1, 5) is None        # no µFA off a b-tensor run
     assert A.explore(ex, "bare diffusion", "minus the previous layer", A.METRICS[0], 0, 0) is not None
     pool, contact, fld = A.ingredient_views(ex, 1)
     assert pool is not None and contact is not None and fld is None
@@ -283,3 +286,64 @@ def test_the_payload_carries_float32_volumes():
     assert light.dwi.dtype == np.float32 and light.clean.dtype == np.float32 and res.dwi.dtype == np.float64
     np.testing.assert_allclose(light.dwi, dwi, rtol=1e-6); assert light.snr == 30.0 and light.meas is m
     assert A._light(P.Result(p, m, dwi, floor, None, None, None, None, None, {})).clean is None
+
+
+def _tensor_rs():
+    """A results state of a b-tensor run on a 6 x 5 x 2 grid: A and B, their maps, the measurement rows."""
+    p = P.preset_protocol(CFG, next(n for n, v in CFG["presets"].items() if "tensor" in v))
+    m = P.measurements(p, CFG["shapes"])
+    rng = np.random.default_rng(1)
+    bvals = sorted(set(float(b) for b in m.bvals if b > 0))
+
+    def maps(scale):
+        return dict(fa=rng.random((6, 5, 2)) * scale, md=rng.random((6, 5, 2)), ufa=rng.random((6, 5, 2)) * scale, bvals=bvals,
+                    powder={(e, b): np.exp(-b * 1e-3 * (0.5 if e == "LTE" else 0.7)) * np.ones((6, 5, 2)) for e in ("LTE", "STE") for b in bvals})
+    dwi = rng.uniform(0.2, 1.0, (6, 5, 2, len(m.bvals))).astype(np.float32)
+    run = lambda s: dict(dwi=dwi, floor=np.full((6, 5, 2), 0.01, np.float32), floor_median=0.01, meas=m, peaks=None, peak_amp=None,
+                         extras=dict(fractions=None), tensor=A._tensor_state(maps(s)))
+    return dict(A=run(1.0), B=run(0.5)), m
+
+
+def test_a_b_tensor_runs_rows_maps_and_voxel_click():
+    """On a b-tensor run the measurement slider counts within the chosen encoding; the µFA slice is a picker whose
+    click pixel names its voxel (y up); the clicked voxel's powder curves draw for A and B; the maps draw for both."""
+    rs, m = _tensor_rs()
+    enc = np.asarray(m.encoding)
+    assert A.row_of(m, "every row", 3) == 3
+    assert enc[A.row_of(m, "STE", 0)] == "STE" and enc[A.row_of(m, "LTE", 10 ** 6)] == "LTE"
+    assert A.row_of(m, "STE", 0) == int(np.flatnonzero(enc == "STE")[0])
+    pick = V.map_picker(rs["A"]["tensor"]["ufa"][:, :, 1], A.PICK)
+    assert pick.size == (6 * A.PICK, 5 * A.PICK)
+    seen = []
+    import space.viewers as VV
+    orig = VV.powder_curve
+    try:
+        VV.powder_curve = lambda tm, ijk, other=None: seen.append((tuple(ijk), other is not None)) or "img"
+        evt = types.SimpleNamespace(index=(2 * A.PICK + 3, 0))                   # x in voxel 2, the top row = y 4
+        assert A.pick_voxel(rs, 1, evt) == "img" and seen[-1] == ((2, 4, 1), True)
+    finally:
+        VV.powder_curve = orig
+    assert V.powder_curve(rs["A"]["tensor"], (1, 1, 0), other=rs["B"]["tensor"]).size[0] > 100
+    monkey_cross = np.zeros((6, 5, 2), bool); monkey_cross[2:4, 1:3] = True
+    A._CROSSINGS["c"] = monkey_cross
+    try:
+        a, picker, b = A.tensor_views(rs, 0)
+        assert a is not None and picker is not None and b is not None
+    finally:
+        A._CROSSINGS.clear()
+    assert A.tensor_views(dict(A=dict(tensor=None)), 0) == (None, None, None)
+
+
+def test_the_explorer_on_a_b_tensor_run_draws_the_encodings_rows_and_b_minus_a_of_mufa():
+    rs, m = _tensor_rs()
+    a = rs["A"]["tensor"]; b = rs["B"]["tensor"]
+    ex = dict(layers=[("A = bare diffusion", rs["A"]["dwi"].astype(np.float16)), ("B = A with SNR → 10", rs["B"]["dwi"].astype(np.float16))],
+              metrics={"A = bare diffusion": (a["md"], a["fa"], a["ufa"]), "B = A with SNR → 10": (b["md"], b["fa"], b["ufa"])},
+              floor=np.full((6, 5, 2), 0.01, np.float32), meas=m, mask=np.ones((6, 5, 2), bool), ingredients=[None, None, None],
+              differences=[], snr=None, physics=None)
+    for metric in A.METRICS:
+        for mode in A.EXPLORE_MODES:
+            assert A.explore(ex, "A = bare diffusion", mode, metric, 1, 2, "STE") is not None, (metric, mode)
+    assert A.explore(ex, "A = bare diffusion", "B − A", A.METRICS[3], 0, 0) is not None
+    with pytest.raises(ValueError, match="encodings of its one class"):
+        P.retime(P.preset_protocol(CFG, next(n for n, v in CFG["presets"].items() if "tensor" in v)), "d12-D24")

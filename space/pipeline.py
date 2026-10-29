@@ -269,7 +269,10 @@ def preset_protocol(cfg, name):
 
 def retime(protocol, shape):
     """``protocol`` with every shell on the timing class ``shape`` (b-values, directions and counts kept): the A/B
-    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another."""
+    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another. A b-tensor protocol's shells
+    are encodings of its class, not timings: it is refused by name."""
+    if protocol.tensor:
+        raise ValueError("a b-tensor acquisition's shells are encodings of its one class: a pulse-timing knob does not apply")
     return Protocol(tuple(Shell(shape, s.b, s.n_dirs) for s in protocol.shells), n_b0=protocol.n_b0,
                     directions=protocol.directions, bvals=protocol.bvals, name=f"{protocol.name} on {shape}")
 
@@ -287,6 +290,26 @@ def write_volumes(res, out_dir, *, prefix, affine):
     fod = os.path.join(out_dir, f"{prefix}_fod_sh.nii.gz")
     nib.save(nib.Nifti1Image(np.nan_to_num(res.sh).astype(np.float32), np.asarray(affine, np.float64)), fod); paths["fod"] = fod
     return paths
+
+
+def write_tensor_volumes(res, out_dir, *, prefix, affine):
+    """A b-tensor run's files: the DWI as NIfTI with its bvals (s/mm^2), bvecs (each row's encoding axis, 3 x N) and
+    ``.btensor`` (each row's encoding, ``b0`` / ``LTE`` / ``STE``, one per line), and the FA, MD (µm²/ms) and µFA maps as
+    NIfTI (float32 on ``affine``, NaN as 0); returns the paths."""
+    import nibabel as nib
+    os.makedirs(out_dir, exist_ok=True)
+    aff = np.asarray(affine, np.float64); tm = res.extras["tensor"]; out = []
+    p = os.path.join(out_dir, f"{prefix}_dwi.nii.gz"); nib.save(nib.Nifti1Image(np.nan_to_num(res.dwi).astype(np.float32), aff), p); out.append(p)
+    p = os.path.join(out_dir, f"{prefix}.bvals"); np.savetxt(p, res.meas.bvals[None, :], fmt="%.1f"); out.append(p)
+    p = os.path.join(out_dir, f"{prefix}.bvecs"); np.savetxt(p, res.meas.dirs.T, fmt="%.8f"); out.append(p)
+    p = os.path.join(out_dir, f"{prefix}.btensor")
+    with open(p, "w") as f:
+        f.write("\n".join(str(e) for e in res.meas.encoding) + "\n")
+    out.append(p)
+    for key in ("fa", "md", "ufa"):
+        p = os.path.join(out_dir, f"{prefix}_{key}.nii.gz")
+        nib.save(nib.Nifti1Image(np.nan_to_num(np.asarray(tm[key], np.float64)).astype(np.float32), aff), p); out.append(p)
+    return out
 
 
 # ---- the physics: tissue and scanner --------------------------------------------------------------------------------

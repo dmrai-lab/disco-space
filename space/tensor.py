@@ -155,43 +155,44 @@ def powder(S, enc, bs, bvals):
 
 
 def gamma_joint(b, yL, yS, wL, wS, w0, iters=80):
-    """``(MD_L, V_L, MD_S, V_S, c)`` per voxel of the gamma model fitted jointly to the linear and the spherical powder
-    signal (``ln S/S0`` ``(..., n_b)`` at ``b`` ms/um^2) with one shared intercept ``c`` (the log of the voxel's true b = 0
-    signal over its measured one): ``y_e(b) = c - ln(1 + r_e b MD_e) / r_e``, ``V_e = r_e MD_e^2``, weighted least squares
-    with each point weighted by the rows it averages (``wL``, ``wS`` ``(n_b,)``) and the b = 0 point ``y = 0`` by the b = 0
-    rows ``w0``. The intercept takes up the noise of the b = 0 rows, which every ``ln S/S0`` shares and which a fit
-    through ``y(0) = 0`` would read as curvature. A vectorised Gauss-Newton over every voxel, MD in [1e-4, 5] um^2/ms,
-    r in [1e-6, 50]."""
+    """``(MD, V_L, V_S, c)`` per voxel of the gamma model fitted jointly to the linear and the spherical powder signal
+    (``ln S/S0`` ``(..., n_b)`` at ``b`` ms/um^2): one mean diffusivity (the first cumulant, the same for every b-tensor
+    of one trace), one intercept ``c`` (the log of the voxel's b = 0 signal over its measured one) and a variance per
+    encoding, ``y_e(b) = c - ln(1 + r_e b MD) / r_e``, ``V_e = r_e MD^2``; weighted least squares, each point weighted by
+    the rows it averages (``wL``, ``wS`` ``(n_b,)``) and the b = 0 point ``y = 0`` by the b = 0 rows ``w0``. The shared MD
+    and intercept leave the curvature of each curve to its variance alone: the noise of the b = 0 rows (shared by every
+    ``ln S/S0``) is not read as curvature. A vectorised Gauss-Newton over every voxel, MD in [1e-4, 5] um^2/ms, r in
+    [1e-6, 50]."""
     sh = yL.shape[:-1]; n_b = len(b)
     Y = np.concatenate([yL.reshape(-1, n_b), yS.reshape(-1, n_b), np.zeros((int(np.prod(sh)), 1))], axis=1)
     W = np.sqrt(np.concatenate([np.asarray(wL, float), np.asarray(wS, float), [float(w0)]]))
     n = Y.shape[0]
-    p = np.stack([np.clip(-np.nan_to_num(Y[:, 0] / b[0]), 1e-3, None), np.full(n, 0.1),
-                  np.clip(-np.nan_to_num(Y[:, n_b] / b[0]), 1e-3, None), np.full(n, 0.1), np.zeros(n)], axis=1)
-    lo = np.array([1e-4, 1e-6, 1e-4, 1e-6, -2.0]); hi = np.array([5.0, 50.0, 5.0, 50.0, 2.0])
+    p = np.stack([np.clip(-np.nan_to_num(0.5 * (Y[:, 0] + Y[:, n_b]) / b[0]), 1e-3, None), np.full(n, 0.1), np.full(n, 0.1),
+                  np.zeros(n)], axis=1)
+    lo = np.array([1e-4, 1e-6, 1e-6, -2.0]); hi = np.array([5.0, 50.0, 50.0, 2.0])
 
     def f(p):
-        g = lambda md, r: -np.log1p(r[:, None] * b[None] * md[:, None]) / r[:, None]
-        return np.concatenate([p[:, 4:5] + g(p[:, 0], p[:, 1]), p[:, 4:5] + g(p[:, 2], p[:, 3]), p[:, 4:5]], axis=1)
+        g = lambda r: -np.log1p(r[:, None] * b[None] * p[:, 0:1]) / r[:, None]
+        return np.concatenate([p[:, 3:4] + g(p[:, 1]), p[:, 3:4] + g(p[:, 2]), p[:, 3:4]], axis=1)
     for _ in range(int(iters)):
         F = f(p); res = (Y - F) * W
-        J = np.empty((n, Y.shape[1], 5))
-        for k in range(5):
+        J = np.empty((n, Y.shape[1], 4))
+        for k in range(4):
             e = 1e-6 * np.maximum(np.abs(p[:, k]), 1e-3); q = p.copy(); q[:, k] += e
             J[:, :, k] = (f(q) - F) / e[:, None] * W
-        A = np.einsum("nik,nil->nkl", J, J) + 1e-12 * np.eye(5)
+        A = np.einsum("nik,nil->nkl", J, J) + 1e-12 * np.eye(4)
         g = np.einsum("nik,ni->nk", J, res)
         with np.errstate(invalid="ignore"):
             step = np.linalg.solve(A, g[..., None])[..., 0]
         p = np.clip(p + np.nan_to_num(step), lo, hi)
-    mdL, rL, mdS, rS, c = (p[:, k].reshape(sh) for k in range(5))
-    return mdL, rL * mdL ** 2, mdS, rS * mdS ** 2, c
+    md, rL, rS, c = (p[:, k].reshape(sh) for k in range(4))
+    return md, rL * md ** 2, rS * md ** 2, c
 
 
 def md_ufa(pw, bvals, counts=None, n_b0=1):
     """``(MD (um^2/ms), muFA)`` per voxel from the powder averages: the gamma model fitted jointly to the linear and the
-    spherical powder signal over the b-values with one shared intercept (:func:`gamma_joint`; ``counts`` ``{(encoding,
-    b): rows averaged}`` and ``n_b0`` the b = 0 rows weight the points, equal when None), MD their mean first cumulant,
+    spherical powder signal over the b-values with one MD and one intercept (:func:`gamma_joint`; ``counts``
+    ``{(encoding, b): rows averaged}`` and ``n_b0`` the b = 0 rows weight the points, equal when None), MD the shared first cumulant,
     ``V_A = V_LTE - V_STE`` the anisotropic variance (the orientation dispersion of the microscopic tensors, ``(4/5)
     (D_iso D_Delta)^2``), and muFA the FA of the axisymmetric microscopic tensor with ``D_iso = MD`` and that
     ``D_Delta``; 0 where ``V_A`` is not positive (a spherical signal whose variance exceeds the linear one's: on
@@ -203,8 +204,7 @@ def md_ufa(pw, bvals, counts=None, n_b0=1):
     with np.errstate(divide="ignore", invalid="ignore"):
         yL = np.stack([np.log(pw[("LTE", k)]) for k in keys], axis=-1); yS = np.stack([np.log(pw[("STE", k)]) for k in keys], axis=-1)
         bad = ~np.isfinite(np.concatenate([yL, yS], axis=-1)).all(-1)
-        mL, vL, mS, vS, _ = gamma_joint(b, np.nan_to_num(yL), np.nan_to_num(yS), cnt("LTE"), cnt("STE"), 1.0 if counts is None else n_b0)
-    md = 0.5 * (mL + mS)
+        md, vL, vS, _ = gamma_joint(b, np.nan_to_num(yL), np.nan_to_num(yS), cnt("LTE"), cnt("STE"), 1.0 if counts is None else n_b0)
     x = np.clip(1.25 * (vL - vS), 0.0, None)                              # (D_iso D_Delta)^2, (um^2/ms)^2
     with np.errstate(divide="ignore", invalid="ignore"):
         ufa = np.sqrt(1.5) * np.sqrt(6.0 * x / (3.0 * md ** 2 + 6.0 * x))

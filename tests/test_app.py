@@ -353,3 +353,15 @@ def test_every_stage_of_a_run_has_its_text():
     """The progress text names every stage either kind of run passes (the connectome's and the b-tensor's)."""
     texts = S.describe(CFG)["stages"]
     assert set(P.TENSOR_STAGES) <= set(texts) and set(D.Disco.STAGES) <= set(texts)
+
+
+def test_a_b_tensor_headline_reads_the_strand_voxels_by_crossing_count(monkeypatch):
+    rs, m = _tensor_rs()
+    n_dirs = np.zeros((6, 5, 2), int); n_dirs[:2] = 1; n_dirs[2:4] = 2; n_dirs[4:] = 3
+    length = np.ones((6, 5, 2)); length[0] = 0
+    monkeypatch.setitem(A._CROSSINGS, "c", (n_dirs, length))
+    tm = rs["A"]["tensor"]
+    res = types.SimpleNamespace(extras=dict(tensor=tm), physics=None, dwi=rs["A"]["dwi"], snr=30.0, seconds=dict(total=1.0),
+                                protocol=types.SimpleNamespace(n_meas=len(m.bvals)), floor=rs["A"]["floor"])
+    text = A.tensor_text("A", res)
+    assert "voxels the strands cross" in text and "2 directions" in text and "3+ directions" in text and "SNR 30" in text

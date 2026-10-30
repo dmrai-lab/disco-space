@@ -478,13 +478,18 @@ def present(payload, state):
 
 
 def tensor_text(tag, res):
-    """The headline of a b-tensor run: the maps' medians over the voxels with signal, the dense ones (strand length in
-    the upper quartile) by their crossing count, the run's settings."""
+    """The headline of a b-tensor run: the maps' medians over the voxels the ground truth's strands cross, and over the
+    densest quarter of them (strand length in the upper quartile) by their crossing count, the run's settings."""
     tm = res.extras["tensor"]; physics = res.physics
-    sig = np.isfinite(res.dwi[..., 0])
+    n_dirs, length = _strands()
+    sig = np.isfinite(res.dwi[..., 0]); strand = sig & (length > 0)
+    dense = strand & (length >= np.quantile(length[strand], 0.75)) if strand.any() else strand
     med = lambda x, m: float(np.nanmedian(np.asarray(x)[m])) if np.any(m) else float("nan")
     snr = "" if res.snr is None else f", SNR {res.snr:g}"
-    return (f"**{tag}: µFA median {med(tm['ufa'], sig):.3f}, FA {med(tm['fa'], sig):.3f}, MD {med(tm['md'], sig):.3f} µm²/ms** "
+    by = ", ".join(f"{k}{'+' if k == 3 else ''} directions {med(tm['ufa'], dense & ((n_dirs >= 3) if k == 3 else (n_dirs == k))):.2f} / "
+                   f"{med(tm['fa'], dense & ((n_dirs >= 3) if k == 3 else (n_dirs == k))):.2f}" for k in (1, 2, 3))
+    return (f"**{tag}: in the voxels the strands cross, µFA median {med(tm['ufa'], strand):.3f}, FA {med(tm['fa'], strand):.3f}, MD "
+            f"{med(tm['md'], strand):.3f} µm²/ms**; the densest quarter by its crossing count, µFA / FA: {by} "
             f"({res.protocol.n_meas} measurements: linear and spherical b-tensors at b {', '.join(f'{b:g}' for b in tm['bvals'])} s/mm², "
             f"{physics.label() if physics else 'bare diffusion'}{snr}, {res.seconds['total']:.1f} s; replay floor median "
             f"{P.floor_stats(res)['median']:.4f}). µFA is the anisotropy the spherical encoding removes and the orientation "
@@ -627,9 +632,16 @@ _CROSSINGS = {}
 def _crossings():
     """The voxels the ground truth's strands cross in two or more directions (the source's strand configuration),
     computed once per process."""
+    return _strands()[0] >= 2
+
+
+def _strands():
+    """``(n_dirs, length)`` per voxel of the ground truth's strands (the source's strand configuration), computed once
+    per process."""
     if "c" not in _CROSSINGS:
         from .sources.disco import strand_configuration
-        _CROSSINGS["c"] = np.asarray(strand_configuration(shape=_load()["source"].mask.shape)[0]) >= 2
+        n_dirs, _, length = strand_configuration(shape=_load()["source"].mask.shape)
+        _CROSSINGS["c"] = (np.asarray(n_dirs), np.asarray(length))
     return _CROSSINGS["c"]
 
 

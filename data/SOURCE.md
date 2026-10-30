@@ -2,7 +2,7 @@
 
 From the Diffusion-Simulated Connectivity (DiSCo) dataset, Rafael-Patino J., Girard G., Truffet R., Pizzolato M.,
 Caruyer E., Thiran J.-P., "The Diffusion-Simulated Connectivity (DiSCo) dataset", Data in Brief 38 (2021) 107429,
-https://doi.org/10.1016/j.dib.2021.107429; data at https://doi.org/10.5281/zenodo.4634234. Licence CC BY 4.0.
+https://doi.org/10.1016/j.dib.2021.107429; data on Mendeley Data, https://doi.org/10.17632/fgf86jdfg6.1 (files checked by sha256 against the published release). Licence CC BY 4.0.
 
 | file | what |
 |---|---|

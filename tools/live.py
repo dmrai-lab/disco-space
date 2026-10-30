@@ -1,4 +1,4 @@
-"""The live Space through its Gradio API: the configuration's first preset at SNR 30 with the tissue panel's defaults,
+"""The live Space through its Gradio API: the configuration's first preset at its own starting SNR with the tissue panel's defaults,
 then a custom two-shell protocol on the configuration's first timing class; prints the headline, the timings and the
 seconds the worker spent on the packs' responses the page had not cached and, with ``--stream``, every stage update as it
 arrives; downloads the figures and files to ``$LIVE_OUT``. ``--config`` is the configuration the Space serves
@@ -39,7 +39,7 @@ def main():
     def inputs(preset, *, knob, n_keys=1, ladder=True):
         shells = [True, shapes[0], 1000, 30, 12.0, 24.0, 53.5, True, shapes[0], 3000, 45, 8.0, 20.0, 53.5,
                   False, shapes[0], 3000, 90, 17.0, 30.0, 53.5, False, shapes[0], 6000, 60, 17.0, 30.0, 53.5]
-        return [preset, 2, True, 30, tc["density"][2], tc["max_angle"][2], tc["step"][2], 0, None, knob, A.IDEAL, n_keys, ladder, *physics, *shells]
+        return [preset, 2, True, P.preset_snr(cfg, preset) if preset in cfg.get("presets", {}) else cfg["noise"]["snr"], tc["density"][2], tc["max_angle"][2], tc["step"][2], 0, None, knob, A.IDEAL, n_keys, ladder, *physics, *shells]
 
     c = Client(a.space, token=get_token(), verbose=False, download_files=os.environ.get("LIVE_OUT", "/tmp/disco-live"), httpx_kwargs={"timeout": 900})
     for preset in a.preset or (S.presets(cfg)[0], A.CUSTOM):
@@ -62,7 +62,7 @@ def main():
         rows = named["timings"]["data"] if isinstance(named["timings"], dict) else named["timings"]
         responses = [r[1] for r in rows if r[0] == A.RESPONSES_ROW]
         print(f"the packs' responses on the worker: {responses[0] if responses else 'none (the source prepares nothing)'} s", flush=True)
-        print("tck", named["tck"], "volumes", named["volumes"], flush=True)
+        print("tck", named.get("tck"), "volumes", named.get("volumes"), flush=True)
 
 
 if __name__ == "__main__":

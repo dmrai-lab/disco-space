@@ -266,16 +266,21 @@ class Disco(P.Source):
 
     @classmethod
     def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=(), scanner=None):
-        """Measured on the pool at DiSCo 364 with every tier (#7, dmipy-sim#522/#523): the worker's start and the
-        payload's handoff 8 s, noise to scoring 8 s, the first replay 0.045 s per measurement (the tiles uploaded
-        inside the call), each further replay on the resident tiles 0.032 s per measurement (the ladder is three, B
-        one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; on a machine every
-        replay adds its delivery, ``[scanners] delivery_per_meas`` s per measurement (the delivered vectors of the
-        layout's live voxels on the host and their upload); times 1.3, within 30 and 480 s. DiSCo prepares nothing,
-        so ``responses`` is empty."""
+        """Measured on the pool (RTX PRO 6000 MIG 2g.48gb, the v2 layout streamed, every tier at 3 T, 2026-10-30): a
+        replay costs per measurement per stored term of its class (a PGSE, stimulated-echo or OGSE class 2, the
+        b-tensor class 6: :func:`space.classes.n_terms`), 0.05 s the first in a call (DiSCo 364: 32.4 s; the b-tensor
+        preset: 23.4 s) and 0.045 s each further one (the ladder is three, B one); the worker's start and the
+        payload's handoff 8 s, the stages after the replay 10 s (noise to scoring, or the b-tensor maps), B's 10 s
+        more, 10 s per extra tracker key; on a machine every replay adds its delivery, ``[scanners]
+        delivery_per_meas`` s per measurement; times 1.3, within 30 and 480 s. DiSCo prepares nothing, so
+        ``responses`` is empty."""
+        from .. import classes as C
         n = protocol.n_meas
-        replays = 1 + (3 if ladder else 0) + (1 if knob != P.NO_KNOB else 0)
-        secs = 16 + 0.045 * n + (3 * 0.032 * n if ladder else 0) + ((8 + 0.032 * n) if knob != P.NO_KNOB else 0) + 10 * (int(n_keys) - 1)
+        terms = sum(C.n_terms(cfg["shapes"][s.shape]) * s.n_dirs if s.shape in cfg["shapes"] else 2 * s.n_dirs for s in protocol.shells)
+        terms += C.n_terms(cfg["shapes"][protocol.shells[0].shape]) * protocol.n_b0 if protocol.shells[0].shape in cfg["shapes"] else 2 * protocol.n_b0
+        b = knob != P.NO_KNOB
+        replays = 1 + (3 if ladder else 0) + (1 if b else 0)
+        secs = 8 + 10 + 0.05 * terms + 0.045 * terms * (replays - 1) + (10 if b else 0) + 10 * (int(n_keys) - 1)
         if scanner is not None:
             secs += replays * float(cfg["scanners"]["delivery_per_meas"]) * n
         return int(min(480, max(30, 1.3 * secs)))

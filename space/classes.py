@@ -112,3 +112,9 @@ def describe(sh):
     if k == "pgste":
         return f"STE δ {float(sh['delta']) * 1e3:g} / Δ {float(sh['Delta']) * 1e3:g} ms"
     return f"δ {float(sh['delta']) * 1e3:g} / Δ {float(sh['Delta']) * 1e3:g} ms"
+
+
+def n_terms(sh):
+    """The class's stored terms: a PGSE, stimulated-echo or OGSE class two (one per encoding window), the b-tensor class
+    six (its three gradient shapes in both windows)."""
+    return 6 if kind(sh) == "tensor" else 2

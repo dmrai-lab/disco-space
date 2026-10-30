@@ -747,7 +747,7 @@ def build(runner=None, cfg=None):
                         scanner_terms = gr.Markdown(P.scanner_text(cfg, IDEAL, S.refused_machines(cfg)))
                         gradients = gr.Markdown()
                         n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
-                        ladder_on = gr.Checkbox(value=not full, visible=not full, label=d["ladder"])
+                        ladder_on = gr.Checkbox(value=False, visible=not full, label=d["ladder"])
                         go = gr.Button(d["run_label"], variant="primary")
                         gpu_text = gr.Markdown(visible=runner is not None)
                         headline = gr.Markdown()

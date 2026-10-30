@@ -217,10 +217,13 @@ def test_the_estimated_seconds_grow_with_the_run_and_stay_in_the_pools_window():
     small = A.estimated_seconds("clinical b1000 x 30", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, False, *v, *ROWS)
     assert 30 <= small < one < two <= 480 and one < keys <= 480 and one < ladder <= 480
     both = A.estimated_seconds("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, "SNR → 10", A.IDEAL, 1, True, *v, *ROWS)
-    assert one < ladder < both <= 120          # DiSCo alone, with the ladder, and A + B + ladder all fit a logged-out visitor's quota
+    assert one <= 120 < ladder < both <= 480   # DiSCo alone fits a logged-out visitor's quota; the ladder and B need an account
+    bt = next(n for n, p in CFG["presets"].items() if "tensor" in p)
+    tensor = A.estimated_seconds(bt, 1, True, 100, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, False, *v, *ROWS)
+    assert small < tensor <= 120               # 77 rows on six terms: 23 s of replay measured on the pool
     assert A.estimated_seconds("nonsense", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS) == 480
     text = A.gpu_seconds_text("DiSCo 364", 1, True, 30, 2, 30.0, 0.5, 0, None, A.NO_KNOB, A.IDEAL, 1, True, *v, *ROWS)
-    assert f"reserves {ladder} s" in text and "logged out" in text.split("started by")[1].split(".")[0]
+    assert f"reserves {ladder} s" in text and "logged out" not in text.split("started by")[1].split(".")[0]
     assert len(A.OUTPUTS) == 36                 # the 30 of a connectome run and the b-tensor run's six
 
 

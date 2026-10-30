@@ -303,7 +303,7 @@ class Disco(P.Source):
         """The ground truth tab: a sample of the strands in 3-D with the region markers, and the two matrices."""
         from dmipy_sim.io.strands import read_tck, read_diameters
         from .. import viewers as V
-        strands = read_tck(os.path.join(P.DATA_DIR, "DiSCo_Strands_Trajectories.tck"), coordinate_unit_m=VOXEL_M)
+        strands = read_tck(strands_path(self.cfg), coordinate_unit_m=VOXEL_M)
         diameters = read_diameters(os.path.join(P.DATA_DIR, "DiSCo_Strands_Diameters.txt"), diameter_unit_m=1e-3)
         return (V.strands3d([s / VOXEL_M for s in strands], diameters, V.region_markers(self.regions), self.mask.shape),
                 V.ground_truth_matrix(self.gt_count, self.gt_area, P.connected_pairs(self.gt_count)))
@@ -348,6 +348,15 @@ class Disco(P.Source):
 
 
 @functools.lru_cache(maxsize=2)
+def strands_path(cfg=None):
+    """The DiSCo strand centrelines (``.tck``, voxel units; CC BY 4.0): ``[data] strands`` in the replay dataset
+    (``[data] pack``'s repository) at ``[data] pack_revision``, fetched into the Hub cache once."""
+    from huggingface_hub import hf_hub_download
+    d = (cfg or P.config())["data"]
+    repo = "/".join(d["pack"][len("hf://"):].split("/")[:2])
+    return hf_hub_download(repo, d["strands"], repo_type="dataset", revision=d["pack_revision"])
+
+
 def strand_configuration(tck=None, shape=(40, 40, 40), *, angle_deg=30.0, share=0.10):
     """The ground truth's fibre configuration per voxel from the released strand trajectories (voxel units):
     ``(n_dirs, dispersion, length)`` -- the distinct strand directions crossing the voxel (the strands' length-weighted
@@ -355,7 +364,7 @@ def strand_configuration(tck=None, shape=(40, 40, 40), *, angle_deg=30.0, share=
     strand length), ``1 - lambda_1 / trace`` of the length-weighted dyadic tensor of the tangents, and the strand length
     in the voxel (voxel units)."""
     from dmipy_sim.io.strands import read_tck
-    strands = read_tck(tck or os.path.join(P.DATA_DIR, "DiSCo_Strands_Trajectories.tck"), coordinate_unit_m=1.0)
+    strands = read_tck(tck or strands_path(), coordinate_unit_m=1.0)
     n_vox = int(np.prod(shape))
     Tm = np.zeros((n_vox, 3, 3)); per = {}
     for c in strands:

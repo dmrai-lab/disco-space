@@ -81,3 +81,28 @@ def test_the_tensor_preset_is_linear_and_spherical_rows_on_the_class_and_flags_a
     rows = P.playable(p, CFG["shapes"], "siemens_magnetom_prisma_3T")
     assert not all(r[-1] for r in rows) and all(r[-1] for r in P.playable(p, CFG["shapes"], None))
     assert 0.10 < max(r[4] for r in rows) < 0.14                                   # ~124 mT/m at b 2000
+
+
+def test_the_maps_hold_under_noise_on_one_b0_row():
+    """The same voxel as above, 3000 times, with Rician noise at SNR 15 and ONE b = 0 row, every row normalised by it
+    as the page does: the joint fit's shared intercept takes up the b = 0 row's noise, so the median muFA stays within
+    0.08 of the truth and MD within 5 % (a fit through ln S/S0 = 0 at b = 0 reads that noise as curvature)."""
+    bvals = (100.0, 700.0, 1400.0, 2000.0)
+    seq, enc, bs = _rows(bvals=bvals, n=10)
+    from dmipy_sim.acquisition.waveforms import calc_btensor
+    B = calc_btensor(seq) * 1e-9
+    D_iso, mufa = 0.8, 0.7
+    x = mufa ** 2 * D_iso ** 2 / (3 - 2 * mufa ** 2); D_delta = np.sqrt(x) / D_iso
+    rng = np.random.default_rng(1)
+    u = rng.normal(size=(4000, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    Dpar, Dperp = D_iso * (1 + 2 * D_delta), D_iso * (1 - D_delta)
+    D = Dperp * np.eye(3)[None] + (Dpar - Dperp) * u[:, :, None] * u[:, None, :]
+    S = np.exp(-np.einsum("mij,cij->mc", B, D)).mean(1)
+    sd = 1.0 / 15.0
+    noisy = np.sqrt((S[None] + rng.normal(0, sd, (3000, len(S)))) ** 2 + rng.normal(0, sd, (3000, len(S))) ** 2)
+    noisy = noisy / noisy[:, :1]                                       # the one b = 0 row
+    pw = T.powder(noisy[:, None, None, :], enc, bs, list(bvals))
+    counts = {(e, b): int(((enc == e) & (bs == b)).sum()) for e in ("LTE", "STE") for b in bvals}
+    md, got = T.md_ufa(pw, list(bvals), counts, n_b0=1)
+    assert abs(float(np.nanmedian(got)) - mufa) < 0.08, float(np.nanmedian(got))
+    assert abs(float(np.nanmedian(md)) - D_iso) < 0.05 * D_iso

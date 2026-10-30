@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
-license: mit
+license: agpl-3.0
 short_description: DiSCo replay, any acquisition, a connectome, while you wait
 ---
 

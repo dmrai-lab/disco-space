@@ -114,7 +114,13 @@ shape = "cos-f50-T20"
 [presets."b-tensor: linear + spherical (Szczepankiewicz 2019), b 100-2000 s/mm²"]
 shape = "qte-now-80"
 n_b0 = 1
+snr = 100                                 # its own starting SNR: µFA is noise-limited (the other presets start at [noise] snr)
 tensor = { bvalues = [100, 700, 1400, 2000], directions = [6, 6, 10, 16], encodings = ["LTE", "STE"] }
+
+# The noise a run starts with: the SNR at M0 (a full water voxel before relaxation) every preset starts at unless it
+# states its own.
+[noise]
+snr = 30
 
 # The tissue and the scanner: the field presets the page offers (T), the default field,
 # and whether a run starts with the tiers on. Tissue defaults come from dmipy-sim's white-matter catalogue at the

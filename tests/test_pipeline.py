@@ -430,3 +430,10 @@ def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
         D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
     lay.layout.manifest["groups"]["g0"]["background"] = {"column": "bg_g0.npy"}
     D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
+
+
+def test_each_preset_starts_at_its_own_snr():
+    """The b-tensor preset starts at SNR 100 (µFA is noise-limited); every other preset at ``[noise] snr``."""
+    for name, p in CFG["presets"].items():
+        assert P.preset_snr(CFG, name) == (100.0 if "tensor" in p else float(CFG["noise"]["snr"])) and CFG["noise"]["snr"] == 30
+    assert P.preset_snr(CFG, "DiSCo 364") == 30.0

@@ -245,6 +245,13 @@ def protocol_from_scheme(path, *, name="uploaded scheme"):
     return protocol_from_rows(b, np.asarray(enc.gradient_directions, np.float64), group.ravel(), make_shell, name=name)[0]
 
 
+def preset_snr(cfg, name):
+    """The SNR a preset starts at: its own ``snr`` when the preset states one (the b-tensor preset: µFA is
+    noise-limited), else ``[noise] snr``."""
+    p = cfg.get("presets", {}).get(name) or {}
+    return float(p.get("snr", cfg["noise"]["snr"]))
+
+
 def preset_protocol(cfg, name):
     """A ``[presets]`` entry of the config as a Protocol: a stored gradient table (``table``: ``data/<table>.bvals`` and
     ``.bvecs``, every row's own b and direction, each shell its rounded b, all on the class ``shape``), or ``shells``

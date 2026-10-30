@@ -37,6 +37,8 @@ from . import viewers as V
 MAX_SHELLS = 4
 CUSTOM = "custom shells"
 UPLOADED = "uploaded scheme"
+SNR_NOTE = ("µFA is noise-limited: the b-tensor preset starts at SNR 100, because at SNR 30 with the tissue at 3 T the "
+            "spherical encoding's contrast in the densest strand voxels is below the noise and µFA reads 0 there.")
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
 NO_KNOB = P.NO_KNOB
 IDEAL = P.IDEAL
@@ -731,7 +733,9 @@ def build(runner=None, cfg=None):
                         physics_inputs = [widgets[name] for name in panel.fields]
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
-                            snr = gr.Slider(5, 100, value=30, step=1, label="SNR at M0 (a full water voxel before relaxation; each voxel's b = 0 SNR follows its tissue)")
+                            snr = gr.Slider(5, 100, value=P.preset_snr(cfg, presets[0]), step=1, label="SNR at M0 (a full water voxel before relaxation; each voxel's b = 0 SNR follows its tissue)")
+                        if any("tensor" in p for p in (cfg.get("presets") or {}).values()):
+                            gr.Markdown(SNR_NOTE)
                         density = gr.Slider(tc["density"][0], tc["density"][1], value=tc["density"][2], step=tc["density"][3], label=tc["density"][4])
                         max_angle = gr.Slider(tc["max_angle"][0], tc["max_angle"][1], value=tc["max_angle"][2], step=tc["max_angle"][3], label=tc["max_angle"][4])
                         step_mm = gr.Slider(tc["step"][0], tc["step"][1], value=tc["step"][2], step=tc["step"][3], label=tc["step"][4])
@@ -815,6 +819,7 @@ def build(runner=None, cfg=None):
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(compute_fn, *args, progress=progress)
         tissue_numbers = [widgets[name] for name in panel.catalogue] + [catalogue_note]
+        preset.change(lambda name: P.preset_snr(cfg, name), inputs=preset, outputs=snr, show_progress="hidden")
         field_preset.change(lambda name: [field_presets[name]] + S.catalogue_numbers(cfg, field_presets[name]), inputs=field_preset,
                             outputs=[widgets["field_T"]] + tissue_numbers, show_progress="hidden")
         reset.click(lambda f: S.catalogue_numbers(cfg, f), inputs=widgets["field_T"], outputs=tissue_numbers, show_progress="hidden")

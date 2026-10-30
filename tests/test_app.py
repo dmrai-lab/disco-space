@@ -324,8 +324,8 @@ def test_a_b_tensor_runs_rows_maps_and_voxel_click():
     finally:
         VV.powder_curve = orig
     assert V.powder_curve(rs["A"]["tensor"], (1, 1, 0), other=rs["B"]["tensor"]).size[0] > 100
-    monkey_cross = np.zeros((6, 5, 2), bool); monkey_cross[2:4, 1:3] = True
-    A._CROSSINGS["c"] = monkey_cross
+    n_dirs = np.ones((6, 5, 2), int); n_dirs[2:4, 1:3] = 2
+    A._CROSSINGS["c"] = (n_dirs, np.ones((6, 5, 2)))
     try:
         a, picker, b = A.tensor_views(rs, 0)
         assert a is not None and picker is not None and b is not None

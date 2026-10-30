@@ -437,3 +437,12 @@ def test_each_preset_starts_at_its_own_snr():
     for name, p in CFG["presets"].items():
         assert P.preset_snr(CFG, name) == (100.0 if "tensor" in p else float(CFG["noise"]["snr"])) and CFG["noise"]["snr"] == 30
     assert P.preset_snr(CFG, "DiSCo 364") == 30.0
+
+
+def test_a_tractogram_writes_to_tck_and_reads_back(tmp_path):
+    """The .tck download: dmipy-tract's writer through dmipy-sim's at the pinned commits (their signatures agree)."""
+    from dmipy_sim.io.strands import read_tck
+    from dmipy_tract import Tractogram
+    t = Tractogram(np.random.default_rng(0).random((10, 3)).astype(np.float32), np.array([0, 4, 10]), np.array([0, 1]), np.zeros((2, 2), int))
+    t.to_tck(str(tmp_path / "t.tck"))
+    assert [len(s) for s in read_tck(str(tmp_path / "t.tck"), coordinate_unit_m=1e-3)] == [4, 6]

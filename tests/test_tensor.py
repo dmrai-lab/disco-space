@@ -1,0 +1,108 @@
+"""The b-tensor class's encodings (space/tensor.py) without the layout: every row's b-tensor, read off the sequence by
+dmipy-sim, is the encoding asked for; the class's waveform stays inside the scanner it was designed for; the maps
+recover a known microscopic anisotropy from Gaussian compartments played through the same rows."""
+import numpy as np
+import pytest
+
+from space import pipeline as P
+from space import tensor as T
+
+CFG = P.config()
+TC = next(sh for sh in CFG["shapes"].values() if sh.get("kind") == "tensor")
+
+
+def _rows(bvals=(500.0, 1000.0, 2000.0), n=12):
+    return T.rows(TC, list(bvals), n)
+
+
+def test_every_row_is_the_encoding_asked_for():
+    """b to 1e-6 relative and b_delta to 1e-6 (1, -1/2, 0) for every row; the b = 0 row plays nothing."""
+    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
+    seq, enc, bs = _rows()
+    B = calc_btensor(seq)
+    b, b_delta, _ = btensor_invariants(B)
+    assert enc[0] == "b0" and abs(b[0]) < 1e-6
+    for e in T.ENCODINGS:
+        m = enc == e
+        np.testing.assert_allclose(b[m] / 1e6, bs[m], rtol=1e-6)
+        np.testing.assert_allclose(b_delta[m], T.B_DELTA[e], atol=1e-6)
+    ste = B[enc == "STE"]                                            # spherical: b/3 I at every rotation
+    np.testing.assert_allclose(ste, (bs[enc == "STE"] * 1e6 / 3)[:, None, None] * np.eye(3), rtol=0, atol=1e-6 * 2e9)
+
+
+def test_the_waveform_is_refocused_and_inside_its_scanner():
+    """Each shape's net moment at the echo vanishes and the designed amplitude and slew are within 80 mT/m and
+    200 T/m/s per axis; the spherical row at b = 2000 at the design's own frame needs no more than the design."""
+    W = T.waveform(TC); g = T._grid(); e = np.asarray(g.effective_gate, np.float64)
+    net = np.abs((W * e[:, None]).sum(0) * g.dt)
+    assert (net < 1e-9 * np.abs(W).max() * 0.0535).all(), net
+    assert np.abs(W).max() <= 0.080 * (1 + 1e-6)
+    assert np.abs(np.diff(W, axis=0) / g.dt).max() <= 200.0 * 3 * (1 + 1e-6)   # linear interpolation of a 200 T/m/s design
+
+
+@pytest.mark.parametrize("bvals", [(500.0, 1000.0, 2000.0), (100.0, 700.0, 1400.0, 2000.0)])
+def test_the_maps_recover_a_known_microscopic_anisotropy(bvals):
+    """Powder of randomly oriented axisymmetric Gaussian tensors (D_iso 1 um^2/ms, muFA 0.8) played through the rows'
+    own b-tensors: MD within 3 %, muFA within 0.03 over the b-values (the cumulant fits' own truncation); the powder
+    averages are read by the b-values as given (700 is not 0.7 x 1e3 in floating point)."""
+    seq, enc, bs = _rows(bvals=bvals, n=30)
+    from dmipy_sim.acquisition.waveforms import calc_btensor
+    B = calc_btensor(seq) * 1e-9                                       # s/m^2 -> ms/um^2
+    D_iso, mufa = 1.0, 0.8
+    x = mufa ** 2 * D_iso ** 2 / (3 - 2 * mufa ** 2)                  # (D_iso D_Delta)^2 of an axisymmetric tensor of that muFA
+    D_delta = np.sqrt(x) / D_iso
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(4000, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    Dpar, Dperp = D_iso * (1 + 2 * D_delta), D_iso * (1 - D_delta)
+    D = Dperp * np.eye(3)[None] + (Dpar - Dperp) * u[:, :, None] * u[:, None, :]
+    S = np.exp(-np.einsum("mij,cij->mc", B, D)).mean(1)
+    S = S / S[0]
+    pw = T.powder(S[None, None, None, :], enc, bs, list(bvals))
+    md, got = T.md_ufa(pw, list(bvals))
+    assert abs(float(md.ravel()[0]) - D_iso) < 0.03 * D_iso
+    assert abs(float(got.ravel()[0]) - mufa) < 0.03
+
+
+def test_the_tensor_preset_is_linear_and_spherical_rows_on_the_class_and_flags_a_prisma():
+    """The preset: one b = 0 row, then LTE and STE interleaved at b 100, 700, 1400, 2000 with 6, 6, 10, 16 axes, every
+    row's b-tensor the one asked for as dmipy-sim reads it off the sequence the Layout plays; rotated, the rows need
+    more than a Prisma's 80 mT/m on one axis, so the page flags that machine and passes the ideal scanner."""
+    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
+    from space import classes as C
+    name = next(n for n in CFG["presets"] if "tensor" in CFG["presets"][n])
+    p = P.preset_protocol(CFG, name)
+    assert p.tensor and p.n_b0 == 1 and [(s.encoding, s.b, s.n_dirs) for s in p.shells] == [
+        (e, b, n) for b, n in ((100.0, 6), (700.0, 6), (1400.0, 10), (2000.0, 16)) for e in ("LTE", "STE")]
+    m = P.measurements(p, CFG["shapes"])
+    G = C.tensor_rows(TC, m.encoding, m.bvals, m.dirs)
+    b, b_delta, _ = btensor_invariants(calc_btensor(T._sequence(G)))
+    np.testing.assert_allclose(b[1:] / 1e6, m.bvals[1:], rtol=1e-6)
+    np.testing.assert_allclose(b_delta[m.encoding == "LTE"], 1.0, atol=1e-6); np.testing.assert_allclose(b_delta[m.encoding == "STE"], 0.0, atol=1e-6)
+    rows = P.playable(p, CFG["shapes"], "siemens_magnetom_prisma_3T")
+    assert not all(r[-1] for r in rows) and all(r[-1] for r in P.playable(p, CFG["shapes"], None))
+    assert 0.10 < max(r[4] for r in rows) < 0.14                                   # ~124 mT/m at b 2000
+
+
+def test_the_maps_hold_under_noise_on_one_b0_row():
+    """The same voxel as above, 3000 times, with Rician noise at SNR 15 and ONE b = 0 row, every row normalised by it
+    as the page does: the joint fit's shared intercept takes up the b = 0 row's noise, so the median muFA stays within
+    0.08 of the truth and MD within 5 % (a fit through ln S/S0 = 0 at b = 0 reads that noise as curvature)."""
+    bvals = (100.0, 700.0, 1400.0, 2000.0)
+    seq, enc, bs = _rows(bvals=bvals, n=10)
+    from dmipy_sim.acquisition.waveforms import calc_btensor
+    B = calc_btensor(seq) * 1e-9
+    D_iso, mufa = 0.8, 0.7
+    x = mufa ** 2 * D_iso ** 2 / (3 - 2 * mufa ** 2); D_delta = np.sqrt(x) / D_iso
+    rng = np.random.default_rng(1)
+    u = rng.normal(size=(4000, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    Dpar, Dperp = D_iso * (1 + 2 * D_delta), D_iso * (1 - D_delta)
+    D = Dperp * np.eye(3)[None] + (Dpar - Dperp) * u[:, :, None] * u[:, None, :]
+    S = np.exp(-np.einsum("mij,cij->mc", B, D)).mean(1)
+    sd = 1.0 / 15.0
+    noisy = np.sqrt((S[None] + rng.normal(0, sd, (3000, len(S)))) ** 2 + rng.normal(0, sd, (3000, len(S))) ** 2)
+    noisy = noisy / noisy[:, :1]                                       # the one b = 0 row
+    pw = T.powder(noisy[:, None, None, :], enc, bs, list(bvals))
+    counts = {(e, b): int(((enc == e) & (bs == b)).sum()) for e in ("LTE", "STE") for b in bvals}
+    md, got = T.md_ufa(pw, list(bvals), counts, n_b0=1)
+    assert abs(float(np.nanmedian(got)) - mufa) < 0.08, float(np.nanmedian(got))
+    assert abs(float(np.nanmedian(md)) - D_iso) < 0.05 * D_iso

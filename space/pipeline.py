@@ -97,13 +97,15 @@ def backend(cfg):
 class Shell:
     """One shell: the timing class it plays, its b-value (s/mm^2) and its direction count. A shell made by
     :meth:`free` carries its own pulse timing (``delta``, ``Delta``, ``TE`` in seconds) instead of a stored class,
-    and ``shape`` names it."""
+    and ``shape`` names it. On a b-tensor class (:mod:`space.tensor`) ``encoding`` is the b-tensor's shape, ``LTE``
+    (linear) or ``STE`` (spherical), and a direction is the encoding's axis."""
     shape: str
     b: float
     n_dirs: int
     delta: Optional[float] = None
     Delta: Optional[float] = None
     TE: Optional[float] = None
+    encoding: Optional[str] = None
 
     @classmethod
     def free(cls, b, n_dirs, delta, Delta, TE):
@@ -145,16 +147,26 @@ class Protocol:
     def n_meas(self):
         return self.n_b0 + sum(s.n_dirs for s in self.shells)
 
+    @property
+    def tensor(self):
+        """Whether the shells are b-tensor encodings (every shell names one; a protocol does not mix them)."""
+        enc = [s.encoding is not None for s in self.shells]
+        if any(enc) and not all(enc):
+            raise ValueError("a protocol's shells are all b-tensor encodings or none")
+        return all(enc)
+
 
 @dataclass(frozen=True)
 class Measurements:
-    """Per row: b (s/mm^2), unit direction, timing-class name, delta / Delta / TE (s)."""
+    """Per row: b (s/mm^2), unit direction, timing-class name, delta / Delta / TE (s), and on a b-tensor protocol the
+    encoding (``b0``, ``LTE``, ``STE``; None otherwise)."""
     bvals: np.ndarray
     dirs: np.ndarray
     shape: np.ndarray
     delta: np.ndarray
     Delta: np.ndarray
     TE: np.ndarray
+    encoding: Optional[np.ndarray] = None
 
     @property
     def b0(self):
@@ -185,7 +197,10 @@ def measurements(protocol, shapes):
         b = np.asarray(protocol.bvals, np.float64)
     delta = np.array([timing[n]["delta"] for n in names]); Delta = np.array([timing[n]["Delta"] for n in names])
     TE = np.array([timing[n]["TE"] for n in names])
-    return Measurements(b, dirs, np.asarray(names), delta, Delta, TE)
+    enc = None
+    if protocol.tensor:
+        enc = np.asarray(["b0"] * protocol.n_b0 + [s.encoding for s in protocol.shells for _ in range(s.n_dirs)])
+    return Measurements(b, dirs, np.asarray(names), delta, Delta, TE, enc)
 
 
 def protocol_from_rows(bvals, dirs, group, make_shell, *, name):
@@ -230,11 +245,26 @@ def protocol_from_scheme(path, *, name="uploaded scheme"):
     return protocol_from_rows(b, np.asarray(enc.gradient_directions, np.float64), group.ravel(), make_shell, name=name)[0]
 
 
+def preset_snr(cfg, name):
+    """The SNR a preset starts at: its own ``snr`` when the preset states one (the b-tensor preset: µFA is
+    noise-limited), else ``[noise] snr``."""
+    p = cfg.get("presets", {}).get(name) or {}
+    return float(p.get("snr", cfg["noise"]["snr"]))
+
+
 def preset_protocol(cfg, name):
     """A ``[presets]`` entry of the config as a Protocol: a stored gradient table (``table``: ``data/<table>.bvals`` and
     ``.bvecs``, every row's own b and direction, each shell its rounded b, all on the class ``shape``), or ``shells``
     of Fibonacci directions after ``n_b0`` b = 0 rows."""
     p = cfg["presets"][name]
+    if "tensor" in p:                                  # b-tensor encodings interleaved per b, the same axes for each
+        from . import tensor as T
+        t = p["tensor"]
+        shells, dirs = [], [np.tile([0.0, 0.0, 1.0], (int(p.get("n_b0", 1)), 1))]
+        for b, n in zip(t["bvalues"], t["directions"]):
+            for e in t["encodings"]:
+                shells.append(Shell(p["shape"], float(b), int(n), encoding=e)); dirs.append(T.fibonacci(int(n)))
+        return Protocol(tuple(shells), n_b0=int(p.get("n_b0", 1)), directions=np.concatenate(dirs), name=name)
     if "table" in p:
         bv = np.loadtxt(os.path.join(DATA_DIR, p["table"] + ".bvals")).ravel()
         dirs = np.loadtxt(os.path.join(DATA_DIR, p["table"] + ".bvecs"))
@@ -246,7 +276,10 @@ def preset_protocol(cfg, name):
 
 def retime(protocol, shape):
     """``protocol`` with every shell on the timing class ``shape`` (b-values, directions and counts kept): the A/B
-    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another."""
+    knob that swaps a PGSE class for its stimulated-echo twin, or one δ / Δ for another. A b-tensor protocol's shells
+    are encodings of its class, not timings: it is refused by name."""
+    if protocol.tensor:
+        raise ValueError("a b-tensor acquisition's shells are encodings of its one class: a pulse-timing knob does not apply")
     return Protocol(tuple(Shell(shape, s.b, s.n_dirs) for s in protocol.shells), n_b0=protocol.n_b0,
                     directions=protocol.directions, bvals=protocol.bvals, name=f"{protocol.name} on {shape}")
 
@@ -264,6 +297,26 @@ def write_volumes(res, out_dir, *, prefix, affine):
     fod = os.path.join(out_dir, f"{prefix}_fod_sh.nii.gz")
     nib.save(nib.Nifti1Image(np.nan_to_num(res.sh).astype(np.float32), np.asarray(affine, np.float64)), fod); paths["fod"] = fod
     return paths
+
+
+def write_tensor_volumes(res, out_dir, *, prefix, affine):
+    """A b-tensor run's files: the DWI as NIfTI with its bvals (s/mm^2), bvecs (each row's encoding axis, 3 x N) and
+    ``.btensor`` (each row's encoding, ``b0`` / ``LTE`` / ``STE``, one per line), and the FA, MD (µm²/ms) and µFA maps as
+    NIfTI (float32 on ``affine``, NaN as 0); returns the paths."""
+    import nibabel as nib
+    os.makedirs(out_dir, exist_ok=True)
+    aff = np.asarray(affine, np.float64); tm = res.extras["tensor"]; out = []
+    p = os.path.join(out_dir, f"{prefix}_dwi.nii.gz"); nib.save(nib.Nifti1Image(np.nan_to_num(res.dwi).astype(np.float32), aff), p); out.append(p)
+    p = os.path.join(out_dir, f"{prefix}.bvals"); np.savetxt(p, res.meas.bvals[None, :], fmt="%.1f"); out.append(p)
+    p = os.path.join(out_dir, f"{prefix}.bvecs"); np.savetxt(p, res.meas.dirs.T, fmt="%.8f"); out.append(p)
+    p = os.path.join(out_dir, f"{prefix}.btensor")
+    with open(p, "w") as f:
+        f.write("\n".join(str(e) for e in res.meas.encoding) + "\n")
+    out.append(p)
+    for key in ("fa", "md", "ufa"):
+        p = os.path.join(out_dir, f"{prefix}_{key}.nii.gz")
+        nib.save(nib.Nifti1Image(np.nan_to_num(np.asarray(tm[key], np.float64)).astype(np.float32), aff), p); out.append(p)
+    return out
 
 
 # ---- the physics: tissue and scanner --------------------------------------------------------------------------------
@@ -1031,7 +1084,10 @@ def playable(protocol, shapes, scanner=None):
     for s in protocol.shells:
         t = dict(delta=s.delta, Delta=s.Delta) if s.free_timing else shapes[s.shape]
         delta, Delta = float(t["delta"]), float(t["Delta"])
-        G = C.amplitude(t, s.b) if t.get("kind") == "ogse" else gradient_needed(s.b, delta, Delta)
+        if t.get("kind") == "tensor":
+            G = C.tensor_peak(t, s.encoding, s.b, s.n_dirs)                 # per axis, over the shell's rotations
+        else:
+            G = C.amplitude(t, s.b) if t.get("kind") == "ogse" else gradient_needed(s.b, delta, Delta)
         rows.append((s.shape, s.b, delta, Delta, G, G_max, G_max is None or G <= G_max))
     return rows
 
@@ -1130,6 +1186,9 @@ class Result:
     extras: dict = field(default_factory=dict)
 
 
+TENSOR_STAGES = ("replay", "noise", "maps")              # a b-tensor protocol's stages
+
+
 def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0, physics=None, prepared=None):
     """The pipeline as a generator: before each of the source's ``STAGES`` it yields ``(stage, k, n)`` (so a page
     can show where the run is, from inside any worker), and last the :class:`Result`. ``physics`` is the tissue and
@@ -1141,10 +1200,20 @@ def run_stages(source, protocol, *, snr=None, tracking=Tracking(), noise_seed=0,
     def at(stage):
         print(f"[pipeline] {stage} at +{time.perf_counter() - t_run:.1f} s", flush=True)      # the server log shows where a run is
         return stage, stages.index(stage), len(stages)
+    if protocol.tensor:                                  # a b-tensor protocol: microstructure maps, not a connectome
+        stages = TENSOR_STAGES
     meas = source.validate(protocol, physics)
     yield at("replay"); dwi, floor, s0_factor, t_replay = source.replay(meas, physics, prepared)
     yield at("noise"); t0 = time.perf_counter(); noisy = add_noise(dwi, snr, s0_factor, seed=noise_seed, backend=source.backend); t_noise = time.perf_counter() - t0
     signal = np.isfinite(dwi[..., 0])
+    if protocol.tensor:
+        from . import tensor as T
+        yield at("maps"); t0 = time.perf_counter(); tmaps = T.maps(noisy, meas, signal)
+        seconds = dict(replay=t_replay, noise=t_noise, maps=time.perf_counter() - t0)
+        seconds["total"] = sum(seconds.values())
+        yield Result(protocol, meas, noisy, floor, s0_factor, None, None, None, None, None, snr=snr, physics=physics, clean=dwi,
+                     seconds=seconds, extras=dict(tensor=tmaps))
+        return
     yield at("csd"); sh, t_csd, extras = source.reconstruct(noisy, s0_factor, meas, signal)
     yield at("track"); t0 = time.perf_counter(); fld, seeds = source.tracking_inputs(sh, tracking.density); tg, _ = track(fld, seeds, tracking, source.backend); t_track = time.perf_counter() - t0
     seconds = dict(replay=t_replay, noise=t_noise, **t_csd, track=t_track)

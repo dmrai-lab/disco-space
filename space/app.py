@@ -31,11 +31,14 @@ from dataclasses import replace
 
 from . import pipeline as P
 from . import sources
+from . import tensor as T
 from . import viewers as V
 
 MAX_SHELLS = 4
 CUSTOM = "custom shells"
 UPLOADED = "uploaded scheme"
+SNR_NOTE = ("µFA is noise-limited: the b-tensor preset starts at SNR 100, because at SNR 30 with the tissue at 3 T the "
+            "spherical encoding's contrast in the densest strand voxels is below the noise and µFA reads 0 there.")
 PER_SHELL = 7                                            # on, timing class, b, directions, delta, Delta, TE
 NO_KNOB = P.NO_KNOB
 IDEAL = P.IDEAL
@@ -44,9 +47,12 @@ SAMPLE = 10_000                                          # streamlines kept in t
 OUTPUTS = ("result", "headline", "dwi_view", "tract_view", "mats", "timings", "tck", "volumes", "z_slider", "m_slider",
            "tract_view_b", "mats_b", "b_row", "floor_view", "accuracy", "spread_view",
            "explore_view", "metric_view", "ingredient_pool", "ingredient_contact", "ingredient_field", "layer_table", "layer_choice",
-           "ez_slider", "em_slider", "truth_view", "fractions_view", "lobar_view", "roundtrip", "response_view")   # the run button's outputs, in order
+           "ez_slider", "em_slider", "truth_view", "fractions_view", "lobar_view", "roundtrip", "response_view",
+           "tensor_row", "tensor_view", "tensor_pick", "powder_view", "tensor_view_b", "connectome_row")   # the run button's outputs, in order
 EXPLORE_MODES = ("signal", "minus the previous layer", "B − A", "(B − A) ÷ floor")
-METRICS = ("DWI", "MD (µm²/ms)", "FA")
+METRICS = ("DWI", "MD (µm²/ms)", "FA", "µFA")                 # µFA on a b-tensor run (the linear vs spherical powder signal)
+ROWS = ("every row", "LTE", "STE")                             # a b-tensor run's DWI rows: all, or one encoding's (the measurement slider counts within it)
+PICK = 8                                                       # pixels per voxel of the clickable µFA slice
 _state = {"source": None, "error": None}
 _lock = threading.Lock()
 _RUNS = tempfile.mkdtemp(prefix="disco-runs-")          # one directory per run tag, replaced on every run
@@ -198,8 +204,20 @@ def _fill(source, runs, ladder_on, prepared):
     return out, computed, time.perf_counter() - t0
 
 
+def _tensor_state(tm):
+    """A b-tensor run's maps for the page: FA, MD and µFA in float32, the powder averages per (encoding, b), the b-values."""
+    return dict(fa=np.asarray(tm["fa"], np.float32), md=np.asarray(tm["md"], np.float32), ufa=np.asarray(tm["ufa"], np.float32),
+                powder={k: np.asarray(v, np.float32) for k, v in tm["powder"].items()}, bvals=list(tm["bvals"]))
+
+
 def _result_state(res, sample, load_seconds):
-    """What the results tab needs, kept per session: float32 volumes, the peaks, the streamline sample, the numbers."""
+    """What the results tab needs, kept per session: float32 volumes, the peaks, the streamline sample, the numbers; on
+    a b-tensor run the maps instead of the peaks, the connectome and the streamlines."""
+    if res.protocol.tensor:
+        return dict(dwi=res.dwi.astype(np.float32), floor=res.floor.astype(np.float32), floor_median=P.floor_stats(res)["median"], meas=res.meas,
+                    peaks=None, peak_amp=None, matrix=None, score=None, seconds=res.seconds, load_seconds=load_seconds, tractogram=None,
+                    n_streamlines=0, shape=res.dwi.shape[:3], name=res.protocol.name, extras=dict(fractions=None),
+                    tensor=_tensor_state(res.extras["tensor"]))
     pk, amp = P.peaks(res.sh)
     fr = res.extras.get("fractions")
     return dict(dwi=res.dwi.astype(np.float32), floor=res.floor.astype(np.float32), floor_median=P.floor_stats(res)["median"], meas=res.meas,
@@ -224,11 +242,15 @@ def _explorer_state(results, ladder, ingredients, knob, source):
     layers = list(ladder) + [(name_a, ra.clean)] + ([(name_b, results["B"].clean)] if "B" in results else [])
     metrics = {}
     for label, vol in layers:
-        try:
-            md, fa = P.dti(vol, ra.meas, mask)
-        except ValueError:                                  # too few low-b rows for a tensor: no metric maps
-            md = fa = None
-        metrics[label] = (None if md is None else md.astype(np.float16), None if fa is None else fa.astype(np.float16))
+        ufa = None
+        if ra.protocol.tensor:                               # the b-tensor maps of the noise-free layer: DTI on the linear rows, the powder fit
+            tm = T.maps(vol, ra.meas, mask); md, fa, ufa = tm["md"], tm["fa"], tm["ufa"]
+        else:
+            try:
+                md, fa = P.dti(vol, ra.meas, mask)
+            except ValueError:                              # too few low-b rows for a tensor: no metric maps
+                md = fa = None
+        metrics[label] = tuple(None if x is None else np.asarray(x).astype(np.float16) for x in (md, fa, ufa))
     return dict(layers=[(label, vol.astype(np.float16)) for label, vol in layers], metrics=metrics, floor=ra.floor.astype(np.float32),
                 meas=ra.meas, mask=mask, ingredients=source.ingredient_layers(ingredients), differences=P.layer_differences(layers, ra.meas, mask),
                 snr=ra.snr, physics=ra.physics)
@@ -257,6 +279,10 @@ def _write_files(tag, res, source):
     sample as .tck, the DWI and FOD volumes, the source's own files; ``(sample, {"tck": [...], "volumes": [...]})``."""
     out = os.path.join(_RUNS, tag); shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
     stem = f"{source.describe(source.cfg)['files']}_{tag}_{res.protocol.name.replace(' ', '_')}"
+    if res.protocol.tensor:                              # a b-tensor run: the DWI with its table and encodings, and the maps
+        import re
+        stem = re.sub(r"[^A-Za-z0-9_.+-]", "_", stem)
+        return None, dict(tck=[], volumes=P.write_tensor_volumes(res, out, prefix=stem, affine=source.affine))
     tck = os.path.join(out, f"{stem}.tck"); res.tractogram.to_tck(tck)
     sample = P.sample_tractogram(res.tractogram, SAMPLE)
     sample_path = os.path.join(out, f"{stem}_sample{SAMPLE // 1000}k.tck"); sample.to_tck(sample_path)
@@ -264,24 +290,36 @@ def _write_files(tag, res, source):
     return sample, dict(tck=[tck, sample_path], volumes=[vols["dwi"], vols["bvals"], vols["bvecs"], vols["fod"]] + source.extra_files(res, out, stem))
 
 
-def explore(ex, layer, mode, metric, z, m):
+def row_of(meas, rows, m):
+    """The measurement index the slider's ``m`` names: the ``m``-th row of the encoding ``rows`` (``LTE`` / ``STE``) on
+    a b-tensor run, else row ``m``; clipped to the rows there are."""
+    enc = getattr(meas, "encoding", None)
+    if enc is None or rows not in ROWS[1:]:
+        return min(int(m), len(meas.bvals) - 1)
+    idx = np.flatnonzero(np.asarray(enc) == rows)
+    return int(idx[min(int(m), len(idx) - 1)])
+
+
+def explore(ex, layer, mode, metric, z, m, rows=ROWS[0]):
     """The explorer's map: ``layer`` of the state's layers, in ``mode`` (the signal, its difference to the previous
-    layer, B minus A, or that over the replay floor), as the DWI at measurement ``m`` or a tensor metric, slice ``z``."""
+    layer, B minus A, or that over the replay floor), as the DWI at measurement ``m`` (on a b-tensor run the ``m``-th
+    row of the encoding ``rows``) or a metric (MD, FA, and on a b-tensor run µFA), slice ``z``."""
     if not ex:
         return None
     labels = [l for l, _ in ex["layers"]]; vols = dict(ex["layers"])
     if layer not in vols:
         layer = labels[-1]
-    z = int(z); m = min(int(m), len(ex["meas"].bvals) - 1)
+    z = int(z); m = row_of(ex["meas"], rows, m)
     k = METRICS.index(metric) if metric in METRICS else 0
 
     def field(label):
         if k == 0:
             return np.asarray(vols[label], np.float32)[..., m]
-        md, fa = ex["metrics"][label]
-        v = md if k == 1 else fa
+        v = ex["metrics"][label][k - 1]
         return None if v is None else np.asarray(v, np.float32)
-    what = f"{metric} of {layer}" if k else f"{layer}: b = {ex['meas'].bvals[m]:g} s/mm², measurement {m}"
+    enc = getattr(ex["meas"], "encoding", None)
+    tag = "" if enc is None else f" ({enc[m]})"
+    what = f"{metric} of {layer}" if k else f"{layer}: b = {ex['meas'].bvals[m]:g} s/mm²{tag}, measurement {m}"
     x = field(layer)
     if x is None:
         return None
@@ -357,7 +395,7 @@ def compute(prepared, preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
         yield (f"**Replay DWI Explorer · the ingredient maps** … ({time.perf_counter() - t0:.0f} s so far)", 0.85)
         t = time.perf_counter(); ingredients = source.ingredients(meas_a, physics_a, prepared["runs"]["A"]); seconds["explorer · ingredients"] = time.perf_counter() - t
         spread = None
-        if int(n_keys) > 1:                                 # A's tracking repeated over further keys: the tractogram's own spread
+        if int(n_keys) > 1 and not results["A"].protocol.tensor:                                 # A's tracking repeated over further keys: the tractogram's own spread
             keys = [int(key) + 1 + i for i in range(int(n_keys) - 1)]
             mats = [results["A"].matrix]; scores = [results["A"].score]
             for i, (k, M, sc, secs) in enumerate(P.repeat_tracking(results["A"], source, tracking, keys)):
@@ -399,9 +437,11 @@ def present(payload, state):
     post["page · states"] = time.perf_counter() - t; t = time.perf_counter()
     labels = [l for l, _ in ex["layers"]]; name_a = labels[-2] if "B" in results else labels[-1]
     ra = rs["A"]; rb = rs.get("B")
-    headline = source.score_text("A", results["A"])
+    tensor = results["A"].protocol.tensor
+    text = (lambda tag, r: tensor_text(tag, r)) if tensor else source.score_text
+    headline = text("A", results["A"])
     if rb:
-        headline += "<br>" + source.score_text("B", results["B"]) + "<br>" + source.compare_text(source.compare(results["A"], results["B"]), knob)
+        headline += "<br>" + text("B", results["B"]) + ("" if tensor else "<br>" + source.compare_text(source.compare(results["A"], results["B"]), knob))
     if spread:
         headline += (f"<br>**A over {spread['n']} tracker keys: {spread['key']} {spread['pearson_mean']:.3f} ± {spread['pearson_std']:.3f}**, "
                      f"median pair count CV {spread['cv_median']:.2f}, {spread['pairs_always']} pairs in every run, {spread['pairs_any']} in any.")
@@ -415,24 +455,47 @@ def present(payload, state):
     rs["explorer"] = ex                                  # the page state: A, B and the explorer's layers
     box = V.grid_box(ra["shape"], source.affine) if d["views"]["truth"] else ra["shape"]
     pa = source.cached(results["A"].meas, results["A"].physics)
-    out = (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=True, label="A: "),
-           V.tractogram3d(ra["tractogram"], regions, box, total=ra["n_streamlines"]),
-           source.matrices(results["A"].matrix, results["A"].score, results["A"].reference),
+    connectome = not tensor
+    t_a, t_pick, t_b = tensor_views(rs, z0)
+    out = (rs, headline, V.dwi_slice(ra["dwi"], ra["meas"], z0, m0, peaks=ra["peaks"], peak_amp=ra["peak_amp"], overlay=connectome, label="A: "),
+           V.tractogram3d(ra["tractogram"], regions, box, total=ra["n_streamlines"]) if connectome else None,
+           source.matrices(results["A"].matrix, results["A"].score, results["A"].reference) if connectome else None,
            timings, [t_ for f in files.values() for t_ in f["tck"]], [v for f in files.values() for v in f["volumes"]],
            _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1),
-           V.tractogram3d(rb["tractogram"], regions, box, total=rb["n_streamlines"]) if rb else None,
-           source.matrices(results["B"].matrix, results["B"].score, results["B"].reference) if rb else None,
-           gr.update(visible=rb is not None),
+           V.tractogram3d(rb["tractogram"], regions, box, total=rb["n_streamlines"]) if rb and connectome else None,
+           source.matrices(results["B"].matrix, results["B"].score, results["B"].reference) if rb and connectome else None,
+           gr.update(visible=rb is not None and connectome),
            V.floor_slice(ra["floor"], z0, ra["floor_median"], label="A: ") if d["views"]["floor"] else None, source.accuracy(results["A"]),
            V.spread_matrices(spread) if spread else None,
            explore(ex, name_a, "minus the previous layer" if len(labels) > 1 else "signal", METRICS[0], z0, m0),
-           explore(ex, name_a, "signal", METRICS[2], z0, m0), *ingredient_views(ex, z0), layer_table(ex),
+           explore(ex, name_a, "signal", METRICS[3] if tensor else METRICS[2], z0, m0), *ingredient_views(ex, z0), layer_table(ex),
            gr.update(choices=labels, value=name_a), _slider_update(z0, ra["dwi"].shape[2] - 1), _slider_update(m0, results["A"].protocol.n_meas - 1),
            source.truth_view(ra["dwi"], ra["meas"], z0, m0), source.fractions_view(ra["extras"], z0),
-           source.lobar(results["A"].matrix, results["A"].score, results["A"].reference), source.roundtrip_rows(results["A"]),
-           source.response_view(pa, results["A"].extras))
+           source.lobar(results["A"].matrix, results["A"].score, results["A"].reference) if connectome else None,
+           source.roundtrip_rows(results["A"]) if connectome else None,
+           source.response_view(pa, results["A"].extras) if connectome else None,
+           gr.update(visible=tensor), t_a, t_pick, None, t_b, gr.update(visible=connectome))
     timings.append(["page · figures", f"{time.perf_counter() - t:.2f}"])
     return out
+
+
+def tensor_text(tag, res):
+    """The headline of a b-tensor run: the maps' medians over the voxels the ground truth's strands cross, and over the
+    densest quarter of them (strand length in the upper quartile) by their crossing count, the run's settings."""
+    tm = res.extras["tensor"]; physics = res.physics
+    n_dirs, length = _strands()
+    sig = np.isfinite(res.dwi[..., 0]); strand = sig & (length > 0)
+    dense = strand & (length >= np.quantile(length[strand], 0.75)) if strand.any() else strand
+    med = lambda x, m: float(np.nanmedian(np.asarray(x)[m])) if np.any(m) else float("nan")
+    snr = "" if res.snr is None else f", SNR {res.snr:g}"
+    by = ", ".join(f"{k}{'+' if k == 3 else ''} directions {med(tm['ufa'], dense & ((n_dirs >= 3) if k == 3 else (n_dirs == k))):.2f} / "
+                   f"{med(tm['fa'], dense & ((n_dirs >= 3) if k == 3 else (n_dirs == k))):.2f}" for k in (1, 2, 3))
+    return (f"**{tag}: in the voxels the strands cross, µFA median {med(tm['ufa'], strand):.3f}, FA {med(tm['fa'], strand):.3f}, MD "
+            f"{med(tm['md'], strand):.3f} µm²/ms**; the densest quarter by its crossing count, µFA / FA: {by} "
+            f"({res.protocol.n_meas} measurements: linear and spherical b-tensors at b {', '.join(f'{b:g}' for b in tm['bvals'])} s/mm², "
+            f"{physics.label() if physics else 'bare diffusion'}{snr}, {res.seconds['total']:.1f} s; replay floor median "
+            f"{P.floor_stats(res)['median']:.4f}). µFA is the anisotropy the spherical encoding removes and the orientation "
+            "dispersion does not: high where FA is low in crossings. Click the µFA slice for a voxel's powder curves.")
 
 
 def run_pipeline(compute_fn, *args, progress=None):
@@ -525,19 +588,63 @@ def _slider_update(value, maximum):
     return gr.update(value=int(value), maximum=int(maximum))
 
 
-def redraw_explorer(rs, layer, mode, metric, z, m):
+def redraw_explorer(rs, layer, mode, metric, z, m, rows=ROWS[0]):
     ex = rs and rs.get("explorer")
-    return (explore(ex, layer, mode, metric, z, m), explore(ex, layer, mode, METRICS[2] if metric == METRICS[0] else metric, z, m), *ingredient_views(ex, z))
+    second = (METRICS[3] if ex and ex["meas"].encoding is not None else METRICS[2]) if metric == METRICS[0] else metric
+    return (explore(ex, layer, mode, metric, z, m, rows), explore(ex, layer, mode, second, z, m, rows), *ingredient_views(ex, z))
 
 
-def redraw_slice(rs, z, m, overlay, which):
+def redraw_slice(rs, z, m, overlay, which, rows=ROWS[0]):
     if not rs or which not in rs:
-        return None, None, None, None
+        return None, None, None, None, None, None, None
     r = rs[which]; source = _load()["source"]
     views = source.describe(source.cfg)["views"]
-    return (V.dwi_slice(r["dwi"], r["meas"], int(z), int(m), peaks=r["peaks"], peak_amp=r["peak_amp"], overlay=bool(overlay), label=f"{which}: "),
+    m = row_of(r["meas"], rows, m)
+    return (V.dwi_slice(r["dwi"], r["meas"], int(z), m, peaks=r["peaks"], peak_amp=r["peak_amp"], overlay=bool(overlay) and r["peaks"] is not None, label=f"{which}: "),
             V.floor_slice(r["floor"], int(z), r["floor_median"], label=f"{which}: ") if views["floor"] else None,
-            source.truth_view(r["dwi"], r["meas"], int(z), int(m)), source.fractions_view(r["extras"], int(z)))
+            source.truth_view(r["dwi"], r["meas"], int(z), m), source.fractions_view(r["extras"], int(z)), *tensor_views(rs, int(z)))
+
+
+def tensor_views(rs, z):
+    """A b-tensor run's maps at slice ``z`` for A (with the ground truth's crossings outlined) and B, and the clickable
+    µFA slice of A; Nones on any other run."""
+    if not rs or "tensor" not in rs.get("A", {}) or rs["A"]["tensor"] is None:
+        return None, None, None
+    crossing = _crossings()
+    a = V.tensor_maps(rs["A"]["tensor"], crossing, z, label="A: ")
+    b = V.tensor_maps(rs["B"]["tensor"], crossing, z, label="B: ") if rs.get("B") and rs["B"].get("tensor") else None
+    return a, V.map_picker(rs["A"]["tensor"]["ufa"][:, :, z], PICK, vmin=0.0, vmax=1.0), b
+
+
+def pick_voxel(rs, z, evt):
+    """The powder curve (linear and spherical, A and dashed B) of the voxel clicked on the µFA slice: ``evt.index`` is
+    the click's pixel ``(x, y)``, a voxel ``PICK`` pixels wide, the slice drawn with y up."""
+    if not rs or not rs.get("A", {}).get("tensor"):
+        return None
+    tm = rs["A"]["tensor"]; nx, ny = tm["ufa"].shape[:2]
+    x, y = (int(v) for v in evt.index)
+    i, j = min(x // PICK, nx - 1), min(ny - 1 - y // PICK, ny - 1)
+    other = rs["B"]["tensor"] if rs.get("B") and rs["B"].get("tensor") else None
+    return V.powder_curve(tm, (i, j, int(z)), other=other)
+
+
+_CROSSINGS = {}
+
+
+def _crossings():
+    """The voxels the ground truth's strands cross in two or more directions (the source's strand configuration),
+    computed once per process."""
+    return _strands()[0] >= 2
+
+
+def _strands():
+    """``(n_dirs, length)`` per voxel of the ground truth's strands (the source's strand configuration), computed once
+    per process."""
+    if "c" not in _CROSSINGS:
+        from .sources.disco import strand_configuration
+        n_dirs, _, length = strand_configuration(shape=_load()["source"].mask.shape)
+        _CROSSINGS["c"] = (np.asarray(n_dirs), np.asarray(length))
+    return _CROSSINGS["c"]
 
 
 def ground_truth_views():
@@ -626,7 +733,9 @@ def build(runner=None, cfg=None):
                         physics_inputs = [widgets[name] for name in panel.fields]
                         with gr.Row():
                             snr_on = gr.Checkbox(value=True, label="add Rician noise")
-                            snr = gr.Slider(5, 100, value=30, step=1, label="SNR at M0 (a full water voxel before relaxation; each voxel's b = 0 SNR follows its tissue)")
+                            snr = gr.Slider(5, 100, value=P.preset_snr(cfg, presets[0]), step=1, label="SNR at M0 (a full water voxel before relaxation; each voxel's b = 0 SNR follows its tissue)")
+                        if any("tensor" in p for p in (cfg.get("presets") or {}).values()):
+                            gr.Markdown(SNR_NOTE)
                         density = gr.Slider(tc["density"][0], tc["density"][1], value=tc["density"][2], step=tc["density"][3], label=tc["density"][4])
                         max_angle = gr.Slider(tc["max_angle"][0], tc["max_angle"][1], value=tc["max_angle"][2], step=tc["max_angle"][3], label=tc["max_angle"][4])
                         step_mm = gr.Slider(tc["step"][0], tc["step"][1], value=tc["step"][2], step=tc["step"][3], label=tc["step"][4])
@@ -638,7 +747,7 @@ def build(runner=None, cfg=None):
                         scanner_terms = gr.Markdown(P.scanner_text(cfg, IDEAL, S.refused_machines(cfg)))
                         gradients = gr.Markdown()
                         n_keys = gr.Slider(1, 8, value=1, step=1, label="repeat A's tracking over N keys (the tractogram's own spread)")
-                        ladder_on = gr.Checkbox(value=not full, visible=not full, label=d["ladder"])
+                        ladder_on = gr.Checkbox(value=False, visible=not full, label=d["ladder"])
                         go = gr.Button(d["run_label"], variant="primary")
                         gpu_text = gr.Markdown(visible=runner is not None)
                         headline = gr.Markdown()
@@ -659,6 +768,7 @@ def build(runner=None, cfg=None):
                 with gr.Row():
                     ez_slider = gr.Slider(0, 39, value=20, step=1, label="axial slice z")
                     em_slider = gr.Slider(0, 363, value=0, step=1, label="measurement (DWI only)")
+                    erows = gr.Radio(list(ROWS), value=ROWS[0], label="rows (a b-tensor run: the measurement counts within the encoding)")
                 with gr.Row():
                     explore_view = gr.Image(label="the chosen layer and mode", type="pil")
                     metric_view = gr.Image(label="the same for FA (or the chosen metric)", type="pil")
@@ -673,17 +783,25 @@ def build(runner=None, cfg=None):
                             m_slider = gr.Slider(0, 363, value=0, step=1, label="measurement")
                             overlay = gr.Checkbox(value=True, label="FOD principal directions")
                             which = gr.Radio(["A", "B"], value="A", label="run")
+                            rows_radio = gr.Radio(list(ROWS), value=ROWS[0], label="rows (b-tensor runs)")
                     with gr.Column(scale=1, visible=d["views"]["truth"]):
                         truth_view = gr.Image(label="the same slice with the input FOD's principal directions", type="pil")
                     with gr.Column(scale=1):
                         tract_view = gr.Plot(label="tractogram A")
                 fractions_view = gr.Image(label="recovered vs input fractions", type="pil", visible=d["views"]["fractions"])
-                mats = gr.Image(label="connectome A vs its truth", type="pil")
-                lobar_view = gr.Image(label="connectome A vs its truth over the lobar groups", type="pil", visible=d["views"]["lobar"])
-                with gr.Row(visible=False) as b_row:
-                    tract_view_b = gr.Plot(label="tractogram B")
-                    mats_b = gr.Image(label="connectome B vs its truth", type="pil")
-                spread_view = gr.Image(label="A over N tracker keys: mean and spread per pair", type="pil")
+                with gr.Column(visible=False) as tensor_row:            # a b-tensor run: the maps and a voxel's powder curves
+                    tensor_view = gr.Image(label="b-tensor maps of A: FA, µFA, MD (the slice above)", type="pil")
+                    with gr.Row():
+                        tensor_pick = gr.Image(label="µFA of A: click a voxel", type="pil", interactive=False)
+                        powder_view = gr.Image(label="the clicked voxel's powder signal: linear and spherical, A and B (dashed)", type="pil")
+                    tensor_view_b = gr.Image(label="b-tensor maps of B", type="pil")
+                with gr.Column() as connectome_row:
+                    mats = gr.Image(label="connectome A vs its truth", type="pil")
+                    lobar_view = gr.Image(label="connectome A vs its truth over the lobar groups", type="pil", visible=d["views"]["lobar"])
+                    with gr.Row(visible=False) as b_row:
+                        tract_view_b = gr.Plot(label="tractogram B")
+                        mats_b = gr.Image(label="connectome B vs its truth", type="pil")
+                    spread_view = gr.Image(label="A over N tracker keys: mean and spread per pair", type="pil")
                 roundtrip = gr.Dataframe(headers=["what", "value"], label="the round trip: the reconstruction and the connectome against the input",
                                          interactive=False, wrap=True, visible=d["views"]["roundtrip"])
                 with gr.Accordion("accuracy: what this replay is an approximation of", open=False):
@@ -701,6 +819,7 @@ def build(runner=None, cfg=None):
         def run_with_progress(*args, progress=gr.Progress()):
             yield from run_pipeline(compute_fn, *args, progress=progress)
         tissue_numbers = [widgets[name] for name in panel.catalogue] + [catalogue_note]
+        preset.change(lambda name: P.preset_snr(cfg, name), inputs=preset, outputs=snr, show_progress="hidden")
         field_preset.change(lambda name: [field_presets[name]] + S.catalogue_numbers(cfg, field_presets[name]), inputs=field_preset,
                             outputs=[widgets["field_T"]] + tissue_numbers, show_progress="hidden")
         reset.click(lambda f: S.catalogue_numbers(cfg, f), inputs=widgets["field_T"], outputs=tissue_numbers, show_progress="hidden")
@@ -727,9 +846,11 @@ def build(runner=None, cfg=None):
                        floor_view=floor_view, accuracy=accuracy, spread_view=spread_view, explore_view=explore_view, metric_view=metric_view,
                        ingredient_pool=ingredient_pool, ingredient_contact=ingredient_contact, ingredient_field=ingredient_field,
                        layer_table=layer_tbl, layer_choice=layer_choice, ez_slider=ez_slider, em_slider=em_slider, truth_view=truth_view,
-                       fractions_view=fractions_view, lobar_view=lobar_view, roundtrip=roundtrip, response_view=response_view)
-        for ctl in (layer_choice, mode, metric, ez_slider, em_slider):
-            ctl.change(redraw_explorer, inputs=[result, layer_choice, mode, metric, ez_slider, em_slider],
+                       fractions_view=fractions_view, lobar_view=lobar_view, roundtrip=roundtrip, response_view=response_view,
+                       tensor_row=tensor_row, tensor_view=tensor_view, tensor_pick=tensor_pick, powder_view=powder_view,
+                       tensor_view_b=tensor_view_b, connectome_row=connectome_row)
+        for ctl in (layer_choice, mode, metric, ez_slider, em_slider, erows):
+            ctl.change(redraw_explorer, inputs=[result, layer_choice, mode, metric, ez_slider, em_slider, erows],
                        outputs=[explore_view, metric_view, ingredient_pool, ingredient_contact, ingredient_field], show_progress="hidden")
         run_inputs = [preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *physics_inputs, *shell_inputs]
         if runner is not None:                                   # the pool: what the run reserves, live as the inputs change
@@ -738,8 +859,13 @@ def build(runner=None, cfg=None):
                              outputs=[outputs[name] for name in OUTPUTS], concurrency_limit=1, api_name="run_pipeline")   # the endpoint tools/live.py drives
         if runner is not None:                                   # the run's responses are now cached on the page: the reservation falls
             run_event.then(gpu_seconds_text, inputs=run_inputs, outputs=gpu_text, show_progress="hidden")
-        for ctl in (z_slider, m_slider, overlay, which):
-            ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which], outputs=[dwi_view, floor_view, truth_view, fractions_view], show_progress="hidden")
+        for ctl in (z_slider, m_slider, overlay, which, rows_radio):
+            ctl.change(redraw_slice, inputs=[result, z_slider, m_slider, overlay, which, rows_radio],
+                       outputs=[dwi_view, floor_view, truth_view, fractions_view, tensor_view, tensor_pick, tensor_view_b], show_progress="hidden")
+
+        def on_pick(rs, z, evt: gr.SelectData):
+            return pick_voxel(rs, z, evt)
+        tensor_pick.select(on_pick, inputs=[result, z_slider], outputs=powder_view, show_progress="hidden")
         gt_tab.select(ground_truth_views, outputs=[strands_view, gt_matrix])
         demo.load(lambda: (_load().get("error") and f"**the source did not load:** {_load()['error']}") or "", outputs=headline)
     return demo

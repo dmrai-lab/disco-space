@@ -5,10 +5,11 @@ source = "disco"                                 # space/sources/disco.py: the D
 [data]
 repo = "SubstrateCommons/disco-time-segments"   # the public time-segment layout of the DiSCo v2 walk
 layout = "disco"                                 # the layout's prefix in the dataset (dmipy_sim.replay.time_segments, format time_segments/2)
-revision = "7c84a67badeeb8f584c8a98356d2e81820a86eac"   # the dataset revision the layout is read at (with the OGSE class cos-f50-T20)
-manifest_sha256 = "873f9012b4e7fec65edf5c976a65de02bf322ed417ff8d7ee0afbfdd1be735b8"   # the layout manifest the page was accepted on (checked at load)
+revision = "a38679f061f1487b6688ebb37b7ee949da000ea3"   # the dataset revision the layout is read at (the OGSE class cos-f50-T20 and the b-tensor class qte-now-80)
+manifest_sha256 = "0fe044fd6963de74c6174276e35dd2ddc219d9d4ef2a476df0150ada48e23ef9"   # the layout manifest the page was accepted on (checked at load)
 pack = "hf://SubstrateCommons/disco-replay/disco"         # the replay pack the layout was contracted from: the acceptance test's reference
 pack_revision = "8277ff05ea8237a98f1f8bdfe6a86ce37c4fcdc3"
+strands = "substrate/DiSCo_Strands_Trajectories.tck"   # the ground truth's strand centrelines (CC BY 4.0) in the replay dataset, read at pack_revision
 
 # The timing classes ("shapes"), each ONE waveform the layout stores (space/classes.py builds it with dmipy-sim's own
 # builders on the layout's grid, TE = 53.5 ms, 1000 samples; checked against the layout's partition at load): square
@@ -66,6 +67,20 @@ delta = 0.019975
 Delta = 0.020029
 TE = 0.0535
 
+# The b-tensor class: three gradient shapes on the spin echo, each in both encoding windows (six stored terms), so one
+# class plays every linear, planar and spherical encoding of them at any rotation and b (space/tensor.py). The shapes
+# are the three axes of NOW's maximum-b spherical encoding (Sjolund et al. 2015) at TE 53.5 ms designed at 80 mT/m and
+# 200 T/m/s per axis (a 4 ms window for the 180), the physical gradient in `waveform` (data/); rotated, a linear or
+# spherical row at b 2000 needs about 124 mT/m on one axis: Connectome-class hardware. delta / Delta are the scheme's
+# nominal encoding windows (the CSD and the scheme never read them: a b-tensor run fits maps, not FODs).
+[shapes."qte-now-80"]
+label = "b-tensor class qte-now-80: NOW spherical encoding at TE 53.5 ms, 80 mT/m and 200 T/m/s per axis (Connectome-class when rotated)"
+kind = "tensor"
+waveform = "classes/qte-now-80.npy"
+delta = 0.0229
+Delta = 0.0253
+TE = 0.0535
+
 # DiSCo's own protocol: which timing class each shell of the dataset's gradient table plays (b in s/mm^2, the
 # table's rows are assigned to the nearest b here).
 [disco]
@@ -92,6 +107,20 @@ shape = "d8-D20"
 [presets."cosine OGSE 50 Hz b1000 x 60"]
 table = "protocols/ogse"
 shape = "cos-f50-T20"
+# Tensor-valued encoding: linear and spherical b-tensors interleaved at four b-values on the b-tensor class, the
+# b-values and direction counts of Szczepankiewicz et al. 2019's clinical protocol (6, 6, 10, 16 per encoding); the
+# same axes for both encodings at each b; one b = 0 row. Its run fits FA (DTI on the linear rows), MD and the
+# microscopic FA (the powder averages), not a connectome.
+[presets."b-tensor: linear + spherical (Szczepankiewicz 2019), b 100-2000 s/mm²"]
+shape = "qte-now-80"
+n_b0 = 1
+snr = 100                                 # its own starting SNR: µFA is noise-limited (the other presets start at [noise] snr)
+tensor = { bvalues = [100, 700, 1400, 2000], directions = [6, 6, 10, 16], encodings = ["LTE", "STE"] }
+
+# The noise a run starts with: the SNR at M0 (a full water voxel before relaxation) every preset starts at unless it
+# states its own.
+[noise]
+snr = 30
 
 # The tissue and the scanner: the field presets the page offers (T), the default field,
 # and whether a run starts with the tiers on. Tissue defaults come from dmipy-sim's white-matter catalogue at the

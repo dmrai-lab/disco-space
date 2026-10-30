@@ -318,3 +318,66 @@ def response_curves(true, estimated, note=""):
     axes[1].set_title("GM and CSF" + (f" ({note})" if note else ""), fontsize=9); axes[1].legend(fontsize=7)
     fig.tight_layout()
     return _image(fig)
+
+
+def tensor_maps(maps, crossing, z, label="A: "):
+    """A b-tensor run's maps at axial slice ``z``: FA (DTI on the linear rows) beside the microscopic FA, both 0 to 1
+    with the voxels the ground truth's strands cross in two or more directions (``crossing``, boolean on the grid)
+    outlined, and MD (um^2/ms)."""
+    plt = _mpl()
+    fig, axes = plt.subplots(1, 3, figsize=(11.0, 3.6))
+    cr = np.asarray(crossing, float)[:, :, z].T
+    for ax, key, title, kw in ((axes[0], "fa", "FA (DTI, linear rows)", dict(vmin=0, vmax=1, cmap="viridis")),
+                               (axes[1], "ufa", "µFA (linear vs spherical powder)", dict(vmin=0, vmax=1, cmap="viridis")),
+                               (axes[2], "md", "MD (µm²/ms)", dict(vmin=0, vmax=1.0, cmap="magma"))):
+        im = ax.imshow(np.asarray(maps[key], np.float64)[:, :, z].T, origin="lower", **kw)
+        if key != "md":
+            ax.contour(cr, levels=[0.5], colors="w", linewidths=0.6)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_title(label + title, fontsize=9)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+    fig.suptitle("white outline: voxels the ground truth's strands cross in two or more directions", fontsize=8)
+    return _image(fig)
+
+
+def powder_curve(maps, ijk, other=None, labels=("A", "B")):
+    """The powder-averaged signal of voxel ``ijk`` against b, linear vs spherical (``other``: B's maps, dashed)."""
+    plt = _mpl()
+    fig, ax = plt.subplots(figsize=(4.6, 3.4))
+    for m, ls, tag in ((maps, "-", labels[0]), (other, "--", labels[1])):
+        if m is None:
+            continue
+        b = [0.0] + list(m["bvals"])
+        for e, c in (("LTE", "C0"), ("STE", "C3")):
+            y = [1.0] + [float(m["powder"][(e, x)][tuple(ijk)]) for x in m["bvals"]]
+            ax.plot(b, y, ls + "o", color=c, ms=3, label=f"{tag} {e}")
+    ax.set_yscale("log"); ax.set_xlabel("b (s/mm²)"); ax.set_ylabel("powder S/S0")
+    ax.set_title(f"voxel {tuple(int(x) for x in ijk)}: µFA {float(maps['ufa'][tuple(ijk)]):.2f}, FA {float(maps['fa'][tuple(ijk)]):.2f}", fontsize=9)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    return _image(fig)
+
+
+def tensor_waveform(G, dt, gate, label):
+    """The class's three shapes as played (physical gradient, mT/m) over the echo time, the 180 marked."""
+    plt = _mpl()
+    t = np.arange(G.shape[0]) * dt * 1e3
+    fig, ax = plt.subplots(figsize=(7.5, 2.8))
+    for k, c in enumerate(AXIS_COLOURS):
+        ax.plot(t, G[:, k] * 1e3, color=c, lw=1.2, label=f"ψ{k + 1}")
+    flip = np.nonzero(np.diff(np.asarray(gate)) != 0)[0]
+    for f in flip:
+        ax.axvline(t[f] + 0.5 * (t[1] - t[0]), color="0.5", ls=":", lw=1)
+    ax.set_xlabel("t (ms)"); ax.set_ylabel("G (mT/m)"); ax.set_title(label, fontsize=9); ax.legend(fontsize=8, ncol=3)
+    return _image(fig)
+
+
+def map_picker(sl, scale, *, vmin=0.0, vmax=1.0, cmap="viridis"):
+    """A 2-D map ``sl`` (x, y) as an image ``scale`` pixels per voxel with y up and no margins, so a click's pixel names
+    its voxel exactly (``x // scale``, ``ny - 1 - y // scale``); NaN grey."""
+    from PIL import Image
+    import matplotlib
+    a = np.asarray(sl, np.float64).T[::-1]                       # rows top to bottom = y from high to low
+    rgba = matplotlib.colormaps[cmap]((np.clip(np.nan_to_num(a, nan=vmin), vmin, vmax) - vmin) / (vmax - vmin))
+    rgba[~np.isfinite(a)] = (0.5, 0.5, 0.5, 1.0)
+    img = (np.repeat(np.repeat(rgba[..., :3], int(scale), axis=0), int(scale), axis=1) * 255).astype(np.uint8)
+    return Image.fromarray(img)

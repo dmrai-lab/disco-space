@@ -72,7 +72,7 @@ def test_the_layout_is_the_replay_packs_replay_at_the_gates_voxels(layout, pack,
     t1 = time.perf_counter()
     for name in np.unique(meas.shape):
         rows = meas.shape == name
-        ref[:, rows] = R.replay_at(pk, voxels, layout.sequence(name, meas.bvals[rows], meas.dirs[rows]), tissue, scanner)
+        ref[:, rows] = R.replay_at(pk, voxels, layout.sequence(name, meas.bvals[rows], meas.dirs[rows], None if meas.encoding is None else meas.encoding[rows]), tissue, scanner)
     t_ref = time.perf_counter() - t1
     ref_S0 = ref[:, meas.b0].mean(1, keepdims=True)
     got = np.stack([dwi[tuple(v)] for v in voxels])

@@ -173,3 +173,7 @@ response_per_class = 5.6
 1 = 1.5                       # 36,605 seeds: 0.7 s
 2 = 3.5                       # 292,840 seeds: 1.9-2.1 s
 4 = 35.0                      # 2,342,720 seeds: 13.6-23.2 s
+
+# The noise a run starts with: the SNR at M0 every preset starts at.
+[noise]
+snr = 30

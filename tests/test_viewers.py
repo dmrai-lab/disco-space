@@ -79,3 +79,15 @@ def test_the_map_slice_draws_plain_and_diverging():
     vol = np.random.default_rng(0).normal(size=(6, 6, 3)); vol[0, 0] = np.nan
     assert V.map_slice(vol, 1, "t").size[0] > 100 and V.map_slice(vol, 1, "d", symmetric=True).size[0] > 100
     assert V.map_slice(np.full((6, 6, 3), np.nan), 1, "empty", symmetric=True).size[0] > 100
+
+
+def test_the_tensor_views_draw_maps_with_the_crossings_and_a_voxels_powder_curve():
+    """The b-tensor results: FA, muFA (crossings outlined) and MD on a slice; a voxel's powder signal against b for
+    A and, dashed, B."""
+    rng = np.random.default_rng(1)
+    bv = [100.0, 700.0, 1400.0, 2000.0]
+    pw = {(e, b): np.exp(-b * 1e-3 * (0.6 if e == "STE" else 0.5)) * np.ones((4, 4, 4)) for e in ("LTE", "STE") for b in bv}
+    m = dict(fa=rng.random((4, 4, 4)), ufa=rng.random((4, 4, 4)), md=rng.random((4, 4, 4)), powder=pw, bvals=bv)
+    cross = np.zeros((4, 4, 4), bool); cross[1:3, 1:3] = True
+    assert V.tensor_maps(m, cross, 2).size[0] > 0
+    assert V.powder_curve(m, (1, 1, 2), other=m).size[0] > 0

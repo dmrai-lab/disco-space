@@ -43,6 +43,8 @@ def test_each_class_plays_its_one_waveform():
     from space import classes as C
     u = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8], [0.0, 0.0, 1.0]])
     for name, sh in CFG["shapes"].items():
+        if C.kind(sh) == "tensor":                                     # its rows are level matrices: tests/test_tensor.py
+            continue
         b = np.array([500.0, 1000.0, 0.0]) if C.kind(sh) == "ogse" else np.array([1000.0, 3000.0, 0.0])
         seq = C.play(sh, b * 1e6, u)
         np.testing.assert_allclose(calc_b(seq), b * 1e6, rtol=1e-5, atol=1e3)
@@ -428,3 +430,19 @@ def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
         D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
     lay.layout.manifest["groups"]["g0"]["background"] = {"column": "bg_g0.npy"}
     D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
+
+
+def test_each_preset_starts_at_its_own_snr():
+    """The b-tensor preset starts at SNR 100 (µFA is noise-limited); every other preset at ``[noise] snr``."""
+    for name, p in CFG["presets"].items():
+        assert P.preset_snr(CFG, name) == (100.0 if "tensor" in p else float(CFG["noise"]["snr"])) and CFG["noise"]["snr"] == 30
+    assert P.preset_snr(CFG, "DiSCo 364") == 30.0
+
+
+def test_a_tractogram_writes_to_tck_and_reads_back(tmp_path):
+    """The .tck download: dmipy-tract's writer through dmipy-sim's at the pinned commits (their signatures agree)."""
+    from dmipy_sim.io.strands import read_tck
+    from dmipy_tract import Tractogram
+    t = Tractogram(np.random.default_rng(0).random((10, 3)).astype(np.float32), np.array([0, 4, 10]), np.array([0, 1]), np.zeros((2, 2), int))
+    t.to_tck(str(tmp_path / "t.tck"))
+    assert [len(s) for s in read_tck(str(tmp_path / "t.tck"), coordinate_unit_m=1e-3)] == [4, 6]

@@ -2,7 +2,7 @@
 
 From the Diffusion-Simulated Connectivity (DiSCo) dataset, Rafael-Patino J., Girard G., Truffet R., Pizzolato M.,
 Caruyer E., Thiran J.-P., "The Diffusion-Simulated Connectivity (DiSCo) dataset", Data in Brief 38 (2021) 107429,
-https://doi.org/10.1016/j.dib.2021.107429; data at https://doi.org/10.5281/zenodo.4634234. Licence CC BY 4.0.
+https://doi.org/10.1016/j.dib.2021.107429; data on Mendeley Data, https://doi.org/10.17632/fgf86jdfg6.1 (files checked by sha256 against the published release). Licence CC BY 4.0.
 
 | file | what |
 |---|---|
@@ -11,6 +11,6 @@ https://doi.org/10.1016/j.dib.2021.107429; data at https://doi.org/10.5281/zenod
 | `DiSCo_gradients.bvals`, `DiSCo_gradients_dipy.bvecs` | the dataset's 364-measurement gradient table (b in s/mm²), the "DiSCo 364" acquisition |
 | `DiSCo_Connectivity_Matrix_Strands_Count.txt` | ground truth: strands per region pair |
 | `DiSCo_Connectivity_Matrix_Cross-Sectional_Area.txt` | ground truth: total cross-sectional area per region pair |
-| `DiSCo_Strands_Trajectories.tck`, `DiSCo_Strands_Diameters.txt` | the 12,196 strands' centerlines (in units of the 25 µm voxel, i.e. the image grid) and inner diameters (mm): the ground-truth view |
+| `DiSCo_Strands_Diameters.txt` (the centrelines, `DiSCo_Strands_Trajectories.tck`, are read from `SubstrateCommons/disco-replay` `substrate/` at the pinned revision) | the 12,196 strands' centerlines (in units of the 25 µm voxel, i.e. the image grid) and inner diameters (mm): the ground-truth view |
 
 Unmodified copies of the dataset's DiSCo1 files, redistributed here under CC BY 4.0 so the Space is self-contained.

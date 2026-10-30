@@ -9,12 +9,14 @@ page's texts, the tissue panel of the white-matter catalogue, the regions, the g
 """
 from __future__ import annotations
 
+import functools
 import os
 import time
 
 import numpy as np
 
 from .. import pipeline as P
+from .. import tensor as T
 
 N_REGIONS = 16
 VOXEL_M = 25e-6                                          # DiSCo's voxel; the strands' coordinate unit
@@ -119,7 +121,8 @@ class Disco(P.Source):
             truth_tab="2 · ground truth",
             truth_labels=("the strands", "the ground-truth matrices"),
             stages={"replay": "replaying the grid from the stored walk", "noise": "adding Rician noise", "csd": "fitting CSD (order 8)",
-                    "track": "tracking from the sixteen regions", "score": "scoring the connectome"},
+                    "track": "tracking from the sixteen regions", "score": "scoring the connectome",
+                    "maps": "fitting FA, MD and µFA (the b-tensor run's maps)"},
             fixed=["the DiSCo phantom's geometry and its one stored walk", "the sixteen regions and the ground-truth matrices",
                    "the pulse timing classes of the layout (demo mode)"],
             accuracy=("A replay is a measured approximation of the stored walk, not a rendering: the walk's two halves are replayed "
@@ -222,7 +225,8 @@ class Disco(P.Source):
             out[f"SNR → {v}"] = ("snr", float(v))
         out["noise → off"] = ("snr", None)
         for name, sh in cfg["shapes"].items():
-            out[f"every shell's pulse timing → {name} ({sh['label']})"] = ("shape", name)
+            if sh.get("kind") != "tensor":               # the b-tensor class is its own acquisition (encodings, not shells)
+                out[f"every shell's pulse timing → {name} ({sh['label']})"] = ("shape", name)
         return out
 
     @classmethod
@@ -262,16 +266,21 @@ class Disco(P.Source):
 
     @classmethod
     def estimated_seconds(cls, cfg, protocol, *, density, knob, n_keys, ladder, responses=(), scanner=None):
-        """Measured on the pool at DiSCo 364 with every tier (#7, dmipy-sim#522/#523): the worker's start and the
-        payload's handoff 8 s, noise to scoring 8 s, the first replay 0.045 s per measurement (the tiles uploaded
-        inside the call), each further replay on the resident tiles 0.032 s per measurement (the ladder is three, B
-        one plus its 8 s of stages, a new field direction included), 10 s per extra tracker key; on a machine every
-        replay adds its delivery, ``[scanners] delivery_per_meas`` s per measurement (the delivered vectors of the
-        layout's live voxels on the host and their upload); times 1.3, within 30 and 480 s. DiSCo prepares nothing,
-        so ``responses`` is empty."""
+        """Measured on the pool (RTX PRO 6000 MIG 2g.48gb, the v2 layout streamed, every tier at 3 T, 2026-10-30): a
+        replay costs per measurement per stored term of its class (a PGSE, stimulated-echo or OGSE class 2, the
+        b-tensor class 6: :func:`space.classes.n_terms`), 0.05 s the first in a call (DiSCo 364: 32.4 s; the b-tensor
+        preset: 23.4 s) and 0.045 s each further one (the ladder is three, B one); the worker's start and the
+        payload's handoff 8 s, the stages after the replay 10 s (noise to scoring, or the b-tensor maps), B's 10 s
+        more, 10 s per extra tracker key; on a machine every replay adds its delivery, ``[scanners]
+        delivery_per_meas`` s per measurement; times 1.3, within 30 and 480 s. DiSCo prepares nothing, so
+        ``responses`` is empty."""
+        from .. import classes as C
         n = protocol.n_meas
-        replays = 1 + (3 if ladder else 0) + (1 if knob != P.NO_KNOB else 0)
-        secs = 16 + 0.045 * n + (3 * 0.032 * n if ladder else 0) + ((8 + 0.032 * n) if knob != P.NO_KNOB else 0) + 10 * (int(n_keys) - 1)
+        terms = sum(C.n_terms(cfg["shapes"][s.shape]) * s.n_dirs if s.shape in cfg["shapes"] else 2 * s.n_dirs for s in protocol.shells)
+        terms += C.n_terms(cfg["shapes"][protocol.shells[0].shape]) * protocol.n_b0 if protocol.shells[0].shape in cfg["shapes"] else 2 * protocol.n_b0
+        b = knob != P.NO_KNOB
+        replays = 1 + (3 if ladder else 0) + (1 if b else 0)
+        secs = 8 + 10 + 0.05 * terms + 0.045 * terms * (replays - 1) + (10 if b else 0) + 10 * (int(n_keys) - 1)
         if scanner is not None:
             secs += replays * float(cfg["scanners"]["delivery_per_meas"]) * n
         return int(min(480, max(30, 1.3 * secs)))
@@ -299,7 +308,7 @@ class Disco(P.Source):
         """The ground truth tab: a sample of the strands in 3-D with the region markers, and the two matrices."""
         from dmipy_sim.io.strands import read_tck, read_diameters
         from .. import viewers as V
-        strands = read_tck(os.path.join(P.DATA_DIR, "DiSCo_Strands_Trajectories.tck"), coordinate_unit_m=VOXEL_M)
+        strands = read_tck(strands_path(self.cfg), coordinate_unit_m=VOXEL_M)
         diameters = read_diameters(os.path.join(P.DATA_DIR, "DiSCo_Strands_Diameters.txt"), diameter_unit_m=1e-3)
         return (V.strands3d([s / VOXEL_M for s in strands], diameters, V.region_markers(self.regions), self.mask.shape),
                 V.ground_truth_matrix(self.gt_count, self.gt_area, P.connected_pairs(self.gt_count)))
@@ -343,6 +352,52 @@ class Disco(P.Source):
         return [pool, contact, fld]
 
 
+@functools.lru_cache(maxsize=2)
+def strands_path(cfg=None):
+    """The DiSCo strand centrelines (``.tck``, voxel units; CC BY 4.0): ``[data] strands`` in the replay dataset
+    (``[data] pack``'s repository) at ``[data] pack_revision``, fetched into the Hub cache once."""
+    from huggingface_hub import hf_hub_download
+    d = (cfg or P.config())["data"]
+    repo = "/".join(d["pack"][len("hf://"):].split("/")[:2])
+    return hf_hub_download(repo, d["strands"], repo_type="dataset", revision=d["pack_revision"])
+
+
+def strand_configuration(tck=None, shape=(40, 40, 40), *, angle_deg=30.0, share=0.10):
+    """The ground truth's fibre configuration per voxel from the released strand trajectories (voxel units):
+    ``(n_dirs, dispersion, length)`` -- the distinct strand directions crossing the voxel (the strands' length-weighted
+    mean tangents in it, clustered at ``angle_deg``, a direction counted when it carries at least ``share`` of the voxel's
+    strand length), ``1 - lambda_1 / trace`` of the length-weighted dyadic tensor of the tangents, and the strand length
+    in the voxel (voxel units)."""
+    from dmipy_sim.io.strands import read_tck
+    strands = read_tck(tck or strands_path(), coordinate_unit_m=1.0)
+    n_vox = int(np.prod(shape))
+    Tm = np.zeros((n_vox, 3, 3)); per = {}
+    for c in strands:
+        c = np.asarray(c, float)
+        if len(c) < 2:
+            continue
+        seg = np.diff(c, axis=0); mid = 0.5 * (c[1:] + c[:-1]); L = np.linalg.norm(seg, axis=1); ok = L > 0
+        t = seg[ok] / L[ok, None]; ijk = np.floor(mid[ok]).astype(int); inside = np.all((ijk >= 0) & (ijk < np.asarray(shape)), axis=1)
+        v = np.ravel_multi_index(ijk[inside].T, shape); w = L[ok][inside]; t = t[inside]
+        np.add.at(Tm, v, (t[:, :, None] * t[:, None, :]) * w[:, None, None])
+        for vox in np.unique(v):
+            k = v == vox
+            per.setdefault(int(vox), []).append((np.linalg.eigh(np.einsum("n,ni,nj->ij", w[k], t[k], t[k]))[1][:, -1], float(w[k].sum())))
+    ev = np.linalg.eigvalsh(Tm); tr = ev.sum(-1)
+    disp = np.where(tr > 0, 1.0 - ev[:, -1] / np.maximum(tr, 1e-30), np.nan)
+    ndirs = np.zeros(n_vox, int); cos = np.cos(np.radians(angle_deg))
+    for vox, items in per.items():
+        items = sorted(items, key=lambda x: -x[1]); total = sum(w for _, w in items); clusters = []
+        for d, w in items:
+            for cl in clusters:
+                if abs(d @ cl[0]) >= cos:
+                    cl[1] += w; break
+            else:
+                clusters.append([d, w])
+        ndirs[vox] = sum(1 for _, w in clusters if w >= share * total)
+    return ndirs.reshape(shape), disp.reshape(shape), tr.reshape(shape)
+
+
 PAIRS = np.triu_indices(N_REGIONS, 1)                # the 120 region pairs
 
 
@@ -380,7 +435,8 @@ class Layout(Disco):
         super().__init__(cfg)
         d = cfg["data"]
         uri = local or f"hf://{d['repo']}/{d['layout']}"
-        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=list(self.shapes))
+        names = list(self.shapes)
+        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=names)
         self.resident = P.resident(cfg)
         want = d.get("manifest_sha256")
         with open(os.path.join(self.layout.path, MANIFEST), "rb") as f:
@@ -388,12 +444,12 @@ class Layout(Disco):
         if want and got != want:
             raise ValueError(f"the layout at {uri} has manifest {got[:12]}, the config pins {want[:12]}")
         self.manifest_sha256 = got
-        missing = [s for s in self.shapes if s not in self.layout.partitions]
+        missing = [s for s in names if s not in self.layout.partitions]
         if missing:
             raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {list(self.layout.partitions)}")
         for name, sh in self.shapes.items():                 # each class's waveform is the stored partition's
             got_name, _ = self.layout.fit(C.template(sh), partition=name)
-            if not self.layout.partitions[name].is_constant and C.kind(sh) != "ogse":
+            if not self.layout.partitions[name].is_constant and C.kind(sh) not in ("ogse", "tensor"):
                 raise ValueError(f"class {name}: the layout stores shaped terms, the config a square-pulse {C.kind(sh)}")
         m = self.layout.manifest
         self.tiers = bool(m.get("tiers"))
@@ -439,10 +495,16 @@ class Layout(Disco):
             C.kind(self.shapes[name])
         return meas
 
-    def sequence(self, name, bvals, dirs):
-        """The rows on class ``name`` (b in s/mm^2) as the class's waveform at their amplitudes and directions."""
+    def sequence(self, name, bvals, dirs, encodings=None):
+        """The rows on class ``name`` (b in s/mm^2) as the class's waveform at their amplitudes and directions; on a
+        b-tensor class each row's ``encodings`` entry (``b0``, ``LTE``, ``STE``) about its direction."""
         from .. import classes as C
-        return C.play(self.shapes[name], np.asarray(bvals, np.float64) * 1e6, dirs)
+        sh = self.shapes[name]
+        if C.kind(sh) == "tensor":
+            if encodings is None:
+                raise ValueError(f"class {name} is a b-tensor class: its rows name their encodings")
+            return T._sequence(C.tensor_rows(sh, encodings, bvals, dirs))
+        return C.play(sh, np.asarray(bvals, np.float64) * 1e6, dirs)
 
     def delivered(self, name, seq, physics):
         """What the run's machine delivers at every voxel with rows for the class ``name`` playing ``seq``: the layout's
@@ -460,7 +522,7 @@ class Layout(Disco):
         b0 = physics.b0_direction if physics else P.B0_ALONG_Z
         for name in np.unique(meas.shape):
             rows = meas.shape == name
-            seq = self.sequence(name, meas.bvals[rows], meas.dirs[rows])
+            seq = self.sequence(name, meas.bvals[rows], meas.dirs[rows], None if meas.encoding is None else meas.encoding[rows])
             img, f = self.layout.image(seq, partition=str(name), backend=self.backend, resident=self.resident, tissue=tissue,
                                        scanner=scanner, b0_direction=b0, delivered=self.delivered(str(name), seq, physics))
             S[..., rows] = img * self.M0[..., None]       # the voxel's signal: its walkers' weight times the normalised one
@@ -499,7 +561,8 @@ class Layout(Disco):
 
     def warm(self):
         """DiSCo's own protocol replayed once at the default physics (every class it plays compiled at the row
-        counts the default run uses), then one direction on every other class. When the columns are not kept resident
+        counts the default run uses), then one direction on every other class (on a b-tensor class one row of each
+        encoding). When the columns are not kept resident
         (a pool that drops the device between calls), the padded host arrays are loaded into this process instead, so
         a forked worker inherits them and pays the transfer alone."""
         if not self.resident and self.backend == "torch":
@@ -508,9 +571,13 @@ class Layout(Disco):
         physics = self.default_physics()
         disco = disco_protocol(self.cfg)[0]
         self.replay(P.measurements(disco, self.shapes), physics)
-        rest = [name for name in self.shapes if name not in {s.shape for s in disco.shells}]
+        played = {s.shape for s in disco.shells}
+        rest = [n for n, sh in self.shapes.items() if n not in played and sh.get("kind") != "tensor"]
         if rest:
             self.replay(P.measurements(P.Protocol(tuple(P.Shell(name, 1000.0, 1) for name in rest), n_b0=1, name="warm"), self.shapes), physics)
+        for name in [n for n, sh in self.shapes.items() if sh.get("kind") == "tensor"]:     # a b-tensor class: one row per encoding
+            shells = tuple(P.Shell(name, 1000.0, 1, encoding=e) for e in ("LTE", "STE"))
+            self.replay(P.measurements(P.Protocol(shells, n_b0=1, name="warm"), self.shapes), physics)
 
     def accuracy(self, res=None):
         from .. import classes as C
@@ -588,7 +655,9 @@ class Columns(Disco):
         G = np.zeros((len(meas.bvals), C.N_T, 3), np.float32); tmpl = None
         for name in np.unique(meas.shape):
             rows = meas.shape == name
-            if name in self.shapes:
+            if name in self.shapes and C.kind(self.shapes[name]) == "tensor":
+                seq = T._sequence(C.tensor_rows(self.shapes[name], meas.encoding[rows], meas.bvals[rows], meas.dirs[rows]))
+            elif name in self.shapes:
                 seq = C.play(self.shapes[name], meas.bvals[rows] * 1e6, meas.dirs[rows])
             else:
                 seq = d.pgse(meas.dirs[rows].tolist(), meas.delta[rows], meas.Delta[rows], bvalues=meas.bvals[rows] * 1e6, TE=TE,

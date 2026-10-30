@@ -1,8 +1,8 @@
 """The DiSCo source: the DiSCo phantom's 40^3 grid replayed from its stored walk, tracked from the sixteen regions
 and scored against the dataset's strand-count and cross-sectional-area matrices (CC BY 4.0, ``data/SOURCE.md``).
 
-Two sources replay the same walk. :class:`Layout` (demo mode) is dmipy-sim's shape-moment layout: the DiSCo replay
-pack contracted once per stored pulse timing ("class"), so a protocol on those classes at any b-values, directions,
+Two sources replay the same walk. :class:`Layout` (demo mode) is dmipy-sim's time-segment layout: the DiSCo walk
+contracted once per stored waveform ("class"), so a protocol on those classes at any b-values, directions,
 tissue and field is an elementwise kernel on device-resident rows, in seconds. :class:`Columns` (full mode) is the
 columnar replay pack itself, read once per run for any pulse timing, in minutes. Both are a :class:`Disco`: the
 page's texts, the tissue panel of the white-matter catalogue, the regions, the ground truth and the GPU budget.
@@ -363,48 +363,64 @@ def compare(a, b):
 
 
 class Layout(Disco):
-    """Demo mode: dmipy-sim's shape-moment layout (``dmipy_sim.replay.shape_moments``) at the config's dataset
-    revision, or a local copy; every stored class's timing is the config's, and a tissue needs the layout's tiers."""
+    """Demo mode: dmipy-sim's time-segment layout (``dmipy_sim.replay.time_segments``) at the config's dataset revision,
+    or a local copy. Every stored class is one waveform (:mod:`space.classes`), checked at load to be the layout's
+    partition of that name; a shell plays it at its b-values and directions."""
     mode = "demo"
 
     @classmethod
     def load(cls, cfg, *, local=None):
-        """The layout at ``local``, ``DISCO_MOMENTS``, or the config's dataset revision on the Hub."""
-        return cls(cfg, local=local or os.environ.get("DISCO_MOMENTS"))
+        """The layout at ``local``, ``DISCO_LAYOUT``, or the config's dataset revision on the Hub."""
+        return cls(cfg, local=local or os.environ.get("DISCO_LAYOUT"))
 
     def __init__(self, cfg, *, local=None):
-        from dmipy_sim.replay.shape_moments import ShapeMoments
+        import hashlib
+        from dmipy_sim.replay.time_segments import MANIFEST, TimeSegmentLayout
+        from .. import classes as C
         super().__init__(cfg)
         d = cfg["data"]
-        uri = local or f"hf://{d['repo']}/{d['moments']}"
-        self.moments = ShapeMoments.open(uri, revision=d.get("revision") or None) if uri.startswith("hf://") else ShapeMoments(uri)
+        uri = local or f"hf://{d['repo']}/{d['layout']}"
+        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=list(self.shapes))
         self.resident = P.resident(cfg)
-        want = d.get("source_manifest_sha256")
-        got = self.moments.manifest["source"]["manifest_sha256"]
+        want = d.get("manifest_sha256")
+        with open(os.path.join(self.layout.path, MANIFEST), "rb") as f:
+            got = hashlib.sha256(f.read()).hexdigest()
         if want and got != want:
-            raise ValueError(f"the layout at {uri} was contracted from columnar manifest {got[:12]}, the config pins {want[:12]}")
-        missing = [s for s in self.shapes if s not in self.moments.shapes]
+            raise ValueError(f"the layout at {uri} has manifest {got[:12]}, the config pins {want[:12]}")
+        self.manifest_sha256 = got
+        missing = [s for s in self.shapes if s not in self.layout.partitions]
         if missing:
-            raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {self.moments.shapes}")
-        for name, t in self.shapes.items():
-            enc = self.moments.manifest["shapes"][name].get("encoding") or {}
-            for k in ("delta", "Delta", "TE"):
-                v = enc.get(k)
-                v = v[0] if isinstance(v, list) and v else v
-                if v is not None and abs(float(v) - float(t[k])) > 1e-9:
-                    raise ValueError(f"class {name}: the layout's {k} is {v} s, the config's {t[k]} s")
-        self.tiers = bool(self.moments.manifest.get("tiers"))
-        self.M0 = None                                   # the bare b = 0 map (every voxel's walker weight): set by warm()
-        if self.tiers:                                   # the pools with walkers are the spec's first n_pools ids
-            t = self.moments.manifest["tiers"]
+            raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {list(self.layout.partitions)}")
+        for name, sh in self.shapes.items():                 # each class's waveform is the stored partition's
+            got_name, _ = self.layout.fit(C.template(sh), partition=name)
+            if not self.layout.partitions[name].is_constant and C.kind(sh) != "ogse":
+                raise ValueError(f"class {name}: the layout stores shaped terms, the config a square-pulse {C.kind(sh)}")
+        m = self.layout.manifest
+        self.tiers = bool(m.get("tiers"))
+        self.M0 = self.layout.weights.sum(1).reshape(self.layout.grid.shape)   # every voxel's walker weight: the bare b = 0 signal
+        if self.tiers:                                   # the pools with walkers: the pool ids of the rows that weigh something
+            t = m["tiers"]
             spec_pools = sorted(t["substrate"]["pools"], key=lambda q: q["id"]) if t.get("substrate") else []
-            seeded = tuple(q["name"] for q in spec_pools[:int(t["pools"])])
+            ids = self.seeded_pool_ids()
+            seeded = tuple(q["name"] for q in spec_pools if q["id"] in ids)
             if set(seeded) != set(self.pools):
                 raise ValueError(f"the layout's seeded pools are {seeded}, the config's [physics] pools {self.pools}")
-            self.unseeded = tuple(q["name"] for q in spec_pools[int(t["pools"]):])
-        self.check_grid(self.moments.grid.shape, "the layout")
+            self.unseeded = tuple(q["name"] for q in spec_pools if q["id"] not in ids)
+        self.check_grid(self.layout.grid.shape, "the layout")
+
+    def seeded_pool_ids(self, chunk=1 << 16):
+        """The pool ids of the layout's rows with weight (a padding row weighs nothing), read once in chunks of tiles."""
+        w = self.layout._column("w"); pool = self.layout._column("pool"); ids = set()
+        for s in range(0, self.layout.n_tiles, chunk):
+            q = np.asarray(pool[s:s + chunk]); ids |= set(np.unique(q[np.asarray(w[s:s + chunk]) > 0]).tolist())
+        return ids
+
+    def background(self, name):
+        """Whether the class's sequence group carries the background vectors a magnet's own gradient needs."""
+        return bool(self.layout.manifest["groups"][self.layout.manifest["partitions"][name]["group"]].get("background"))
 
     def validate(self, protocol, physics):
+        from .. import classes as C
         meas = P.measurements(protocol, self.shapes)
         if physics and not physics.bare and not self.tiers:
             raise ValueError("this layout holds bare diffusion only: switch the tissue panel off")
@@ -412,21 +428,29 @@ class Layout(Disco):
             raise ValueError(f"the tissue names the pools {physics.pools}; this layout's are {self.pools}")
         if physics and physics.scanner is not None:
             L = P.limits(physics.scanner)
-            if L.has_field_law and not self.moments.background:
-                raise ValueError(f"the {physics.scanner}'s own gradient needs the layout's background moments, and this layout has "
-                                 "none (dmipy_sim.replay.shape_moments.stamp_background adds them in one pass)")
-            if L.has_transmit_profile and any("rf" not in self.moments.manifest["shapes"][n] for n in np.unique(meas.shape)):
-                raise ValueError(f"the {physics.scanner}'s transmit scale needs the classes' RF schedules, which this layout does not "
-                                 "record (stamp_background records them)")
+            shaped = [n for n in np.unique(meas.shape) if not self.layout.partitions[n].is_constant]
+            if shaped:
+                raise ValueError(f"a machine's delivered gradient is one vector per constant segment, and the classes {shaped} are "
+                                 "shaped waveforms (an OGSE): choose the ideal scanner for them")
+            if L.has_field_law and not all(self.background(n) for n in np.unique(meas.shape)):
+                raise ValueError(f"the {physics.scanner}'s own gradient needs the layout's background vectors, and this layout "
+                                 "lacks them for a class of this run")
+        for name in np.unique(meas.shape):
+            C.kind(self.shapes[name])
         return meas
 
-    def delivered(self, name, bvals, dirs, physics):
-        """What the run's machine delivers at every voxel with rows for the class ``name`` at ``bvals`` (s/m^2) along
-        ``dirs``: the layout's :meth:`~dmipy_sim.replay.shape_moments.ShapeMoments.delivery` with the grid's centre at
-        the physics' offset; None on the ideal scanner."""
+    def sequence(self, name, bvals, dirs):
+        """The rows on class ``name`` (b in s/mm^2) as the class's waveform at their amplitudes and directions."""
+        from .. import classes as C
+        return C.play(self.shapes[name], np.asarray(bvals, np.float64) * 1e6, dirs)
+
+    def delivered(self, name, seq, physics):
+        """What the run's machine delivers at every voxel with rows for the class ``name`` playing ``seq``: the layout's
+        :meth:`~dmipy_sim.replay.time_segments.TimeSegmentLayout.delivery` with the grid's centre at the physics'
+        offset; None on the ideal scanner."""
         if physics is None or physics.scanner is None:
             return None
-        return self.moments.delivery(name, bvals, dirs, P.limits(physics.scanner), self.moments.grid.centred_at(physics.offset_m))
+        return self.layout.delivery(seq, P.limits(physics.scanner), self.layout.grid.centred_at(physics.offset_m), partition=name)
 
     def replay(self, meas, physics=None, prepared=None):
         t0 = time.perf_counter()
@@ -436,36 +460,34 @@ class Layout(Disco):
         b0 = physics.b0_direction if physics else P.B0_ALONG_Z
         for name in np.unique(meas.shape):
             rows = meas.shape == name
-            S[..., rows], f = self.moments.image(name, meas.bvals[rows] * 1e6, meas.dirs[rows], backend=self.backend,
-                                                 resident=True, tissue=tissue, scanner=scanner, b0_direction=b0,
-                                                 delivered=self.delivered(name, meas.bvals[rows] * 1e6, meas.dirs[rows], physics))
-            floor = np.fmax(floor, f)                    # resident within a run: release() drops the device copies after it
-        if self.M0 is None:                              # the bare b = 0 map: the walker weight of every voxel
-            self.M0 = self.moments.image(meas.shape[0], np.zeros(1), np.array([P.B0_ALONG_Z]), backend=self.backend, resident=True)[0][..., 0]
+            seq = self.sequence(name, meas.bvals[rows], meas.dirs[rows])
+            img, f = self.layout.image(seq, partition=str(name), backend=self.backend, resident=self.resident, tissue=tissue,
+                                       scanner=scanner, b0_direction=b0, delivered=self.delivered(str(name), seq, physics))
+            S[..., rows] = img * self.M0[..., None]       # the voxel's signal: its walkers' weight times the normalised one
+            floor = np.fmax(floor, f)
         dwi, factor = P.s0_normalised(S, meas.b0, self.M0)
         return dwi, floor, factor, time.perf_counter() - t0
 
     def release(self):
         if not self.resident:
-            self.moments.release()
+            self.layout.release()
 
     def ingredients(self, meas, physics=None, prepared=None):
         """What each tier multiplies into the sum, per voxel, for the run's first class (the layout's
-        :meth:`~dmipy_sim.replay.shape_moments.ShapeMoments.tier_maps` on the device columns the replay left
-        resident): ``intra_fraction`` (the walker weight in the intra-axonal pool over the voxel's),
-        ``wall_contact_um`` (the walkers' boundary local time l under the class's gate, a length; the layout stores
-        it signed as the exponent's term, -l, so the contact tier's weight is exp(rho2 c / D) = exp(-rho2 l / D)),
-        ``contact_survival`` (that factor at the run's rho2, None without the contact tier), ``field_rad`` (the spread
-        over the voxel's walkers of the dephasing phase the sheath's field gives them by the echo at the run's field
-        and direction, the exact per-walker phase the kernel applies, in radians; None without the field tier), and
-        ``D_walk`` (m^2/s)."""
+        :meth:`~dmipy_sim.replay.time_segments.TimeSegmentLayout.tier_maps`): ``intra_fraction`` (the walker weight in
+        the intra-axonal pool over the voxel's), ``wall_contact_um`` (the walkers' boundary local time l under the
+        class's gate, a length; the layout stores it signed as the exponent's term, -l, so the contact tier's weight is
+        exp(rho2 c / D) = exp(-rho2 l / D)), ``contact_survival`` (that factor at the run's rho2, None without the
+        contact tier), ``field_rad`` (the spread over the voxel's walkers of the dephasing phase the sheath's field
+        gives them by the echo at the run's field and direction, the exact per-walker phase the kernel applies, in
+        radians; None without the field tier), and ``D_walk`` (m^2/s)."""
         if not self.tiers:
             return None
         tissue, scanner = P.tissue_and_scanner(physics, self.unseeded)
         b0 = physics.b0_direction if physics else P.B0_ALONG_Z
-        maps = self.moments.tier_maps(str(meas.shape[0]), tissue, scanner, backend=self.backend, resident=True, b0_direction=b0)
+        maps = self.layout.tier_maps(str(meas.shape[0]), tissue, scanner, backend=self.backend, resident=self.resident, b0_direction=b0)
         contact = maps["contact"]
-        return dict(D_walk=float(self.moments.manifest["tiers"]["D_walk"]), intra_fraction=maps["pool"]["intra"],
+        return dict(D_walk=float(self.layout.manifest["tiers"]["D_walk"]), intra_fraction=maps["pool"]["intra"],
                     wall_contact_um=None if contact is None else -contact * 1e6,
                     contact_survival=maps["contact_weight"] if (physics and physics.contact) else None,
                     field_rad=maps["phase_std"] if (physics and physics.field) else None)
@@ -477,12 +499,11 @@ class Layout(Disco):
 
     def warm(self):
         """DiSCo's own protocol replayed once at the default physics (every class it plays compiled at the row
-        counts the default run uses), then one direction on every other class (its tier group's terms contracted
-        and on the device). When the tiles are not kept resident (a pool that drops the device between calls), the
-        padded host arrays are loaded into this process instead, so a forked worker inherits them and pays the
-        transfer alone."""
-        if not self.resident:
-            self.moments.preload(list(self.shapes))
+        counts the default run uses), then one direction on every other class. When the columns are not kept resident
+        (a pool that drops the device between calls), the padded host arrays are loaded into this process instead, so
+        a forked worker inherits them and pays the transfer alone."""
+        if not self.resident and self.backend == "torch":
+            self.layout.preload(list(self.shapes))
             return
         physics = self.default_physics()
         disco = disco_protocol(self.cfg)[0]
@@ -492,18 +513,22 @@ class Layout(Disco):
             self.replay(P.measurements(P.Protocol(tuple(P.Shell(name, 1000.0, 1) for name in rest), n_b0=1, name="warm"), self.shapes), physics)
 
     def accuracy(self, res=None):
-        m = self.moments.manifest; src = m["source"]
-        rows = [["temporal bands kept (K)", str(m["K"])],
-                ["band error at the built amplitude (worst class)", f"{m['band_error']:.2e}"],
-                ["band tolerance (× the pack's floor)", f"{m['tol']:g}"],
-                ["source pack", str(src.get("pack"))],
-                ["source pack's certified median floor", f"{src['floor']:.4g}"],
-                ["source manifest sha256", src["manifest_sha256"][:16]],
-                ["layout written by", f"{m.get('code', {}).get('commit', '?')[:12]} on {m.get('created', '?')}"],
-                ["pulses", "square (slew rate ∞), one TE per class"],
+        from .. import classes as C
+        m = self.layout.manifest; src = m["source"]; cert = m["certificate"]; env = src["envelope"]
+        rows = [["source", f"the {src['kind']}'s coefficients ({len(src.get('blocks') or [])} blocks); classes appended from the "
+                           "quantised pack carry its quantisation in their own term" if any(p.get("source") for p in m["partitions"].values())
+                           else f"the {src['kind']}'s coefficients ({len(src.get('blocks') or [])} blocks)"],
+                ["floor target (the words' budget)", f"{float(src['floor_target']):.4g}"],
+                ["layout's worst signal error over its classes and tiers (err_max)", f"{float(cert['err_max']):.2e}"],
+                ["envelope: gradient per axis / B0 / ρ₂/D", f"{float(env['G_max']) * 1e3:.0f} mT/m ({env.get('scanner') or env.get('bound')}) / "
+                                                            f"{float(env['B0_max_T']):g} T / {float(env['rho2_over_D_max']):g} 1/m"],
+                ["layout manifest sha256", self.manifest_sha256[:16]],
+                ["layout written by", f"{(m.get('code') or {}).get('commit') or '?'} on {m.get('created', '?')}"],
+                ["pulses", "one waveform per class: square lobes (slew rate ∞) for the PGSE and stimulated-echo classes, "
+                           "the cosine OGSE with its 200 T/m/s edges as built at b = 1000"],
                 ["tiers stored", "pool, contact, field" if self.tiers else "none (bare diffusion only)"],
-                ["background moments (a magnet's own gradient)", "stored, certified to {:g} mT/m".format(self.moments.background["amplitude"] * 1e3)
-                 if self.moments.background else "not stored: a machine with its own gradient is refused"]]
+                ["background vectors (a magnet's own gradient)", "stored, certified to {:g} mT/m".format(float(src["background_amplitude"]) * 1e3)
+                 if any(g.get("background") for g in m["groups"].values()) else "not stored: a machine with its own gradient is refused"]]
         if res is not None and res.physics is not None and res.physics.scanner is not None:
             rows.append(["scanner", f"{res.physics.scanner}, the phantom's centre at "
                                     f"({', '.join(f'{x * 100:.1f}' for x in res.physics.offset_m)}) cm from isocentre: every catalogued term "
@@ -511,17 +536,17 @@ class Layout(Disco):
         rows += super().accuracy(res)
         if res is not None:
             for name in np.unique(res.meas.shape):
-                sh = m["shapes"][name]; enc = sh.get("encoding") or {}
-                first = {k: (v[0] if isinstance(v, list) and v else v) for k, v in enc.items()}
-                rows.append([f"class {name}", f"δ {first.get('delta')} / Δ {first.get('Delta')} / TE {first.get('TE')} s, "
-                                              f"built at {float(sh.get('amplitude_built') or 0) * 1e3:.0f} mT/m, pathway amplitude {sh.get('pathway') or 1}"])
+                p = m["partitions"][str(name)]
+                rows.append([f"class {name}", f"{C.describe(self.shapes[str(name)])}, TE {float(self.shapes[str(name)].get('TE', 0.0535)) * 1e3:g} ms; "
+                                              f"{4 * int(p['n_words'])} B per walker, rounding variance {float(p['rounding']['variance']):.2e} rad²"])
         return rows
 
 
 class Columns(Disco):
     """Full mode: the columnar replay pack (:class:`dmipy_sim.replay.columnar.ColumnarPack`) at
-    :func:`space.pipeline.columns_uri`, read once per run: one ScannerSequence per run (one echo time, one pulse kind, square
-    pulses), the tissue and field of the run, the field along the pack's z."""
+    :func:`space.pipeline.columns_uri`, read once per run: one ScannerSequence per run (one echo time, one RF schedule;
+    the stored classes' waveforms, square pulses for a free timing), the tissue and field of the run, the field along
+    the pack's z."""
     mode = "full"
     RATE = {True: 45e6, False: 500e6}                # bytes/s read from the Hub, from a local disk
 
@@ -534,15 +559,17 @@ class Columns(Disco):
         self.remote = self.uri.startswith("hf://")
 
     def kinds(self, meas):
-        """The pulse kinds (``pgse`` / ``pgste``) of the classes the rows play; a free timing is PGSE."""
-        return sorted({self.shapes[n].get("kind", "pgse") if n in self.shapes else "pgse" for n in np.unique(meas.shape)})
+        """The pulse kinds (``pgse`` / ``pgste`` / ``ogse``) of the classes the rows play; a free timing is PGSE."""
+        from .. import classes as C
+        return sorted({C.kind(self.shapes[n]) if n in self.shapes else "pgse" for n in np.unique(meas.shape)})
 
     def validate(self, protocol, physics):
         meas = P.measurements(protocol, self.shapes)
         if len(np.unique(np.round(meas.TE, 9))) != 1:
             raise ValueError("full mode replays one echo time per run")
-        if len(self.kinds(meas)) != 1:
-            raise ValueError("full mode replays one pulse kind (PGSE or stimulated echo) per run")
+        kinds = self.kinds(meas)
+        if len(kinds) != 1 and not set(kinds) <= {"pgse", "ogse"}:
+            raise ValueError("full mode replays one RF schedule per run (spin echoes, or a stimulated echo)")
         if physics and not physics.along_z:
             raise ValueError("full mode replays the field along z only")
         if physics and physics.scanner is not None:
@@ -551,15 +578,25 @@ class Columns(Disco):
         return meas
 
     def sequence(self, meas):
-        """The one ScannerSequence of the measurements: square pulses, every row's own delta / Delta at the rows'
-        common TE; a stimulated echo stores for TM = Delta - delta between 90° pulses."""
+        """The one ScannerSequence of the measurements, rows in order: a stored class's rows play its waveform
+        (:mod:`space.classes`, the layout's own), a free shell square PGSE lobes at its delta / Delta, all at the rows'
+        common TE on the layout's grid."""
         import dmipy_sim as d
+        from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+        from .. import classes as C
         TE = float(np.unique(np.round(meas.TE, 9))[0])
-        kind, = self.kinds(meas)
-        if kind == "pgste":
-            return d.pgste(meas.dirs.tolist(), meas.delta, meas.Delta - meas.delta, bvalues=meas.bvals * 1e6, n_t=1000,
-                           slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-        return d.pgse(meas.dirs.tolist(), meas.delta, meas.Delta, bvalues=meas.bvals * 1e6, TE=TE, n_t=1000, slew_rate=np.inf)
+        G = np.zeros((len(meas.bvals), C.N_T, 3), np.float32); tmpl = None
+        for name in np.unique(meas.shape):
+            rows = meas.shape == name
+            if name in self.shapes:
+                seq = C.play(self.shapes[name], meas.bvals[rows] * 1e6, meas.dirs[rows])
+            else:
+                seq = d.pgse(meas.dirs[rows].tolist(), meas.delta[rows], meas.Delta[rows], bvalues=meas.bvals[rows] * 1e6, TE=TE,
+                             n_t=C.N_T, slew_rate=np.inf)
+            if tmpl is not None and (seq.dt != tmpl.dt or seq.rf.to_dicts() != tmpl.rf.to_dicts()):
+                raise ValueError("full mode replays one RF schedule and grid per run")
+            tmpl = seq; G[rows] = np.asarray(seq.G, np.float32)
+        return ScannerSequence(G=G, dt=tmpl.dt, rf=tmpl.rf, readout=tmpl.readout)
 
     def plan(self, meas, physics=None):
         """What the replay will read (the pack's plan: bands, modes, tiers, rows, bytes) and ``estimated_seconds``
@@ -583,7 +620,7 @@ class Columns(Disco):
         m = self.pack.meta
         rows = [["source pack", str(m.get("id"))], ["source pack's certified median floor", f"{self.pack.floor:.4g}"],
                 ["bands kept", str(self.pack.K)], ["band tolerance (× the pack's floor)", f"{P.BAND_TOL:g}"],
-                ["pulses", "square (slew rate ∞), one TE and one pulse kind per run"]]
+                ["pulses", "the stored classes' waveforms, square (slew rate ∞) for a free timing; one TE and one RF schedule per run"]]
         plan = getattr(self, "last_plan", None)
         if plan:
             rows.append(["last replay read", f"{plan.get('rows', 0):,} rows, {plan.get('bytes', 0) / 1e9:.1f} GB, bands {plan.get('K')}, modes {plan.get('modes')}"])

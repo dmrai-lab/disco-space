@@ -13,10 +13,47 @@ def test_the_config_names_every_shell_and_preset_shape():
     shapes = set(CFG["shapes"])
     assert {s["shape"] for s in CFG["disco"]["shells"]} <= shapes
     for name, preset in CFG["presets"].items():
-        assert {s["shape"] for s in preset["shells"]} <= shapes, name
+        assert preset["shape"] in shapes, name
         assert P.preset_protocol(CFG, name).name == name
     for s in CFG["shapes"].values():
         assert 0 < s["delta"] < s["Delta"] < s["TE"]
+
+
+#: the paper's flagship acquisitions (experiments/disco/disco_acq.py): b = 0 rows, shells (b, directions), class
+FLAGSHIP = {"clinical b1000 x 30": (3, [(1000, 30)], "d12-D24"), "research 3-shell x 90": (9, [(1000, 90), (2000, 90), (3000, 90)], "d17-D30"),
+            "Connectome 2.0 b6000 x 60": (6, [(6000, 60)], "d8-D20"), "cosine OGSE 50 Hz b1000 x 60": (6, [(1000, 60)], "cos-f50-T20")}
+
+
+def test_the_presets_are_the_papers_flagship_tables():
+    """Every preset is its stored gradient table, the paper's own (data/protocols/, the same files the paper replays):
+    its b = 0 rows first, then each shell's directions, every row on the preset's class."""
+    assert set(FLAGSHIP) <= set(CFG["presets"])
+    for name, (n_b0, shells, shape) in FLAGSHIP.items():
+        p = P.preset_protocol(CFG, name)
+        assert p.n_b0 == n_b0 and [(s.b, s.n_dirs) for s in p.shells] == shells and {s.shape for s in p.shells} == {shape}
+        m = P.measurements(p, CFG["shapes"])
+        np.testing.assert_allclose(np.linalg.norm(m.dirs, axis=1), 1.0, atol=1e-6)
+
+
+def test_each_class_plays_its_one_waveform():
+    """A class's rows are its one shape scaled to each row's b along each row's direction: the b of every row is its
+    own; a square PGSE class needs the textbook amplitude; the OGSE class keeps the 200 T/m/s edges of its b = 1000
+    build at every b (the shape is fixed), a b = 0 row plays nothing."""
+    from dmipy_sim.acquisition.waveforms import calc_b
+    from space import classes as C
+    u = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8], [0.0, 0.0, 1.0]])
+    for name, sh in CFG["shapes"].items():
+        b = np.array([500.0, 1000.0, 0.0]) if C.kind(sh) == "ogse" else np.array([1000.0, 3000.0, 0.0])
+        seq = C.play(sh, b * 1e6, u)
+        np.testing.assert_allclose(calc_b(seq), b * 1e6, rtol=1e-5, atol=1e3)
+        G = np.asarray(seq.G, np.float64)
+        assert not G[2].any()
+        if C.kind(sh) == "pgse":
+            assert abs(C.amplitude(sh, 1000) / P.gradient_needed(1000, sh["delta"], sh["Delta"]) - 1) < 0.02, name
+    sh = CFG["shapes"]["cos-f50-T20"]
+    G = np.abs(np.asarray(C.play(sh, [0.5e9, 1e9], u[:2]).G, np.float64)).max(axis=2)
+    np.testing.assert_allclose(G[0] / G[0].max(), G[1] / G[1].max(), atol=1e-6)        # one shape at both b
+    assert 0.2 < C.amplitude(sh, 1000) < 0.3                                             # 0.25 T/m: a 50 Hz cosine is weak in b
 
 
 def test_a_protocols_measurements_are_its_rows_in_order():
@@ -122,9 +159,9 @@ def test_the_volumes_round_trip(tmp_path):
 
 def test_the_backend_and_residency_come_from_the_config_or_the_environment(monkeypatch):
     monkeypatch.delenv("DISCO_BACKEND", raising=False); monkeypatch.delenv("DISCO_RESIDENT", raising=False)
-    assert P.backend(CFG) == CFG["compute"]["backend"] == "jax" and P.resident(CFG) is True
-    monkeypatch.setenv("DISCO_BACKEND", "torch"); monkeypatch.setenv("DISCO_RESIDENT", "0")
-    assert P.backend(CFG) == "torch" and P.resident(CFG) is False
+    assert P.backend(CFG) == CFG["compute"]["backend"] == "jax" and P.resident(CFG) is False
+    monkeypatch.setenv("DISCO_BACKEND", "torch"); monkeypatch.setenv("DISCO_RESIDENT", "1")
+    assert P.backend(CFG) == "torch" and P.resident(CFG) is True
     monkeypatch.setenv("DISCO_BACKEND", "numpy")
     with pytest.raises(ValueError, match="backend"):
         P.backend(CFG)
@@ -268,28 +305,30 @@ def test_floor_stats_are_over_the_voxels_with_signal():
 
 
 def test_the_layout_at_the_pinned_revision_holds_the_configs_classes_and_tiers():
-    """The manifest the Space will download: every [shapes] class with the config's timing, and the tiers when the
-    tissue panel starts on (needs the Hub; skipped offline)."""
+    """The manifest the Space will download: every [shapes] class is a stored partition whose terms are that class's
+    waveform (its template fits them), and the tiers when the tissue panel starts on (needs the Hub; skipped offline)."""
+    import hashlib
     import json
+    from dmipy_sim.replay.time_segments import Partition, Shape
+    from space import classes as C
     hf = pytest.importorskip("huggingface_hub")
     d = CFG["data"]
     import requests
     from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError, OfflineModeIsEnabled
     try:
-        path = hf.hf_hub_download(d["repo"], f"{d['moments']}/manifest.json", repo_type="dataset", revision=d["revision"])
+        path = hf.hf_hub_download(d["repo"], f"{d['layout']}/manifest.json", repo_type="dataset", revision=d["revision"])
     except (requests.ConnectionError, HfHubHTTPError, LocalEntryNotFoundError, OfflineModeIsEnabled) as e:   # offline, or the Hub unreachable
         pytest.skip(f"the Hub is not reachable: {e!r}"[:120])
-    with open(path) as f:
-        m = json.load(f)
-    assert m["source"]["manifest_sha256"] == d["source_manifest_sha256"]
-    missing = [c for c in CFG["shapes"] if c not in m["columns"]]
+    raw = open(path, "rb").read(); m = json.loads(raw)
+    if d.get("manifest_sha256"):
+        assert hashlib.sha256(raw).hexdigest() == d["manifest_sha256"]
+    missing = [c for c in CFG["shapes"] if c not in m["partitions"]]
     assert not missing, f"the layout at {d['revision'][:12]} lacks {missing}"
-    for name, t in CFG["shapes"].items():
-        enc = m["shapes"][name].get("encoding") or {}
-        for k in ("delta", "Delta", "TE"):
-            v = enc.get(k); v = v[0] if isinstance(v, list) else v
-            if v is not None:
-                assert abs(v - t[k]) < 1e-9, (name, k, v, t[k])
+    for name, sh in CFG["shapes"].items():
+        p = m["partitions"][name]
+        part = Partition(name, tuple(tuple(t["t"]) for t in p["segments"]), tuple(int(t["gate"]) for t in p["segments"]),
+                         tuple(Shape.from_meta(t["shape"], name) for t in p["segments"]))
+        part.levels(C.template(sh))                                       # refused by name unless the waveform is the class's
     if CFG["physics"]["default_on"]:
         assert m.get("tiers"), "the tissue panel starts on but the layout has no tiers"
 
@@ -328,7 +367,7 @@ def test_the_ingredients_are_the_layouts_tier_maps_in_the_pages_units():
             calls.append((shape, tissue is not None, scanner, backend, resident, tuple(b0_direction)))
             return dict(pool={"intra": np.full((2, 1, 1), 0.4), "extra": np.full((2, 1, 1), 0.6)}, contact=np.array([[[-2e-5]], [[np.nan]]]),
                         contact_weight=np.full((2, 1, 1), 0.9), phase=np.zeros((2, 1, 1)), phase_std=np.full((2, 1, 1), 0.1))
-    lay = D.Layout.__new__(D.Layout); lay.moments = _M(); lay.tiers = True; lay.backend = "torch"; lay.unseeded = ("myelin",)
+    lay = D.Layout.__new__(D.Layout); lay.layout = _M(); lay.tiers = True; lay.backend = "torch"; lay.unseeded = ("myelin",); lay.resident = True
     meas = P.measurements(P.Protocol((P.Shell("d12-D24", 1000, 6),), n_b0=1), P.config()["shapes"])
     ph = P.Physics.at(3.0)
     out = D.Layout.ingredients(lay, meas, ph)
@@ -344,27 +383,37 @@ def test_the_ingredients_are_the_layouts_tier_maps_in_the_pages_units():
 
 
 def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
-    """On a stand-in layout: the ideal scanner asks the image for the commanded acquisition (no delivery); a machine
-    asks the layout's delivery for every class at the machine's catalogue entry and the grid centred at the physics'
-    offset, and hands it to that class's image; a machine with its own gradient on a layout without background moments,
-    and with a transmit law on one without RF schedules, is refused by name."""
+    """On a stand-in layout: the ideal scanner asks the image for the commanded acquisition (the class's waveform, no
+    delivery); a machine asks the layout's delivery for every class with the grid centred at the physics' offset, and
+    hands it to that class's image; the image's normalised signal is scaled by every voxel's walker weight; a machine
+    with its own gradient on a class without background vectors, and any machine on a shaped class (the OGSE), is
+    refused by name."""
     from dmipy_sim.phantom import Grid
+    from space import classes as C
     seen = []
+
+    class _Part:
+        def __init__(self, constant):
+            self.is_constant = constant
+
     class _M:
         grid = Grid(shape=(2, 1, 1), voxel_size_m=(25e-6,) * 3, origin_m=(0.0, 0.0, 0.0))
-        background = None
-        manifest = {"shapes": {"d12-D24": {}, "d8-D20": {}}}
-        def delivery(self, shape, b, dirs, scanner, grid):
-            seen.append(("delivery", shape, scanner.name, tuple(np.round(np.asarray(grid.isocenter_m) - np.asarray(self.grid.isocenter_m), 6))))
-            return ("delivered", shape)
-        def image(self, shape, b, dirs, *, backend, resident, tissue, scanner, b0_direction, delivered=None):
-            seen.append(("image", shape, delivered, scanner, tuple(b0_direction)))
-            return np.ones((2, 1, 1, len(b))), np.zeros((2, 1, 1))
-    lay = D.Layout.__new__(D.Layout); lay.moments = _M(); lay.tiers = True; lay.backend = "jax"; lay.unseeded = ("myelin",)
-    lay.M0 = np.ones((2, 1, 1)); lay.mask = np.ones((2, 1, 1), bool); lay.pools = ("intra", "extra"); lay.shapes = CFG["shapes"]
+        partitions = {n: _Part(C.kind(sh) != "ogse") for n, sh in CFG["shapes"].items()}
+        manifest = {"partitions": {n: {"group": "g0"} for n in CFG["shapes"]}, "groups": {"g0": {}}}
+
+        def delivery(self, seq, scanner, grid, *, partition):
+            seen.append(("delivery", partition, scanner.name, tuple(np.round(np.asarray(grid.isocenter_m) - np.asarray(self.grid.isocenter_m), 6))))
+            return ("delivered", partition)
+
+        def image(self, seq, *, partition, backend, resident, tissue, scanner, b0_direction, delivered=None):
+            seen.append(("image", partition, delivered, scanner, tuple(b0_direction), np.asarray(seq.G).shape[0]))
+            return np.full((2, 1, 1, np.asarray(seq.G).shape[0]), 0.5), np.zeros((2, 1, 1))
+    lay = D.Layout.__new__(D.Layout); lay.layout = _M(); lay.tiers = True; lay.backend = "jax"; lay.unseeded = ("myelin",); lay.resident = False
+    lay.M0 = np.array([2.0, 4.0]).reshape(2, 1, 1); lay.mask = np.ones((2, 1, 1), bool); lay.pools = ("intra", "extra"); lay.shapes = CFG["shapes"]
     meas = P.measurements(P.Protocol((P.Shell("d12-D24", 1000, 3), P.Shell("d8-D20", 2000, 3)), n_b0=1), CFG["shapes"])
-    D.Layout.replay(lay, meas, P.Physics.at(3.0))
-    assert [s[2] for s in seen if s[0] == "image"] == [None, None]
+    dwi, floor, factor, _ = D.Layout.replay(lay, meas, P.Physics.at(3.0))
+    assert [s[2] for s in seen if s[0] == "image"] == [None, None] and [s[5] for s in seen if s[0] == "image"] == [4, 3]
+    np.testing.assert_allclose(dwi, 1.0); np.testing.assert_allclose(factor.ravel(), [0.25, 0.5])   # S0 = 0.5 W over the fullest voxel's W
     seen.clear()
     ph = P.Physics.at(3.0, scanner="siemens_magnetom_prisma_3T", offset_m=(0.0, 0.0, 0.05))
     D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 1000, 3),), n_b0=1), ph)
@@ -372,9 +421,10 @@ def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
     assert [s for s in seen if s[0] == "delivery"] == [("delivery", "d12-D24", "siemens_magnetom_prisma_3T", (0.0, 0.0, -0.05)),
                                                         ("delivery", "d8-D20", "siemens_magnetom_prisma_3T", (0.0, 0.0, -0.05))]
     assert [s[2] for s in seen if s[0] == "image"] == [("delivered", "d12-D24"), ("delivered", "d8-D20")]
+    with pytest.raises(ValueError, match="shaped waveforms"):
+        D.Layout.validate(lay, P.Protocol((P.Shell("cos-f50-T20", 1000, 3),), n_b0=1), ph)
     swoop = P.Physics.at(0.064, scanner="hyperfine_swoop_64mT", b0_direction=(0.0, 1.0, 0.0))
-    with pytest.raises(ValueError, match="background moments"):
+    with pytest.raises(ValueError, match="background vectors"):
         D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
-    lay.moments.background = {"amplitude": 5e-3}
-    with pytest.raises(ValueError, match="RF schedules"):
-        D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)
+    lay.layout.manifest["groups"]["g0"]["background"] = {"column": "bg_g0.npy"}
+    D.Layout.validate(lay, P.Protocol((P.Shell("d12-D24", 100, 3),), n_b0=1), swoop)

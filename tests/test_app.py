@@ -21,8 +21,8 @@ def test_the_three_kinds_of_acquisition():
     assert disco.name == "DiSCo 364" and disco.n_meas == 364 and disco.n_b0 == 4        # the table's own, not the slider's
     name = next(iter(CFG["presets"]))
     preset = A._protocol_from_inputs(S, CFG, name, 5, *ROWS)
-    assert preset.name == name and preset.n_b0 == CFG["presets"][name]["n_b0"]
-    assert [s.shape for s in preset.shells] == [s["shape"] for s in CFG["presets"][name]["shells"]]
+    assert preset.name == name and preset.n_b0 == P.preset_protocol(CFG, name).n_b0 == 3        # the table's own
+    assert {s.shape for s in preset.shells} == {CFG["presets"][name]["shape"]}
     custom = A._protocol_from_inputs(S, CFG, A.CUSTOM, 2, *ROWS)
     assert custom.n_b0 == 2 and [(s.shape, s.b, s.n_dirs) for s in custom.shells] == [("d12-D24", 1000.0, 30), ("d8-D20", 3000.0, 45)]
     assert not any(s.free_timing for s in custom.shells)

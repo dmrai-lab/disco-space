@@ -12,12 +12,12 @@ import pytest
 from space import pipeline as P
 from space.sources import brain as B
 
-FIXTURE = os.environ.get("DISCO_BRAIN_FIXTURE", os.path.expanduser("~/dmrai-ws/data/batman/brain_fixture"))
-PACKS = os.environ.get("DISCO_BRAIN_PACKS", os.path.expanduser("~/dmrai-ws/packs"))
+FIXTURE = os.environ.get("DISCO_BRAIN_FIXTURE", "")          # the directory tools/build_brain_fixture.py wrote
+PACKS = os.environ.get("DISCO_BRAIN_PACKS", "")              # the directory holding the WM and GM replay packs
 WM_PACK = os.path.join(PACKS, "single_bundle_1s_c3_seg125ms.rpk")
 GM_PACK = os.path.join(PACKS, "gm_spheres_100ms.rpk")
-has_fixture = pytest.mark.skipif(not os.path.exists(os.path.join(FIXTURE, "manifest.json")), reason="the BATMAN brain fixture is not on this machine")
-has_packs = pytest.mark.skipif(not (os.path.exists(WM_PACK) and os.path.exists(GM_PACK)), reason="the WM and GM packs are not on this machine")
+has_fixture = pytest.mark.skipif(not os.path.exists(os.path.join(FIXTURE, "manifest.json")), reason="DISCO_BRAIN_FIXTURE does not name a BATMAN brain fixture")
+has_packs = pytest.mark.skipif(not (os.path.exists(WM_PACK) and os.path.exists(GM_PACK)), reason="DISCO_BRAIN_PACKS does not name a directory with the WM and GM packs")
 
 
 def brain_cfg(asset=FIXTURE):

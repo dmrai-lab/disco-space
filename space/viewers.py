@@ -357,20 +357,6 @@ def powder_curve(maps, ijk, other=None, labels=("A", "B")):
     return _image(fig)
 
 
-def tensor_waveform(G, dt, gate, label):
-    """The class's three shapes as played (physical gradient, mT/m) over the echo time, the 180 marked."""
-    plt = _mpl()
-    t = np.arange(G.shape[0]) * dt * 1e3
-    fig, ax = plt.subplots(figsize=(7.5, 2.8))
-    for k, c in enumerate(AXIS_COLOURS):
-        ax.plot(t, G[:, k] * 1e3, color=c, lw=1.2, label=f"ψ{k + 1}")
-    flip = np.nonzero(np.diff(np.asarray(gate)) != 0)[0]
-    for f in flip:
-        ax.axvline(t[f] + 0.5 * (t[1] - t[0]), color="0.5", ls=":", lw=1)
-    ax.set_xlabel("t (ms)"); ax.set_ylabel("G (mT/m)"); ax.set_title(label, fontsize=9); ax.legend(fontsize=8, ncol=3)
-    return _image(fig)
-
-
 def map_picker(sl, scale, *, vmin=0.0, vmax=1.0, cmap="viridis"):
     """A 2-D map ``sl`` (x, y) as an image ``scale`` pixels per voxel with y up and no margins, so a click's pixel names
     its voxel exactly (``x // scale``, ``ny - 1 - y // scale``); NaN grey."""

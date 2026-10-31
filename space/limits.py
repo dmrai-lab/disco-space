@@ -52,7 +52,7 @@ def cap_threads(quota=None):
 def cap_affinity(quota=None):
     """Restricts this process to the first ``quota`` CPUs it may run on (``os.sched_setaffinity``; ``quota`` overrides
     the cgroup read), so that every pool that sizes itself on the schedulable CPUs (XLA's, and torch's) matches the
-    quota; returns the CPUs it now runs on, or None when there is no quota or the process already runs on no more
+    quota; returns the CPUs it runs on, or None when there is no quota or the process already runs on no more
     than it. Children (the warm-up's process, the forked GPU worker) inherit it."""
     n = cpu_quota() if quota is None else quota
     allowed = sorted(os.sched_getaffinity(0))

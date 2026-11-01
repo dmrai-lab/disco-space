@@ -70,7 +70,7 @@ played. A machine enters by replacing `g u` with the delivered vector and adding
   the coherence sign times the transverse gate, `eps(t) chi(t) g0`. That is one more time course per **sequence
   group** (the classes sharing a grid, an RF schedule and a readout). DiSCo has two groups, the six PGSE classes at
   TE 53.5 ms and the stimulated echo, so two `(n_tiles, 128, 3)` float32 columns of 1.9 GB each, written in one pass
-  over the columnar pack by `dmipy_sim.replay.shape_moments.stamp_background` without touching any other column.
+  over the columnar pack, without touching any other column.
   The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on a CPU host. They are published at
   `SubstrateCommons/disco-replay` revision afe5589, the revision `config.toml` pins.
 - *Transmit:* each voxel's signal is multiplied by the crushed echo's pathway amplitude at its scale over the nominal
@@ -131,7 +131,7 @@ contraction in torch on the same device, 2026-10-04):
     of the commanded gradient, and the Swoop's `g0` (up to 1.4 mT/m at 8 cm against a 23 mT/m commanded gradient)
     spans many such bins across a head. The earlier figure of 63 classes was a 1,312-voxel subsample at 3 %.
   - **Cost per class** (the default packs, every tier, the Swoop's field; JAX): WM 104-166 s and GM 4-21 s on a
-    GH200, three classes; WM 484-560 s and GM 51-52 s on a CPU host (8 threads, a shared box), two classes.
+    GH200, three classes; WM 484-560 s and GM 51-52 s on a CPU host (8 threads), two classes.
   - So one protocol at one tissue and field is about 9,752 x 2.5 min, two weeks of one GPU (a day at 3 %). The
     page shows this reason under its scanner menu (`Brain.refused_machines`). Whether to cache the default
     protocol's classes or to keep the Swoop to the DiSCo page is the owner's decision. On the DiSCo page the Swoop is
@@ -160,7 +160,7 @@ every number below is the previous pin's to the digits shown.
 | Prisma 3 T | research 3-shell x 90 (b 1000 / 2000 / 3000) | 0.925 -> 0.924 | -1.0 / -1.7 / -2.3 % | 0.0066-0.0081 / 0.0081-0.0090 (floor 0.0074) | 1 |
 | Terra 7 T | the same | 0.919 -> 0.917 | -0.9 / -1.7 / -2.2 % | the same | 1 |
 
-The Swoop's terms one at a time on its shell (`tools/scanner_disco_terms.py`, re-measured the same way; per-measurement
+The Swoop's terms one at a time on its shell (re-measured the same way; per-measurement
 abs(dS), median / 99 %):
 
 | term | median | 99 % |
@@ -177,7 +177,7 @@ every direction's b alike (+2.4 % at 7.9 cm transverse). The shells drop by perc
 connectome keep.
 
 **The brain, head centre at isocentre.** Delivered b over the b = 1000 shell (96 directions, square pulses,
-`tools/scanner_brain_bmap.py`, re-measured at this pin on the bore grid of the plain index):
+re-measured at this pin on the bore grid of the plain index):
 
 | machine | direction-mean b / b (1 %, median, 99 %) | per direction (min, max) | transmit scale |
 |---|---|---|---|

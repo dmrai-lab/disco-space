@@ -538,13 +538,14 @@ def estimated_seconds(preset, n_b0, snr_on, snr, density, max_angle, step_mm, ke
     (:meth:`~space.pipeline.Source.estimated_seconds`) with the source's share the call computes because the page has
     it not cached (:func:`uncached_responses`). The pool refuses a request above the visitor's daily quota
     (:data:`GPU_TIERS`) and kills a run that outlives its reservation, so this is the measured cost with its margin,
-    not a generous one; 480 when the inputs make no protocol."""
+    not a generous one; 480 when the inputs make no protocol (the refusal is a ``ValueError``; any other error is a
+    defect and raises)."""
     try:
         cfg = P.config()
         S = sources.source_class(cfg)
         n = len(S.panel(cfg).fields)
         protocol = _protocol_from_inputs(S, cfg, preset, n_b0, *rest[n:], scheme=scheme_file, full=S.mode == "full")
-    except Exception:
+    except ValueError:
         return 480
     responses = uncached_responses(preset, n_b0, snr_on, snr, density, max_angle, step_mm, key, scheme_file, knob, scanner, n_keys, ladder_on, *rest)
     try:

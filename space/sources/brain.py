@@ -943,7 +943,7 @@ class Brain(P.Source):
         or ``cold`` (a band to compile first); ``saves`` the WM pack's saves the entry's classes span
         (:meth:`saves_spanned` of :meth:`windows_needed`). ``[budget]`` prices them (``response_<state>``); on a machine
         an entry counts its rows once per encoding class times ``response_per_class`` (a class's rows each play their own
-        amplitude, so the shells no longer share the expansion's bodies)."""
+        amplitude, so the shells do not share the expansion's bodies)."""
         out = []; keys = set(); bands = set(self._compiled)
         for meas, ph in entries:
             key = self.response_key(meas, ph)
@@ -973,7 +973,7 @@ class Brain(P.Source):
         stages["load_wm"] = time.perf_counter() - t0
         gm_pack = self.pack("gm", physics.gm_pack, self.windows_needed("gm", physics.gm_pack, meas))
         stages["load_gm"] = time.perf_counter() - t0 - stages["load_wm"]
-        for name in np.unique(meas.shape):                                  # the walks and the WM pack's tiers, now loaded
+        for name in np.unique(meas.shape):                                  # the walks and the WM pack's tiers, loaded
             self.validate(P.Protocol((P.Shell(str(name), 1.0, 1),), name="check"), physics)
         t_wm, t_gm, t_csf = physics.tissues(wm_pack, gm_pack)
         pose = specimen_pose(self.asset.R, physics.b0_direction)

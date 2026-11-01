@@ -18,10 +18,11 @@ jobs:
           python-version: "3.11"
       - name: install the stack without CUDA
         run: |
-          sed -e 's/^jax\[cuda12\]==/jax==/' requirements.txt > requirements-cpu.txt
-          grep -v '^gradio' requirements-cpu.txt > r.txt
+          sed -e 's/^jax\[cuda12\]==/jax==/' requirements.txt > r.txt
           pip install pytest -r r.txt
-      - run: JAX_PLATFORMS=cpu pytest tests/test_pipeline.py -q
+      # every test file but the acceptance (tests/test_acceptance.py runs on the L4 Job below); the tests that need data
+      # or a fixture skip themselves when it is absent
+      - run: JAX_PLATFORMS=cpu pytest tests -q --ignore=tests/test_acceptance.py
 
   acceptance-l4:
     runs-on: ubuntu-latest

@@ -1,6 +1,5 @@
-# The gate: the CPU tests on the runner; the acceptance test as a Hugging Face Job on an L4 (GitHub runners have
-# no GPU), through tools/gate_job.py. Needs the repository secret HF_TOKEN (an account with Jobs enabled; the
-# dataset is public, so no write access).
+# The gate: the CPU tests on the runner, on every pull request and push to main (free). The acceptance test is a paid
+# Hugging Face Job on an L4 and runs at release, before the deploy (acceptance.yml).
 name: gate
 on:
   pull_request:
@@ -20,23 +19,7 @@ jobs:
         run: |
           sed -e 's/^jax\[cuda12\]==/jax==/' requirements.txt > r.txt
           pip install pytest -r r.txt
-      # every test file but the acceptance (tests/test_acceptance.py runs on the L4 Job below); the tests that need data
-      # or a fixture skip themselves when it is absent
+      # every test file but the acceptance (tests/test_acceptance.py runs on an L4 Job at release, acceptance.yml); the
+      # tests that need data or a fixture skip themselves when it is absent
       - run: JAX_PLATFORMS=cpu pytest tests -q --ignore=tests/test_acceptance.py
 
-  acceptance-l4:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install "huggingface_hub>=1.0"
-      - name: the acceptance test on an L4 Job
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          test -n "$HF_TOKEN" || { echo "no HF_TOKEN secret: the GPU gate cannot run"; exit 1; }
-          python tools/deploy.py --sha ${{ github.event.pull_request.head.sha || github.sha }} --space ${{ vars.DISCO_STAGING_SPACE || 'rfick/disco-staging' }}
-          python tools/gate_job.py --space ${{ vars.DISCO_STAGING_SPACE || 'rfick/disco-staging' }}

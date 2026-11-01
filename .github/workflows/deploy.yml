@@ -1,6 +1,6 @@
-# Deploy: a tag `v*` pushes that commit's files to the Space (tools/deploy.py); Hugging Face rebuilds the image.
-# Needs the repository secrets HF_TOKEN (write access to the Space) and, optionally, the variable DISCO_SPACE
-# (default rfick/disco). The gate ran on the commit before it was tagged.
+# Deploy: a tag `v*` runs the acceptance test on that commit (acceptance.yml, an L4 Job on the staging Space) and, when
+# it passes, pushes the commit's files to the Space (tools/deploy.py); Hugging Face rebuilds the image. Needs the
+# repository secrets HF_TOKEN (write access to the Space) and, optionally, the variable DISCO_SPACE (default rfick/disco).
 name: deploy
 on:
   push:
@@ -8,7 +8,12 @@ on:
   workflow_dispatch:
 
 jobs:
+  acceptance:
+    uses: ./.github/workflows/acceptance.yml
+    secrets: inherit
+
   space:
+    needs: acceptance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

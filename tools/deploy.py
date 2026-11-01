@@ -15,6 +15,7 @@ bucket is retired), so the deploy also removes a ``DISCO_MOMENTS`` variable and 
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -45,9 +46,47 @@ def readme_for(config):
 
 
 def requirements_for(config):
-    """The ZeroGPU requirements of a configuration: ``requirements-zero.txt`` for the default (the DiSCo page's pins),
-    ``requirements-<stem>-zero.txt`` else (the brain Space keeps the pins its packs were accepted on)."""
-    return "requirements-zero.txt" if config == DEFAULT_CONFIG else f"requirements-{os.path.splitext(config)[0]}-zero.txt"
+    """The file of the pins a configuration replaces in ``requirements-zero.txt`` (:func:`compose_requirements`):
+    ``requirements-<stem>-zero.txt``."""
+    return f"requirements-{os.path.splitext(config)[0]}-zero.txt"
+
+
+def _package_of(line):
+    """The distribution a requirements line pins (``name @ url``, ``name==x``, ``name>=x``), or None for a comment."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    return re.split(r"[\s@=<>!~;\[]", line, maxsplit=1)[0].lower().replace("_", "-")
+
+
+def compose_requirements(root, config):
+    """The ZeroGPU ``requirements.txt`` of a configuration: ``requirements-zero.txt`` and, for another configuration, the
+    lines of ``requirements-<stem>-zero.txt`` replacing the lines of the same package (the brain Space keeps the dmipy
+    pins its packs were accepted on; every other line is the default's, in one place)."""
+    with open(os.path.join(root, "requirements-zero.txt")) as f:
+        lines = f.read().splitlines()
+    if config == DEFAULT_CONFIG:
+        return "\n".join(lines) + "\n"
+    with open(os.path.join(root, requirements_for(config))) as f:
+        over = f.read().splitlines()
+    pins = {_package_of(l): l for l in over if _package_of(l)}
+    notes = {_package_of(over[i + 1]): over[i] for i in range(len(over) - 1) if _package_of(over[i + 1]) and over[i].lstrip().startswith("#")}
+    out, used = [], set()
+    for l in lines:
+        k = _package_of(l)
+        if k in pins:
+            used.add(k)
+            if k in notes:
+                out.append(notes[k])
+            out.append(pins[k])
+        elif k is None and l.lstrip().startswith("#") and _package_of(lines[min(lines.index(l) + 1, len(lines) - 1)]) in pins:
+            continue                                        # the default's note on a pin the configuration replaces
+        else:
+            out.append(l)
+    unknown = sorted(set(pins) - used)
+    if unknown:
+        raise SystemExit(f"{requirements_for(config)} pins {unknown}, which requirements-zero.txt does not list")
+    return "\n".join(out) + "\n"
 
 
 def set_config(api, space, config):
@@ -85,7 +124,8 @@ def main():
         for name in ("app.py", "pyproject.toml"):
             shutil.copy(os.path.join(root, name), staged)
         shutil.copy(os.path.join(root, readme_for(a.config)), os.path.join(staged, "README.md"))
-        shutil.copy(os.path.join(root, requirements_for(a.config)), os.path.join(staged, "requirements.txt"))
+        with open(os.path.join(staged, "requirements.txt"), "w") as f:
+            f.write(compose_requirements(root, a.config))
         folder = staged
     elif a.base_tag:
         staged = tempfile.mkdtemp(prefix="disco-space-")

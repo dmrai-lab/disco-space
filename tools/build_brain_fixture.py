@@ -19,7 +19,7 @@ What each file is:
 * ``manifest.json`` -- the grid (the image's affine, voxel -> scanner RAS mm), the tutorial's gradient table
   (scanner frame) with the capstone's pulse timing (TE 100 / delta 25 / Delta 55 ms, which the 100 ms packs play).
 
-    python tools/build_brain_fixture.py [--batman ~/dmrai-ws/data/batman] [--out ~/dmrai-ws/data/batman/brain_fixture]
+    python tools/build_brain_fixture.py --batman <dir> --out <dir>        # or DISCO_BATMAN / DISCO_BRAIN_FIXTURE
 """
 import argparse
 import json
@@ -80,9 +80,11 @@ def main(argv=None):
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.so3 import rotate_sh
     ap = argparse.ArgumentParser()
-    ap.add_argument("--batman", default=os.path.expanduser("~/dmrai-ws/data/batman"))
-    ap.add_argument("--out", default=os.path.expanduser("~/dmrai-ws/data/batman/brain_fixture"))
+    ap.add_argument("--batman", default=os.environ.get("DISCO_BATMAN"), help="the BATMAN directory (DISCO_BATMAN)")
+    ap.add_argument("--out", default=os.environ.get("DISCO_BRAIN_FIXTURE"), help="the fixture directory (DISCO_BRAIN_FIXTURE)")
     a = ap.parse_args(argv)
+    if not a.batman or not a.out:
+        ap.error("name the BATMAN directory and the output directory (--batman/--out or DISCO_BATMAN/DISCO_BRAIN_FIXTURE)")
     os.makedirs(a.out, exist_ok=True)
     fod = read_mif(os.path.join(a.batman, "wmfod_norm.mif"))
     mask = np.asarray(read_mif(os.path.join(a.batman, "mask_den_unr_preproc_unb.mif")).data, bool)

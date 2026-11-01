@@ -7,3 +7,4 @@ space/sources/disco.py:d6e4cf1f70 pre-existing, tracked in dmrai-lab/disco-space
 space/viewers.py:4a3870947e pre-existing, tracked in dmrai-lab/disco-space#49
 space/viewers.py:ddae502bf9 pre-existing, tracked in dmrai-lab/disco-space#49
 space/sources/brain.py:1c01d52aea pre-existing, tracked in dmrai-lab/disco-space#49
+tests/test_acceptance.py:4386dfea22 runs in the Hugging Face acceptance Job launched by gate.yml (acceptance-l4)

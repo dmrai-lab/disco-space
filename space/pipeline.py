@@ -853,7 +853,7 @@ def csd(dwi, meas, mask, backend="jax"):
     t0 = time.perf_counter()
     data = np.nan_to_num(dwi, nan=0.0)
     sch = scheme(meas)
-    S0, response, _ = white_matter_response_tournier07(sch, data[mask])
+    S0, response, _ = white_matter_response_tournier07(sch, data[mask], backend=backend)
     mc = MultiCompartmentSphericalHarmonicsModel(models=[response], sh_order=SH_ORDER)
     fitted = mc.fit(sch, data, mask=mask, solver=f"csd_tournier07_{backend}", verbose=False)
     return np.asarray(fitted.fitted_parameters["sh_coeff"], np.float64), time.perf_counter() - t0, (S0, response)

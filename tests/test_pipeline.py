@@ -445,3 +445,22 @@ def test_a_tractogram_writes_to_tck_and_reads_back(tmp_path):
     t = Tractogram(np.random.default_rng(0).random((10, 3)).astype(np.float32), np.array([0, 4, 10]), np.array([0, 1]), np.zeros((2, 2), int))
     t.to_tck(str(tmp_path / "t.tck"))
     assert [len(s) for s in read_tck(str(tmp_path / "t.tck"), coordinate_unit_m=1e-3)] == [4, 6]
+
+
+def test_the_csd_runs_on_the_configured_backend_alone(monkeypatch):
+    """The FOD field (the response estimate and the fit) runs on the backend it is given: on ``jax`` nothing reaches
+    for PyTorch, which the Docker Space does not install."""
+    import sys
+    monkeypatch.setitem(sys.modules, "torch", None)            # any import of torch now fails
+    p = P.Protocol((P.Shell("d12-D24", 1000, 30),))
+    m = P.measurements(p, CFG["shapes"])
+    rng = np.random.default_rng(3)
+    axes = rng.normal(size=(2, 2, 2, 3))
+    axes /= np.linalg.norm(axes, axis=-1, keepdims=True)
+    g = m.dirs / np.maximum(np.linalg.norm(m.dirs, axis=-1, keepdims=True), 1e-12)
+    cos2 = np.einsum("xyzk,nk->xyzn", axes, g) ** 2
+    b = m.bvals * 1e-3                                         # ms/um^2 x um^2/ms
+    dwi = np.exp(-b * (0.3 + 1.4 * cos2))                     # a prolate tensor along each voxel's axis
+    mask = np.ones(dwi.shape[:3], bool)
+    sh, seconds, _ = P.csd(dwi, m, mask, backend="jax")
+    assert sh.shape == (2, 2, 2, 45) and np.isfinite(sh).all() and seconds > 0

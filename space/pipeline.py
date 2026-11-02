@@ -523,7 +523,8 @@ class Source:
     The page's side: :meth:`describe` (the title and every text that names the source), :meth:`presets` and
     :meth:`protocol` (the acquisitions offered), :meth:`panel` (the tissue-and-scanner inputs),
     :meth:`catalogue_numbers`, :meth:`physics_from`, :meth:`knobs` and :meth:`apply_knob` (B, one knob away from A),
-    :meth:`refused_machines` (the catalogued machines kept off the scanner menu, and why),
+    :meth:`refused_machines` (the catalogued machines kept off the scanner menu, and why), :meth:`unavailable` (the
+    page's text when the inputs the configuration names cannot be read),
     :meth:`tracking_controls` and :meth:`estimated_seconds` (the GPU seconds a run reserves on a shared pool).
 
     The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the share of a replay
@@ -548,6 +549,12 @@ class Source:
         """``{label: reason}``: the catalogued machines this source keeps off its scanner menu, each with the reason the
         page shows under the menu. None here."""
         return {}
+
+    @classmethod
+    def unavailable(cls, cfg):
+        """``(title, text)`` when the inputs the configuration names cannot be read, the text naming each and why, else
+        None: the Space then serves that text as its page. Read at startup, before the page is built. None here."""
+        return None
 
     @classmethod
     def describe(cls, cfg):

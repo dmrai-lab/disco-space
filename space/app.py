@@ -673,13 +673,26 @@ def _widget(c):
     raise ValueError(f"unknown control kind {c.kind!r}")
 
 
+def unavailable_page(title, text):
+    """The Blocks of a source whose inputs cannot be read: its text (:meth:`space.pipeline.Source.unavailable`) and nothing
+    to run."""
+    import gradio as gr
+    with gr.Blocks(title=title) as demo:
+        gr.Markdown(text)
+    return demo
+
+
 def build(runner=None, cfg=None):
-    """The Blocks of the configured source (``cfg``, else :func:`space.pipeline.config`). ``runner`` wraps
+    """The Blocks of the configured source (``cfg``, else :func:`space.pipeline.config`), or the page that says why the
+    source cannot be served (:func:`unavailable_page`). ``runner`` wraps
     :func:`compute` for the run button (the ZeroGPU entry passes ``spaces.GPU(...)``): the device part of a run; the
     page looks up its cache before it and draws from its payload after it, in this process."""
     import gradio as gr
     cfg = cfg or P.config()
     S = sources.source_class(cfg)
+    refusal = S.unavailable(cfg)
+    if refusal is not None:
+        return unavailable_page(*refusal)
     d = S.describe(cfg)
     full = S.mode == "full"
     shapes = S.shapes_of(cfg); presets = S.presets(cfg) + [CUSTOM] + ([UPLOADED] if full else [])

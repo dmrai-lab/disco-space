@@ -824,3 +824,112 @@ def test_the_warm_set_holds_the_scan_on_every_machine_that_can_play_it():
     assert set(got) == can and can
     for key, ph in got.items():
         assert ph.field_T == pytest.approx(P.limits(key).field_T) and ph.slew_rate == pytest.approx(P.limits(key).slew_max)
+
+# ---- the page when the Hub does not serve what the configuration names -------------------------------------------------
+
+BRAIN_TOML = P.config(os.path.join(P.HERE, "brain.toml"))
+
+
+def _not_found():
+    import urllib.error
+    return urllib.error.HTTPError("https://huggingface.co/datasets/o/n/resolve/main/p.rpk", 404, "Not Found", {}, None)
+
+
+def test_a_pack_is_refused_by_name_when_it_is_absent_refused_or_unreadable(monkeypatch, tmp_path):
+    """The three ways a pack of the menu cannot be served, each named: absent from its dataset (HTTP 404), refused by
+    the reader (its message, which names what it does not read), and a window record this page does not read; a pack
+    that opens and has its table is served; an error that says nothing about the pack (HTTP 500) is raised, not named."""
+    from dmipy_replay import ReplayPack
+    gone, old, bare, ok, down = (f"hf://o/n/{n}.rpk" for n in ("gone", "old", "bare", "ok", "down"))
+
+    def opened(uri, workers=8):
+        if uri == gone:
+            raise _not_found()
+        if uri == old:
+            raise ValueError(f"{uri}: This pack carries `walk_params.n_t`, which this revision does not read; re-walk the pack")
+        if uri == down:
+            import urllib.error
+            raise urllib.error.HTTPError(uri, 500, "Server Error", {}, None)
+        return object()
+
+    def table(uri):
+        if uri == bare:
+            raise ValueError(f"{uri}: no declared segment table (walk_params.segments, RPK.md 4.3) in its record")
+        return dict(n=1, n_t=1001, T=0.1)
+
+    monkeypatch.setattr(ReplayPack, "open", staticmethod(opened))
+    monkeypatch.setattr(B, "declared_segments", table)
+    assert B.pack_refusal(gone) == "it is not in its dataset on the Hub"
+    assert "the reader refuses it" in B.pack_refusal(old) and "walk_params.n_t" in B.pack_refusal(old)
+    assert "cannot read its window record" in B.pack_refusal(bare) and "walk_params.segments" in B.pack_refusal(bare)
+    assert B.pack_refusal(ok) is None
+    with pytest.raises(Exception, match="500"):
+        B.pack_refusal(down)
+    local = tmp_path / "p.rpk"
+    assert B.pack_refusal(str(local)) == "there is no such file"
+    local.write_bytes(b"x")
+    assert B.pack_refusal(str(local)) is None
+
+
+def test_the_asset_is_refused_by_name_when_its_revision_or_manifest_is_gone(monkeypatch, tmp_path):
+    """A Hub revision the Hub answers 404 for is named; so is a directory without its manifest; an unreachable Hub is raised."""
+    import types
+    where = "hf://SubstrateCommons/masivar-brain@7556d3900adfe73f2b78b34fffb74902354775e9"
+
+    class Answer(OSError):
+        def __init__(self, status):
+            super().__init__(f"HTTP {status}")
+            self.response = types.SimpleNamespace(status_code=status)
+
+    def gone(w):
+        raise Answer(404)
+
+    monkeypatch.setattr(B, "manifest", gone)
+    assert B.asset_refusal(where) == "the Hub has no manifest.json of SubstrateCommons/masivar-brain at revision 7556d3900adfe73f2b78b34fffb74902354775e9"
+    monkeypatch.setattr(B, "manifest", lambda w: (_ for _ in ()).throw(Answer(503)))
+    with pytest.raises(Answer):
+        B.asset_refusal(where)
+    monkeypatch.undo()
+    assert "has no manifest.json" in B.asset_refusal(str(tmp_path))
+    (tmp_path / "manifest.json").write_text("{}")
+    assert B.asset_refusal(str(tmp_path)) is None
+
+
+def test_the_brain_names_every_input_it_cannot_read_and_says_nothing_when_all_read(monkeypatch):
+    """The page's text lists the asset and each pack of both menus with its reason, under the title and the sentence that
+    the packs are being re-walked for dmipy 3.0; with every input readable there is no text."""
+    cfg = BRAIN_TOML
+    uris = [p["uri"] for t in ("wm", "gm") for p in cfg["packs"][t]]
+    monkeypatch.setattr(B, "asset_refusal", lambda w: "the Hub has no manifest.json of the asset")
+    monkeypatch.setattr(B, "pack_refusal", lambda u: None if u == uris[1] else f"reason of {u.rsplit('/', 1)[-1]}")
+    title, text = B.Brain.unavailable(cfg)
+    assert title == cfg["describe"]["title"] and text.startswith(f"# {title}")
+    assert "its packs are being re-walked for dmipy 3.0" in text and "the Hub has no manifest.json of the asset" in text
+    for u in uris:
+        assert (u in text) == (u != uris[1]), u
+    assert text.count("\n- ") == 4
+    monkeypatch.setattr(B, "asset_refusal", lambda w: None)
+    monkeypatch.setattr(B, "pack_refusal", lambda u: None)
+    assert B.Brain.unavailable(cfg) is None
+
+
+def test_the_brain_page_is_the_text_instead_of_a_crash_and_the_disco_page_is_unaffected(monkeypatch):
+    """With the Hub serving none of the brain's inputs the Space builds a page of the refusal -- the title, the text, nothing
+    to run, and without reading the asset the page would be built from -- while the DiSCo page is built from its own
+    class and never consults the brain."""
+    gr = pytest.importorskip("gradio")
+    from space import app as A
+    from space.sources import disco as D
+    cfg = BRAIN_TOML
+    monkeypatch.setattr(B, "asset_refusal", lambda w: "the Hub has no manifest.json of the asset")
+    monkeypatch.setattr(B, "pack_refusal", lambda u: "it is not in its dataset on the Hub")
+    monkeypatch.setattr(B.Brain, "describe", classmethod(lambda cls, c: (_ for _ in ()).throw(AssertionError("the asset was read"))))
+    demo = A.build(cfg=cfg)
+    texts = [b.value for b in demo.blocks.values() if isinstance(b, gr.Markdown)]
+    assert demo.title == cfg["describe"]["title"] and len(texts) == 1 and "its packs are being re-walked for dmipy 3.0" in texts[0]
+    assert not any(isinstance(b, gr.Button) for b in demo.blocks.values())
+    disco = P.config()
+    assert D.Layout.unavailable(disco) is None and D.Columns.unavailable(disco) is None
+    monkeypatch.setattr(B.Brain, "unavailable", classmethod(lambda cls, c: (_ for _ in ()).throw(AssertionError("the brain was consulted"))))
+    page = A.build(cfg=disco)
+    assert page.title == D.Disco.describe(disco)["title"] and any(isinstance(b, gr.Button) for b in page.blocks.values())

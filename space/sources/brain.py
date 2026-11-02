@@ -56,6 +56,12 @@ FIELD_LAW_REFUSAL = ("Its own gradient (the permanent magnet's field law, 1.4 mT
                      "two weeks of one device. The DiSCo Space plays the Swoop exactly.")
 
 
+#: what the page says when the brain cannot be composed from the inputs its configuration names
+UNAVAILABLE = ("**The brain page is not available: its packs are being re-walked for dmipy 3.0.** It composes a brain from one "
+               "white-matter pack and one grey-matter pack and refuses to run until every input its configuration names is one "
+               "this release serves. What is absent or refused now:")
+
+
 # ---- the asset ---------------------------------------------------------------------------------------------------------
 
 def asset_location(cfg):
@@ -111,6 +117,58 @@ def declared_segments(uri):
         raise ValueError(f"{uri}: no declared segment table (walk_params.segments, RPK.md 4.3) in its "
                          f"{'record' if is_hub_uri(uri) else 'header'}")
     return dict(n=int(seg["n"]), n_t=int(seg["n_t"]), T=float(seg["T"]))
+
+
+def _is_404(e):
+    """Whether ``e`` is an HTTP client error whose response says 404 -- the Hub's answer that a repository, a revision or
+    a file is not there (``urllib`` errors carry ``code``, the Hub client's carry ``response``)."""
+    return getattr(e, "code", None) == 404 or getattr(getattr(e, "response", None), "status_code", None) == 404
+
+
+def asset_refusal(where):
+    """Why the asset at ``where`` cannot be read, or None when its manifest reads: a Hub revision (or dataset) the Hub does
+    not have, or a directory without ``manifest.json``. An error that says nothing about the asset itself (the Hub
+    unreachable) is raised, not named."""
+    hub = where.startswith("hf://")
+    try:
+        manifest(where)
+    except Exception as e:
+        if hub and _is_404(e):
+            repo, _, rev = where[len("hf://"):].partition("@")
+            return f"the Hub has no manifest.json of {repo} at revision {rev or 'main'}"
+        if not hub and isinstance(e, FileNotFoundError):
+            return f"{where} has no manifest.json"
+        raise
+    return None
+
+
+def pack_refusal(uri):
+    """Why this page cannot serve the pack at ``uri``, or None: the pack is absent from the Hub or from the disk, the reader
+    refuses its format (the reader's own message names what it does not read), or its window record is not the segment
+    table this page reads (:func:`declared_segments`). A Hub pack is read for its header and its dataset's record only;
+    an error that says nothing about the pack (the Hub unreachable) is raised, not named."""
+    from dmipy_replay import ReplayPack
+    from dmipy_replay.replay.hub import is_hub_uri
+    if is_hub_uri(uri):
+        try:
+            ReplayPack.open(uri)
+        except ValueError as e:
+            return f"the reader refuses it: {e}"
+        except Exception as e:
+            if _is_404(e):
+                return "it is not in its dataset on the Hub"
+            raise
+    elif not os.path.exists(uri):
+        return "there is no such file"
+    try:
+        declared_segments(uri)
+    except ValueError as e:
+        return f"this page cannot read its window record: {e}"
+    except Exception as e:
+        if _is_404(e):
+            return "its dataset has no manifest.json to read the window record from"
+        raise
+    return None
 
 
 def image_rotation(man):
@@ -504,6 +562,27 @@ class Brain(P.Source):
                 raise ValueError(f"[scanners] refused names {m['key']!r}, which has no field law: the brain plays it, so it belongs on the menu")
             out[m["label"]] = FIELD_LAW_REFUSAL
         return out
+
+    @classmethod
+    def unavailable(cls, cfg):
+        """``(title, text)`` when the brain cannot be composed from the inputs the configuration names -- the asset's
+        manifest, or a pack of either menu, is absent, refused by the reader or not readable by this page
+        (:func:`asset_refusal`, :func:`pack_refusal`) -- the text naming each input and why; None when every input reads.
+        The Space serves this text as its page instead of failing to start."""
+        found = []
+        where = asset_location(cfg)
+        why = asset_refusal(where)
+        if why:
+            found.append(f"- the asset `{where}`: {why}")
+        for tissue in ("wm", "gm"):
+            for p in cfg["packs"][tissue]:
+                why = pack_refusal(p["uri"])
+                if why:
+                    found.append(f"- the {tissue.upper()} pack \"{p['label']}\" `{p['uri']}`: {why}")
+        if not found:
+            return None
+        title = cfg["describe"]["title"]
+        return title, "\n\n".join([f"# {title}", UNAVAILABLE, "\n".join(found)])
 
     @classmethod
     def pack_menu(cls, cfg, tissue):

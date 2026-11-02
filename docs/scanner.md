@@ -6,7 +6,7 @@ each one enters on each page, how exact it is, what it costs, and what is refuse
 
 The scanner menu has four entries: **ideal** (no scanner terms, any gradient amplitude, the field preset and
 direction free) and three catalogued machines, the **Hyperfine Swoop 64 mT**, the **Siemens Prisma 3 T** and the
-**Siemens Terra 7 T** (`dmipy_sim.acquisition.scanners.ScannerLimits`). Choosing a machine fixes the field strength
+**Siemens Terra 7 T** (`dmipy_replay.acquisition.scanners.ScannerLimits`). Choosing a machine fixes the field strength
 and its direction to the catalogue's (the Swoop's field runs anterior, across the patient, and the cylinders' runs
 along the bore). Its gradient limit refuses a shell it cannot play, and the page applies every term the catalogue
 carries for that machine and nothing else. A term the catalogue does not carry is absent and the page says so. It is
@@ -45,7 +45,7 @@ built from those leaves when the menu changes.
   Swoop's 8 cm anchor. Beyond the anchor the law is refused, not extrapolated.
 - **The brain** has its head centre (the brain mask's centroid) at isocentre, with the image's own orientation in the
   scanner. The bore grid is `Grid.from_oblique_affine` of the asset's affine on the voxels' own indices
-  (`Brain.bore_grid`). dmipy-sim places a left-handed grid where its affine puts it (dmipy-sim#572), so every voxel's
+  (`Brain.bore_grid`). dmipy-replay places a left-handed grid where its affine puts it (dmipy-sim#572), so every voxel's
   offset is its physical one. The asset's affine is left-handed; a test holds the Swoop's field offset, transmit scale
   and own gradient and the Prisma's nonlinearity on a left-handed copy of the fixture to the catalogue's law at
   `affine @ ijk`. The head reaches 8.3 cm from its centre (196 of 71,052 voxels lie beyond 8 cm), well inside the
@@ -71,8 +71,8 @@ played. A machine enters by replacing `g u` with the delivered vector and adding
   group** (the classes sharing a grid, an RF schedule and a readout). DiSCo has two groups, the six PGSE classes at
   TE 53.5 ms and the stimulated echo, so two `(n_tiles, 128, 3)` float32 columns of 1.9 GB each, written in one pass
   over the columnar pack, without touching any other column.
-  The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on a CPU host. They are published at
-  `SubstrateCommons/disco-replay` revision afe5589, the revision `config.toml` pins.
+  The layout manifest's stamp record: one pass of 42.4 GB from the Hub, 1,016 s on a CPU host. They are published in
+  `SubstrateCommons/disco-time-segments`, at the revision `config.toml` pins (`[data] revision`).
 - *Transmit:* each voxel's signal is multiplied by the crushed echo's pathway amplitude at its scale over the nominal
   one (`epg.transmit_amplitude`): `sin^3(90 kappa)` for the spin echo, `0.5 sin^3(90 kappa)` over `0.5` for the
   stimulated echo.
@@ -120,7 +120,7 @@ contraction in torch on the same device, 2026-10-04):
 ## What is refused, and why
 
 - **The Swoop on the brain page.** Its own gradient is on through every pulse and dead time, so every voxel plays a
-  waveform with two directions (the encoding and `g0`) and two time courses. dmipy-sim's closed-form pose expansion
+  waveform with two directions (the encoding and `g0`) and two time courses. dmipy-replay's closed-form pose expansion
   now takes it exactly: the background gradient is a second plane-wave factor beside the field's, within a bounded
   residual, summed as a shell series (dmipy-sim#565, #573, #582, #588). What keeps the Swoop off the brain's menu is
   the cost, not the physics. Measured at this pin on MASiVar's head (71,052 voxels, the scan's 485 measurements, the

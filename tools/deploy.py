@@ -47,7 +47,7 @@ def readme_for(config):
 
 def requirements_for(config):
     """The file of the pins a configuration replaces in ``requirements-zero.txt`` (:func:`compose_requirements`):
-    ``requirements-<stem>-zero.txt``."""
+    ``requirements-<stem>-zero.txt``, when the configuration has one."""
     return f"requirements-{os.path.splitext(config)[0]}-zero.txt"
 
 
@@ -60,14 +60,15 @@ def _package_of(line):
 
 
 def compose_requirements(root, config):
-    """The ZeroGPU ``requirements.txt`` of a configuration: ``requirements-zero.txt`` and, for another configuration, the
-    lines of ``requirements-<stem>-zero.txt`` replacing the lines of the same package (the brain Space keeps the dmipy
-    pins its packs were accepted on; every other line is the default's, in one place)."""
+    """The ZeroGPU ``requirements.txt`` of a configuration: ``requirements-zero.txt`` and, for a configuration that has a
+    file of pins of its own, the lines of ``requirements-<stem>-zero.txt`` replacing the lines of the same package
+    (every other line is the default's, in one place). A configuration without that file takes the default's."""
     with open(os.path.join(root, "requirements-zero.txt")) as f:
         lines = f.read().splitlines()
-    if config == DEFAULT_CONFIG:
+    own = os.path.join(root, requirements_for(config))
+    if config == DEFAULT_CONFIG or not os.path.exists(own):
         return "\n".join(lines) + "\n"
-    with open(os.path.join(root, requirements_for(config))) as f:
+    with open(own) as f:
         over = f.read().splitlines()
     pins = {_package_of(l): l for l in over if _package_of(l)}
     notes = {_package_of(over[i + 1]): over[i] for i in range(len(over) - 1) if _package_of(over[i + 1]) and over[i].lstrip().startswith("#")}

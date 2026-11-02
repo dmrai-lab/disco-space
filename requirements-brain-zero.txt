@@ -1,5 +1,0 @@
-# The pins the brain Space replaces in requirements-zero.txt (tools/deploy.py compose_requirements): the dmipy packages
-# it was accepted on. Every other line is requirements-zero.txt's.
-# dmipy-sim: main at the merge of dmipy-sim#598 (the field declared by the spec's pools)
-dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@1b79d2e06a958578bc523c84bacf54bae86fbb95
-dmipy-tract @ git+https://github.com/dmrai-lab/dmipy-tract@7da22c3a9473c50a08cc7c6246ec16b68a64d877

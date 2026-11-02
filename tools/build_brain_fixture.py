@@ -5,9 +5,9 @@ before the MASiVar asset exists. It stays local (BATMAN's licence, dmipy-sim#193
 
 What each file is:
 
-* ``fod_wm.npy`` -- ``wmfod_norm.mif`` (MRtrix3 multi-tissue CSD, lmax 8, the MRtrix3 basis, which is dmipy-sim's
+* ``fod_wm.npy`` -- ``wmfod_norm.mif`` (MRtrix3 multi-tissue CSD, lmax 8, the MRtrix3 basis, which is dmipy-replay's
   required basis and dmipy-fit's) turned from the scanner frame into the image frame by ``R.T`` (``R`` from
-  :meth:`dmipy_sim.phantom.Grid.from_oblique_affine`), zero outside the brain mask.
+  :meth:`dmipy_replay.phantom.Grid.from_oblique_affine`), zero outside the brain mask.
 * ``fractions.npy`` -- WM / GM / CSF from ``5tt_coreg.mif`` (on the 1 mm T1 grid), averaged into every 2.5 mm
   voxel on a 3^3 sub-grid as ``examples/rph/brain_from_csd.py`` does: GM is cortical + sub-cortical GM, WM where
   the FOD has no positive l = 0 coefficient is counted as GM (no FOD, no oriented WM), zero outside the mask.
@@ -76,9 +76,9 @@ def parcellate(gm, shape):
 
 
 def main(argv=None):
+    from dmipy_replay.phantom import Grid
+    from dmipy_replay.replay.so3 import rotate_sh
     from dmipy_sim.io.mrtrix import read_mif
-    from dmipy_sim.phantom import Grid
-    from dmipy_sim.replay.so3 import rotate_sh
     ap = argparse.ArgumentParser()
     ap.add_argument("--batman", default=os.environ.get("DISCO_BATMAN"), help="the BATMAN directory (DISCO_BATMAN)")
     ap.add_argument("--out", default=os.environ.get("DISCO_BRAIN_FIXTURE"), help="the fixture directory (DISCO_BRAIN_FIXTURE)")

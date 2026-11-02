@@ -47,13 +47,13 @@ def waveform(tc):
 
 @functools.lru_cache(maxsize=None)
 def _grid():
-    import dmipy_sim as d
-    return d.pgse([[0.0, 0.0, 1.0]], 0.0102, 0.0167, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
+    from dmipy_replay.sequences import pgse
+    return pgse([[0.0, 0.0, 1.0]], 0.0102, 0.0167, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
 
 
 def _sequence(G):
     """``G (n, 1000, 3)`` on the spin-echo grid, RF schedule and readout of the layout's group g0."""
-    from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+    from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
     g = _grid()
     return ScannerSequence(G=np.asarray(G, np.float32), dt=g.dt, rf=g.rf, readout=g.readout)
 
@@ -69,7 +69,7 @@ def template(tc):
 
 def gram(tc):
     """``M (3, 3)`` (s/m^2 per (T/m)^2 of level): the b-tensor of ``sum_k psi_k a_k`` is ``A^T M A``."""
-    from dmipy_sim.acquisition.waveforms import btensor_from_gradient
+    from dmipy_replay.acquisition.waveforms import btensor_from_gradient
     g = _grid()
     G = waveform(tc)[None] * np.asarray(g.effective_gate, np.float64)[None, :, None]
     return btensor_from_gradient(G, g.dt)[0]
@@ -136,9 +136,9 @@ def rows(tc, bvals, n_dirs):
 
 def check(tc, seq, enc, bs):
     """The rows' b-tensors as built: ``{encoding: (max |b - b_target| / b, max |b_delta - target|)}`` from
-    dmipy-sim's own b-tensor of the sequence, and the peak gradient per axis (T/m) of every row."""
-    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
-    B = calc_btensor(seq)
+    dmipy-replay's own b-tensor of the sequence, and the peak gradient per axis (T/m) of every row."""
+    from dmipy_replay.acquisition.waveforms import btensor_invariants
+    B = seq.btensor()
     b, b_delta, _ = btensor_invariants(B)
     out = {}
     for e in ENCODINGS:

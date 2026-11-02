@@ -4,14 +4,14 @@ replay packs, replayed on the device, reconstructed, tracked and scored against 
 The input is an **asset** (the directory layout of ``SubstrateCommons/masivar-brain``: ``manifest.json``,
 ``fod_wm.npy``, ``fractions.npy``, ``mask.npy``, ``labels.npy``, ``regions.json``, ``stop_mask.npy``,
 ``mean_b0.npy``): the multi-tissue CSD of a real scan, made once offline, with its parcellation. The replay is the
-kernel route of dmipy-sim's phantom (RPH.md 6): per voxel and measurement
+kernel route of dmipy-replay's phantom (RPH.md 6): per voxel and measurement
 
     S = | f_wm m0_wm FOD . C_wm  +  f_gm m0_gm E_gm  +  f_csf m0_csf E_csf |
 
 where ``C_wm`` is the WM pack's pose response contracted to the FOD's harmonics
-(:meth:`dmipy_sim.replay.ReplayPack.pose_responses` at ``keep=(8, 0)`` through :func:`dmipy_sim.replay.so3.axis_density_coeffs`),
+(:meth:`dmipy_replay.ReplayPack.pose_responses` at ``keep=(8, 0)`` through :func:`dmipy_replay.replay.so3.axis_density_coeffs`),
 ``E_gm`` the GM pack's response to an isotropic orientation distribution, ``E_csf`` free water in closed form
-(:class:`dmipy_sim.phantom.FreeWater`), each at the run's tissue (T2 / T1 per pool at the echo, the WM walls' surface
+(:class:`dmipy_replay.phantom.FreeWater`), each at the run's tissue (T2 / T1 per pool at the echo, the WM walls' surface
 relaxivity, the myelin sheath's susceptibility at the scanner's field and its direction), and ``m0`` the proton
 density per tissue. The pose responses (:meth:`Brain.prepare`: seconds on the CPU) are cached in the page's process per
 pack, protocol, tissue and field; a run looks them up on the page and computes the missing ones inside the GPU call,
@@ -46,13 +46,20 @@ N_COEF = 45
 REACH_MM = 250.0                                          # the longest streamline the tracker must be able to reach
 PROFILE_ANGLES = np.linspace(0.0, 90.0, 19)               # degrees between the gradient and a fibre, for the response plot
 C00 = 1.0 / (2.0 * np.sqrt(np.pi))                        # the l = 0 coefficient of a unit-integral density
+POSE_BACKEND = "jax"                                      # where the pose expansion's walker work runs: JAX on the CPU, which the [budget] is measured on
 #: why a magnet with its own gradient (a field law: the Swoop) is not on the brain's scanner menu, as the page says it
 FIELD_LAW_REFUSAL = ("Its own gradient (the permanent magnet's field law, 1.4 mT/m at 8 cm) is on through every pulse and dead "
-                     "time, so every voxel plays a two-direction waveform of its own. dmipy-sim's closed form expands that "
+                     "time, so every voxel plays a two-direction waveform of its own. dmipy-replay's closed form expands that "
                      "waveform exactly; the cost keeps it off this menu. Binned to the menu's 1 % of b, this head needs 9,752 "
                      "encoding classes for the scan's protocol (665 at 3 %), and one class's pose responses take 2-3 minutes "
                      "(WM 104-166 s, GM 4-21 s at 485 measurements on a GH200), so one protocol at one tissue and field is about "
                      "two weeks of one device. The DiSCo Space plays the Swoop exactly.")
+
+
+#: what the page says when the brain cannot be composed from the inputs its configuration names
+UNAVAILABLE = ("**The brain page is not available: its packs are being re-walked for dmipy 3.0.** It composes a brain from one "
+               "white-matter pack and one grey-matter pack and refuses to run until every input its configuration names is one "
+               "this release serves. What is absent or refused now:")
 
 
 # ---- the asset ---------------------------------------------------------------------------------------------------------
@@ -94,7 +101,8 @@ def manifest(where):
 def declared_segments(uri):
     """The segment table ``{n, n_t, T}`` (RPK.md 4.3) a pack declares, read without its arrays: a Hub pack's
     record in its dataset's ``manifest.json`` (``hf://owner/name/path``), a local pack's header."""
-    from dmipy_sim.replay.publish import MANIFEST, header_of, is_hub_uri, parse_uri
+    from dmipy_replay.replay.hub import MANIFEST, is_hub_uri, parse_uri
+    from dmipy_sim.replay.publish import header_of
     if is_hub_uri(uri):
         from huggingface_hub import hf_hub_download
         repo, path = parse_uri(uri)
@@ -111,9 +119,61 @@ def declared_segments(uri):
     return dict(n=int(seg["n"]), n_t=int(seg["n_t"]), T=float(seg["T"]))
 
 
+def _is_404(e):
+    """Whether ``e`` is an HTTP client error whose response says 404 -- the Hub's answer that a repository, a revision or
+    a file is not there (``urllib`` errors carry ``code``, the Hub client's carry ``response``)."""
+    return getattr(e, "code", None) == 404 or getattr(getattr(e, "response", None), "status_code", None) == 404
+
+
+def asset_refusal(where):
+    """Why the asset at ``where`` cannot be read, or None when its manifest reads: a Hub revision (or dataset) the Hub does
+    not have, or a directory without ``manifest.json``. An error that says nothing about the asset itself (the Hub
+    unreachable) is raised, not named."""
+    hub = where.startswith("hf://")
+    try:
+        manifest(where)
+    except Exception as e:
+        if hub and _is_404(e):
+            repo, _, rev = where[len("hf://"):].partition("@")
+            return f"the Hub has no manifest.json of {repo} at revision {rev or 'main'}"
+        if not hub and isinstance(e, FileNotFoundError):
+            return f"{where} has no manifest.json"
+        raise
+    return None
+
+
+def pack_refusal(uri):
+    """Why this page cannot serve the pack at ``uri``, or None: the pack is absent from the Hub or from the disk, the reader
+    refuses its format (the reader's own message names what it does not read), or its window record is not the segment
+    table this page reads (:func:`declared_segments`). A Hub pack is read for its header and its dataset's record only;
+    an error that says nothing about the pack (the Hub unreachable) is raised, not named."""
+    from dmipy_replay import ReplayPack
+    from dmipy_replay.replay.hub import is_hub_uri
+    if is_hub_uri(uri):
+        try:
+            ReplayPack.open(uri)
+        except ValueError as e:
+            return f"the reader refuses it: {e}"
+        except Exception as e:
+            if _is_404(e):
+                return "it is not in its dataset on the Hub"
+            raise
+    elif not os.path.exists(uri):
+        return "there is no such file"
+    try:
+        declared_segments(uri)
+    except ValueError as e:
+        return f"this page cannot read its window record: {e}"
+    except Exception as e:
+        if _is_404(e):
+            return "its dataset has no manifest.json to read the window record from"
+        raise
+    return None
+
+
 def image_rotation(man):
-    """``R`` (image -> scanner) of the asset's grid (:meth:`dmipy_sim.phantom.Grid.from_oblique_affine`)."""
-    from dmipy_sim.phantom import Grid
+    """``R`` (image -> scanner) of the asset's grid (:meth:`dmipy_replay.phantom.Grid.from_oblique_affine`)."""
+    from dmipy_replay.phantom import Grid
     _, R = Grid.from_oblique_affine(np.asarray(man["grid"]["affine"], np.float64), tuple(man["grid"]["shape"]))
     return np.asarray(R, np.float64)
 
@@ -169,11 +229,11 @@ class Asset:
         mask = np.load(os.path.join(d, "mask.npy")).astype(bool)
         if fod.shape != shape + (N_COEF,) or mask.shape != shape:
             raise ValueError(f"the asset's FOD {fod.shape} and mask {mask.shape} are not on its grid {shape} with {N_COEF} coefficients")
-        from dmipy_sim.phantom.orientation import SH_BASES
+        from dmipy_replay.phantom.orientation import SH_BASES
         basis = str(man["fod"]["basis"]).split()[0]
         if SH_BASES.get(basis) != ("tournier07", False) or int(man["fod"]["lmax"]) != LMAX or man["fod"]["frame"] != "image":
-            raise ValueError(f"the asset's FOD is {man['fod']}: this source reads dmipy-sim's required basis (a basis whose "
-                             f"name, the first word, dmipy_sim.phantom.orientation.SH_BASES maps to orthonormal tournier07: "
+            raise ValueError(f"the asset's FOD is {man['fod']}: this source reads dmipy-replay's required basis (a basis whose "
+                             f"name, the first word, dmipy_replay.phantom.orientation.SH_BASES maps to orthonormal tournier07: "
                              f"tournier07, mrtrix3, dmipy-fit) at lmax {LMAX} in the image frame")
         if list(man["fractions"]) != list(TISSUES):
             raise ValueError(f"the asset's fractions are {man['fractions']}, this source reads {list(TISSUES)}")
@@ -231,7 +291,7 @@ class BrainPhysics:
     ``chi_iso`` / ``chi_aniso`` the myelin sheath's susceptibility (SI, the WM pack's field source), ``D_csf`` free
     water's diffusivity (m^2/s), ``m0`` the proton density per tissue relative to CSF, ``wm_pack`` / ``gm_pack`` the
     packs by their configuration label; ``relaxation``, ``contact`` and ``field`` switch the three tiers; ``scanner``
-    the machine (a key of dmipy-sim's catalogue): its slew rate shapes every pulse's ramps, its field and direction are
+    the machine (a key of dmipy-replay's catalogue): its slew rate shapes every pulse's ramps, its field and direction are
     the physics', and every voxel is played the gradient it delivers there with the head centre at isocentre
     (:meth:`Brain.prepare`); None is the ideal scanner, ideal pulses with vertical ramps. All off is bare diffusion at
     the same proton densities and packs."""
@@ -284,7 +344,7 @@ class BrainPhysics:
         (vertical ramps) on the ideal scanner."""
         if self.scanner is None:
             return np.inf
-        from dmipy_sim.acquisition.scanners import ScannerLimits
+        from dmipy_replay.acquisition.scanners import ScannerLimits
         return float(ScannerLimits.of(self.scanner).slew_max)
 
     def label(self):
@@ -296,13 +356,13 @@ class BrainPhysics:
         return f"{self.field_T:g} T along ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f}), tiers {tiers}{grad}"
 
     def tissues(self, wm_pack, gm_pack):
-        """``(wm, gm, csf)`` :class:`dmipy_sim.spec.Tissue` for the packs ``wm_pack`` and ``gm_pack``: the WM pack's
+        """``(wm, gm, csf)`` :class:`dmipy_replay.spec.tissue.Tissue` for the packs ``wm_pack`` and ``gm_pack``: the WM pack's
         pools with their T2 / T1, the walls' rho2 and, on a WM pack whose spec declares its susceptibility field
         present (a magnetic myelin pool), the sheath's susceptibility; the GM pack's pools at grey matter's T2 / T1;
         free water's D, T2 and T1. A tier off leaves its values out (``None`` for a pack with nothing on: its bare
         diffusion). A WM pack whose field is absent has no sheath, so its tissue carries no susceptibility and its
         field tier is zero at any field."""
-        from dmipy_sim.spec import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         wm_pools, gm_pools = Brain.pools(wm_pack), Brain.pools(gm_pack)
         relax, contact = self.relaxation, self.contact
         field = self.field and wm_pack.susceptibility_field == "present"
@@ -335,7 +395,7 @@ def specimen_pose(R, b0_direction):
     image -> scanner rotation and ``W`` the rotation taking the field's scanner-frame direction onto z (the bore's
     field axis), so the packs see the field at ``R.T b0_direction`` in the image frame. A sequence composed at this
     pose carries the gradients ``pose @ g`` (:meth:`Brain.sequence`)."""
-    from dmipy_sim.replay.so3 import rotation_of
+    from dmipy_replay.replay.so3 import rotation_of
     return rotation_of(np.asarray(b0_direction, np.float64)).T @ np.asarray(R, np.float64)
 
 
@@ -504,6 +564,27 @@ class Brain(P.Source):
         return out
 
     @classmethod
+    def unavailable(cls, cfg):
+        """``(title, text)`` when the brain cannot be composed from the inputs the configuration names -- the asset's
+        manifest, or a pack of either menu, is absent, refused by the reader or not readable by this page
+        (:func:`asset_refusal`, :func:`pack_refusal`) -- the text naming each input and why; None when every input reads.
+        The Space serves this text as its page instead of failing to start."""
+        found = []
+        where = asset_location(cfg)
+        why = asset_refusal(where)
+        if why:
+            found.append(f"- the asset `{where}`: {why}")
+        for tissue in ("wm", "gm"):
+            for p in cfg["packs"][tissue]:
+                why = pack_refusal(p["uri"])
+                if why:
+                    found.append(f"- the {tissue.upper()} pack \"{p['label']}\" `{p['uri']}`: {why}")
+        if not found:
+            return None
+        title = cfg["describe"]["title"]
+        return title, "\n\n".join([f"# {title}", UNAVAILABLE, "\n".join(found)])
+
+    @classmethod
     def pack_menu(cls, cfg, tissue):
         """The configuration's packs for ``tissue`` (``wm`` / ``gm``): ``{label: uri}`` in the menu's order."""
         return {p["label"]: p["uri"] for p in cfg["packs"][tissue]}
@@ -520,7 +601,7 @@ class Brain(P.Source):
         """``{class: k}``: per timing class of ``meas``, the number of the pack's windows its acquisition reaches.
         ``segments`` is a declared table ``{n, n_t, T}`` (:func:`declared_segments`) or a pack's meta (its
         ``walk_params.segments``). The acquisition lasts ``T_acq = (G.shape[1] - 1) dt`` of the class's sequence,
-        as :meth:`dmipy_sim.replay.ReplayPack._compile` reads it, and window ``i`` starts at ``i T``; a window whose
+        as :meth:`dmipy_replay.ReplayPack._span` reads it, and window ``i`` starts at ``i T``; a window whose
         first save sits at or beyond ``T_acq`` is not reached, so the save at a window's end belongs to that window
         alone. A pack of one window (``n = 1``) is reached as one window whatever the class; ``k``
         above ``n`` is an acquisition beyond the walk (:meth:`windows_needed` refuses it)."""
@@ -554,12 +635,12 @@ class Brain(P.Source):
 
     def pack(self, tissue, label, k):
         """The pack ``label`` of ``tissue``'s menu holding at least its first ``k`` windows: a Hub URI whose
-        declared table has ``n > 1`` loads ``windows=range(k)`` (:class:`dmipy_sim.phantom.PackSubstrate`; the pack
+        declared table has ``n > 1`` loads ``windows=range(k)`` (:class:`dmipy_replay.phantom.PackSubstrate`; the pack
         records them as ``windows_present``); a local path or a one-window pack loads whole. A later request for
         more windows than it holds reloads with the larger range (the library fetches only the new ranges) and
         replaces the cached pack."""
-        from dmipy_sim.phantom import PackSubstrate
-        from dmipy_sim.replay.publish import is_hub_uri
+        from dmipy_replay.phantom import PackSubstrate
+        from dmipy_replay.replay.hub import is_hub_uri
         key = (tissue, label)
         seg = self.segments(tissue, label)
         if key in self.packs and self.windows_held(self.packs[key], seg) >= int(k):
@@ -640,7 +721,7 @@ class Brain(P.Source):
                    "the head's own susceptibility and RF effects are not modelled",
                    "the head centre at the scanner's isocentre (a machine of the scanner menu plays every voxel the gradient it delivers there; docs/scanner.md)",
                    "no per-voxel split-half floor: the packs' certified floors are the accuracy"],
-            accuracy=("A brain replay is exact composition (the tests check it against dmipy-sim's own `Phantom.compose(...).replay`) of "
+            accuracy=("A brain replay is exact composition (the tests check it against dmipy-replay's own `Phantom.compose(...).replay`) of "
                       "the packs' responses, so its accuracy is the packs' certified Monte-Carlo floors; there is no per-voxel split-half "
                       "floor, because every voxel reads the same two walks."),
             ingredients=("proton density: Σ f·M0 (relative to CSF)", "relaxation: the b = 0 signal's T2 / T1 weight at the echo",
@@ -840,16 +921,16 @@ class Brain(P.Source):
         the image-frame directions turned by ``pose``, trapezoid pulses at the class's delta / Delta / TE with ramps at
         ``slew_rate`` (vertical at the default, infinite), a stimulated echo storing for TM = Delta - delta when the
         class is one."""
-        import dmipy_sim as d
+        from dmipy_replay.sequences import pgse, pgste
         names = np.unique(meas.shape[rows])
         if len(names) != 1:
             raise ValueError(f"one timing class per sequence, got {list(names)}")
         t = self.shapes[str(names[0])]
         dirs = (meas.dirs[rows] @ np.asarray(pose).T).tolist(); b = meas.bvals[rows] * 1e6
         if t.get("kind", "pgse") == "pgste":
-            return d.pgste(dirs, float(t["delta"]), float(t["Delta"]) - float(t["delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000,
-                           slew_rate=float(slew_rate), ste_flip_angles=(90.0, 90.0, 90.0))
-        return d.pgse(dirs, float(t["delta"]), float(t["Delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000, slew_rate=float(slew_rate))
+            return pgste(dirs, float(t["delta"]), float(t["Delta"]) - float(t["delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000,
+                         slew_rate=float(slew_rate), ste_flip_angles=(90.0, 90.0, 90.0))
+        return pgse(dirs, float(t["delta"]), float(t["Delta"]), bvalues=b, TE=float(t["TE"]), n_t=1000, slew_rate=float(slew_rate))
 
     def _b0_sequence(self, name, pose, slew_rate=np.inf):
         """The class ``name``'s b = 0 measurement as a sequence at ``pose`` (:meth:`sequence`): what the b = 0 signal
@@ -895,10 +976,10 @@ class Brain(P.Source):
     @functools.cached_property
     def bore_grid(self):
         """``(grid, index)``: the brain's voxels as they sit in the bore, the head centre (the mask's centroid) at
-        isocentre: :meth:`dmipy_sim.phantom.Grid.from_oblique_affine` of the cropped asset's affine, whose rotation
+        isocentre: :meth:`dmipy_replay.phantom.Grid.from_oblique_affine` of the cropped asset's affine, whose rotation
         is :attr:`Asset.R` (the frame the page composes in), and ``index`` the brain voxels' own indices, each at
         ``affine @ [ijk, 1]`` in the scanner for a left- or right-handed affine."""
-        from dmipy_sim.phantom import Grid
+        from dmipy_replay.phantom import Grid
         A = np.asarray(self.affine, np.float64)
         centre = (A[:3, :3] @ self.vox.mean(0) + A[:3, 3]) * 1e-3
         grid, R = Grid.from_oblique_affine(A, self.mask.shape, isocenter_m=centre)
@@ -908,9 +989,9 @@ class Brain(P.Source):
 
     def encoding(self, meas, physics, rows):
         """``(class_of_voxel, played)``: the timing class ``rows`` of ``meas`` as the run's machine plays it at every brain
-        voxel, binned to ``[scanners] tolerance`` of b (:func:`dmipy_sim.phantom.bore.encoding_classes` on
+        voxel, binned to ``[scanners] tolerance`` of b (:func:`dmipy_replay.phantom.bore.encoding_classes` on
         :attr:`bore_grid`), the played acquisitions in the image frame; computed once per machine, slew and rows."""
-        from dmipy_sim.phantom.bore import encoding_classes
+        from dmipy_replay.phantom.bore import encoding_classes
         import hashlib
         h = hashlib.sha256()
         for x in (meas.bvals[rows], meas.dirs[rows], meas.shape[rows].astype(str)):
@@ -961,13 +1042,13 @@ class Brain(P.Source):
 
     def prepare(self, meas, physics=None):
         """The pose responses of a replay, on the CPU: per timing class of ``meas``, the WM and GM packs' pose
-        responses at the run's tissue, field and specimen pose (dmipy-sim's closed form) contracted to the FOD's
+        responses at the run's tissue, field and specimen pose (dmipy-replay's closed form) contracted to the FOD's
         harmonics, free water's closed form; the true response curves for the explorer and the b = 0 weight of each
         tier alone (both at the first class's shells, within the windows ``meas`` reaches). Loads the windows of the
         chosen packs the classes reach (:meth:`windows_needed`, :meth:`pack`); computed every call and kept in this
         process's cache under :meth:`response_key` (:meth:`cached` reads it)."""
-        from dmipy_sim.phantom import FreeWater
-        from dmipy_sim.replay import so3
+        from dmipy_replay.phantom import FreeWater
+        from dmipy_replay.replay import so3
         t0 = time.perf_counter(); stages = {}
         wm_pack = self.pack("wm", physics.wm_pack, self.windows_needed("wm", physics.wm_pack, meas))
         stages["load_wm"] = time.perf_counter() - t0
@@ -983,7 +1064,7 @@ class Brain(P.Source):
         # per timing class, the acquisitions the voxels are played: the commanded one, or one per encoding class of the
         # machine (its delivered gradient, in the image frame, turned to the specimen's pose)
         plan, seqs = [], []
-        from dmipy_sim.acquisition.waveforms import rotate_waveform
+        from dmipy_replay.acquisition.waveforms import rotate_waveform
         for rows in classes:
             if physics.scanner is None:
                 cls, played = np.zeros(len(self.vox), int), [self.sequence(meas, rows, pose, physics.slew_rate)]
@@ -994,9 +1075,9 @@ class Brain(P.Source):
         prof = self._profile_sequence(meas, classes[0], pose, physics.slew_rate)   # the explorer's curves ride in the same pass
         batch = seqs + ([prof[0]] if prof is not None else [])
         t = time.perf_counter()
-        r_wm = wm_pack.pose_responses(batch, tissue=t_wm, scanner=physics.scanner_field, pose=pose, keep=(LMAX, 0))
+        r_wm = wm_pack.pose_responses(batch, tissue=t_wm, scanner=physics.scanner_field, pose=pose, keep=(LMAX, 0), backend=POSE_BACKEND)
         stages["pose_wm"] = time.perf_counter() - t; t = time.perf_counter()
-        r_gm = gm_pack.pose_responses(batch, tissue=t_gm, scanner=physics.scanner_field, pose=pose, keep=(0, 0))
+        r_gm = gm_pack.pose_responses(batch, tissue=t_gm, scanner=physics.scanner_field, pose=pose, keep=(0, 0), backend=POSE_BACKEND)
         stages["pose_gm"] = time.perf_counter() - t
         free = FreeWater(m0=1.0, tissue=t_csf)
         K = len(seqs)
@@ -1044,7 +1125,7 @@ class Brain(P.Source):
         """The b = 0 signal per tissue with each tier alone, over bare: ``relaxation`` (T2 at the echo, T1 over a
         stimulated echo's storage) per tissue, ``contact`` (the WM walls' survival) for WM; a tier that is off is
         absent. The b = 0 signal has no orientation, so one pose of the pack answers it."""
-        from dmipy_sim.phantom import FreeWater
+        from dmipy_replay.phantom import FreeWater
         seq = self._b0_sequence(str(meas.shape[rows[0]]), pose, physics.slew_rate)
         out = {}
         alone = dict(relaxation=False, contact=False, field=False)
@@ -1148,7 +1229,7 @@ class Brain(P.Source):
     def tracking_inputs(self, sh, density):
         """``(field, seeds)``: the FOD turned from the image frame into the scanner frame on the asset's affine, the
         domain the white matter and the regions (leaving it ends a streamline), ``density^3`` seeds per WM voxel."""
-        from dmipy_sim.replay.so3 import rotate_sh
+        from dmipy_replay.replay.so3 import rotate_sh
         from dmipy_tract import FODField, seeds_from_mask
         a = self.asset
         world = np.zeros(np.shape(sh), np.float32)
@@ -1234,7 +1315,7 @@ class Brain(P.Source):
                 ["regions", f"{self.regions.n} ({len(self.regions.groups)} lobar groups)"],
                 ["the scan's timing class", self.shapes[SCAN]["label"]],
                 *[list(n) for n in self.asset.notes],
-                ["replay", "exact composition of the packs' pose responses (dmipy-sim's phantom route), float32 on the device"],
+                ["replay", "exact composition of the packs' pose responses (dmipy-replay's phantom route), float32 on the device"],
                 ["per-voxel split-half floor", "none: every voxel reads the same two walks; the packs' certified floors below are the accuracy"]]
         for (tissue, label), pk in self.packs.items():
             seg = self.segments(tissue, label); held = self.windows_held(pk, seg)
@@ -1345,7 +1426,7 @@ def _warm_worker(cfg, where, entries, queue):
     """The warm-up's process (:meth:`Brain.warm_in_background`): its own :class:`Brain` on the same configuration
     and asset, every ``(meas, physics)`` of ``entries`` computed on the CPU and put on ``queue`` as
     ``(response_key, Kernels)``, then ``None``. One line per entry on stdout (the Space's run log) with its index,
-    the seconds it took, :attr:`Kernels.stages`, the pose expansion's phases (dmipy-sim's run record, which the
+    the seconds it took, :attr:`Kernels.stages`, the pose expansion's phases (dmipy-replay's phase record, which the
     expansion joins), the process's user and system CPU seconds and page faults over the entry (a system-bound entry
     is paying the kernel, for pages or I/O, not computing) and the seconds since the start."""
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -1357,11 +1438,11 @@ def _warm_worker(cfg, where, entries, queue):
     try:
         src = Brain(cfg, asset=where)
         print(f"warm-up: the source loaded, RSS {_rss_gb():.1f} GB ({time.perf_counter() - t0:.0f} s since the start)", flush=True)
-        from dmipy_sim.run import Run
+        from dmipy_replay.replay.phases import Phases
         import resource
         for i, (meas, ph) in enumerate(entries, 1):
             t = time.perf_counter(); r0 = resource.getrusage(resource.RUSAGE_SELF)
-            with Run("brain-warm", params=dict(entry=i)) as run:              # the pose expansion's phases join this record
+            with Phases("brain-warm", params=dict(entry=i)) as run:           # the pose expansion's phases join this record
                 kernels = src.prepare(meas, ph)
             r1 = resource.getrusage(resource.RUSAGE_SELF)
             phases = ", ".join(f"{n} {v:.1f}" for n, v in run.phase_seconds().items())
@@ -1441,9 +1522,9 @@ def _floor(pack):
 @functools.lru_cache(maxsize=1)
 def axis_map():
     """``(n_so3(8, 0), 45)``: a compact even-order density's harmonics to its SO(3) coefficients
-    (:func:`dmipy_sim.replay.so3.axis_density_coeffs`, which is linear), so ``resp.retained(8, 0) @ axis_map()`` is the
+    (:func:`dmipy_replay.replay.so3.axis_density_coeffs`, which is linear), so ``resp.retained(8, 0) @ axis_map()`` is the
     response contracted to the FOD's harmonics."""
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     return np.stack([so3.axis_density_coeffs(e, LMAX, 0) for e in np.eye(N_COEF)], 1)
 
 

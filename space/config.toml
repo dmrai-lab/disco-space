@@ -4,15 +4,15 @@ source = "disco"                                 # space/sources/disco.py: the D
 
 [data]
 repo = "SubstrateCommons/disco-time-segments"   # the public time-segment layout of the DiSCo v2 walk
-layout = "disco"                                 # the layout's prefix in the dataset (dmipy_sim.replay.time_segments, format time_segments/2)
+layout = "disco"                                 # the layout's prefix in the dataset (dmipy_replay.replay.time_segments, format time_segments/2)
 revision = "a38679f061f1487b6688ebb37b7ee949da000ea3"   # the dataset revision the layout is read at (the OGSE class cos-f50-T20 and the b-tensor class qte-now-80)
 manifest_sha256 = "0fe044fd6963de74c6174276e35dd2ddc219d9d4ef2a476df0150ada48e23ef9"   # the layout manifest the page was accepted on (checked at load)
 pack = "hf://SubstrateCommons/disco-replay/disco"         # the replay pack the layout was contracted from: the acceptance test's reference
 pack_revision = "b06eb4179a99ef885af73de1ddfbc2f3c230de37"
 strands = "substrate/DiSCo_Strands_Trajectories.tck"   # the ground truth's strand centrelines (CC BY 4.0) in the replay dataset, read at pack_revision
 
-# The timing classes ("shapes"), each ONE waveform the layout stores (space/classes.py builds it with dmipy-sim's own
-# builders on the layout's grid, TE = 53.5 ms, 1000 samples; checked against the layout's partition at load): square
+# The timing classes ("shapes"), each ONE waveform the layout stores (space/classes.py builds it with dmipy-replay's
+# sequence builders on the layout's grid, TE = 53.5 ms, 1000 samples; checked against the layout's partition at load): square
 # pulses (slew_rate = inf), PGSE unless kind = "pgste" (a stimulated echo storing for TM = Delta - delta) or "ogse"
 # (a cosine of `frequency` Hz over `duration` s on each side of the 180, its edges ramped at `slew_rate` T/m/s as built
 # at `b_built` s/mm^2: the class stores that one shape at every b). delta / Delta / TE in seconds (an OGSE's delta /
@@ -131,7 +131,7 @@ default_field = 3.0
 default_on = true
 pools = ["intra", "extra"]          # the pack's seeded pools (its spec also names a myelin pool nobody was seeded in)
 
-# The scanner menu after "ideal": catalogue machines of dmipy-sim (ScannerLimits.of(key)), each applied with every term
+# The scanner menu after "ideal": catalogue machines of dmipy-replay (ScannerLimits.of(key)), each applied with every term
 # its entry carries (docs/scanner.md); the phantom sits at a distance from isocentre along a scanner axis (the panel's
 # placement, at most 7.9 cm: the whole 1 mm cube inside the Swoop's 8 cm anchor). The Swoop's own gradient needs the
 # layout's background vectors (segment_rows(background=True)); a layout without them refuses it by name.

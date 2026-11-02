@@ -356,7 +356,7 @@ class Physics:
     """The tissue and the scanner a replay is evaluated at: the field (T) and its direction in the substrate frame,
     T2 and T1 per seeded pool (s), the walls' surface relaxivity ``rho2`` (m/s), the sheath's ``chi_iso`` and
     ``chi_aniso`` (SI, the field source); ``relaxation`` / ``contact`` / ``field`` switch the three tiers, so a tier
-    is a knob the page can turn off one at a time. :meth:`tissue` is the :class:`dmipy_sim.spec.tissue.Tissue` for
+    is a knob the page can turn off one at a time. :meth:`tissue` is the :class:`dmipy_replay.spec.tissue.Tissue` for
     the replay (None when every tier is off: bare diffusion). ``scanner`` is the machine (a catalogue key; None: the
     ideal scanner), whose field the physics is at, and ``offset_m`` where the phantom's centre sits from isocentre
     (metres, the scanner's frame): together they say what gradient every voxel is delivered (docs/scanner.md)."""
@@ -414,7 +414,7 @@ class Physics:
     def tissue(self, unseeded=()):
         """The Tissue for the replay; ``unseeded`` names the substrate's pools no walker was seeded in, which the
         library's mapping still wants a value for: they take the first seeded pool's (nothing reads it)."""
-        from dmipy_sim.spec.tissue import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         if self.bare:
             return None
         first = self.pools[0]
@@ -523,7 +523,8 @@ class Source:
     The page's side: :meth:`describe` (the title and every text that names the source), :meth:`presets` and
     :meth:`protocol` (the acquisitions offered), :meth:`panel` (the tissue-and-scanner inputs),
     :meth:`catalogue_numbers`, :meth:`physics_from`, :meth:`knobs` and :meth:`apply_knob` (B, one knob away from A),
-    :meth:`refused_machines` (the catalogued machines kept off the scanner menu, and why),
+    :meth:`refused_machines` (the catalogued machines kept off the scanner menu, and why), :meth:`unavailable` (the
+    page's text when the inputs the configuration names cannot be read),
     :meth:`tracking_controls` and :meth:`estimated_seconds` (the GPU seconds a run reserves on a shared pool).
 
     The run's side: :attr:`regions` and :attr:`affine`, :meth:`validate`, :meth:`prepare` (the share of a replay
@@ -548,6 +549,12 @@ class Source:
         """``{label: reason}``: the catalogued machines this source keeps off its scanner menu, each with the reason the
         page shows under the menu. None here."""
         return {}
+
+    @classmethod
+    def unavailable(cls, cfg):
+        """``(title, text)`` when the inputs the configuration names cannot be read, the text naming each and why, else
+        None: the Space then serves that text as its page. Read at startup, before the page is built. None here."""
+        return None
 
     @classmethod
     def describe(cls, cfg):
@@ -1044,7 +1051,7 @@ def b0_snr(res):
 def gradient_needed(b, delta, Delta):
     """The square-pulse PGSE amplitude (T/m) that gives ``b`` (s/mm^2) at ``delta`` / ``Delta`` (s):
     b = γ² G² δ² (Δ − δ/3)."""
-    from dmipy_sim.acquisition.scanners import GAMMA
+    from dmipy_analytic.constants import GAMMA
     return float(np.sqrt(b * 1e6 / (GAMMA ** 2 * delta ** 2 * (Delta - delta / 3.0))))
 
 
@@ -1053,7 +1060,7 @@ IDEAL = "ideal: no scanner terms, any gradient amplitude"
 
 def machines(cfg):
     """The configuration's scanner menu after :data:`IDEAL`: ``{label: catalogue key}`` (``[scanners] machines``), each a
-    machine of dmipy-sim's catalogue whose every catalogued term the page applies (docs/scanner.md)."""
+    machine of dmipy-replay's catalogue whose every catalogued term the page applies (docs/scanner.md)."""
     return {m["label"]: m["key"] for m in (cfg.get("scanners") or {}).get("machines", [])}
 
 
@@ -1068,8 +1075,8 @@ def machine(cfg, label):
 
 
 def limits(key):
-    """The :class:`dmipy_sim.acquisition.scanners.ScannerLimits` of a catalogue key."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    """The :class:`dmipy_replay.acquisition.scanners.ScannerLimits` of a catalogue key."""
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     return ScannerLimits.of(key)
 
 
@@ -1107,7 +1114,7 @@ def scanner_terms(key):
     """The rows of a machine's term table: ``(term, applied, where the number comes from)``. ``applied`` is whether
     the catalogue carries the term (the page applies every one it carries); the source is the catalogue leaves'
     confidence as the page names it (:data:`CONFIDENCE`) with their citation keys, or why the term is absent."""
-    from dmipy_sim.acquisition import scanner_constants as scc
+    from dmipy_replay.acquisition import scanner_constants as scc
     L = limits(key)
     _key, entry, _kind = scc.resolve(key)
     rows = []

@@ -15,7 +15,7 @@ short_description: DiSCo replay to connectome on the shared GPU pool
 
 The DiSCo page (dmrai-lab/disco-space) on Hugging Face's shared GPU pool, serving the v2 DiSCo walk through its
 time-segment layout (`SubstrateCommons/disco-time-segments`): the compute backend is PyTorch (`DISCO_BACKEND=torch`:
-dmipy-sim's time-segment image, dmipy-fit's `csd_tournier07_torch`, dmipy-tract's torch tracker), the GPU exists for
+dmipy-replay's time-segment image, dmipy-fit's `csd_tournier07_torch`, dmipy-tract's torch tracker), the GPU exists for
 the duration of one run (`spaces.GPU`), and the layout's packed words are streamed to the device a chunk at a time
 inside every call (decoded in the kernel) from the layout downloaded from the Hub when the container started. Its
 acquisitions are the paper's DiSCo flagship set: DiSCo's own 364 measurements, clinical, research, Connectome 2.0 and
@@ -33,7 +33,7 @@ run (`space.app.compute`: the replays, the noise, the CSD, the tracking, the sco
 GPU; the page writes the files and draws in its own process after the device is released (disco-space#7).
 
 Measured on the pool (DiSCo 364, every tier, density 4, 2026-09-30, dmipy-sim 7f6f1fa with #522 and #523; not
-re-measured at the current pins, dmipy-sim 1b79d2e, which the pool runs only once deployed):
+re-measured on the dmipy 3.0 line, which the pool runs once deployed):
 
 | run | device held | handoff | client wall | reserved |
 |---|---|---|---|---|

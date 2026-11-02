@@ -94,8 +94,7 @@ def fit_msmt_csd(data, bvals, bvecs, mask, sh_order=SH_ORDER, solver="csd_cvxpy"
     those voxels are fit; the rest of ``mask`` is still used to estimate the responses.
 
     Always fits serially (``use_parallel_processing=False``): dmipy-fit's parallel path forks a
-    ``ProcessPoolExecutor`` after the JAX import this fit chain pulls in (``dmipy_sim.replay.so3``, for the SH
-    basis), which JAX warns is unsafe. Thread-level parallelism (BLAS/OSQP) is capped by
+    ``ProcessPoolExecutor``, which JAX warns is unsafe once JAX is imported. Thread-level parallelism (BLAS/OSQP) is capped by
     ``OMP_NUM_THREADS``/``MKL_NUM_THREADS`` in the environment, per this lab's shared-box rule.
 
     Returns ``(sh, fractions, S0_responses, response_models, scheme, seconds)``: ``sh`` is ``(X, Y, Z, n_coef)`` (the

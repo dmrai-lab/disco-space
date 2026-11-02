@@ -15,7 +15,8 @@ short_description: DiSCo replay, any acquisition, a connectome, while you wait
 The application behind the Hugging Face Space **rfick/disco** (to move to SubstrateCommons once the organisation has
 compute credits; dmrai-lab/dmipy-sim#505): the Docker
 image, the pinned dependency stack, the Gradio page, the acceptance gate, and the deploy workflow. The libraries
-(dmipy-sim, dmipy-fit, dmipy-tract) stay free of all of it; this repository is the one place the world is pinned.
+(dmipy-replay, dmipy-sim, dmipy-fit, dmipy-tract) stay free of all of it; this repository is the one place the world is pinned,
+to the released dmipy 3.0 line on PyPI.
 
 **What it does.** The DiSCo phantom's walkers were simulated once and published as a replay pack
 ([SubstrateCommons/disco-replay](https://huggingface.co/datasets/SubstrateCommons/disco-replay)). A user picks an
@@ -32,7 +33,7 @@ susceptibility, each tier switchable on its own; the defaults are dmipy-sim's ci
 nearest field. A stimulated-echo pulse timing (δ 7.6 / TM 38.3 ms) is the twin of DiSCo's b = 3091 class: the same
 diffusion time with the magnetisation stored along z, so the field acts only during the two δ.
 
-**The scanner.** Besides the ideal scanner the menu holds three catalogued machines of dmipy-sim (the Hyperfine Swoop
+**The scanner.** Besides the ideal scanner the menu holds three catalogued machines of dmipy-replay (the Hyperfine Swoop
 64 mT, the Siemens Prisma 3 T and Terra 7 T). A machine sets the field and its direction, refuses a shell beyond its
 gradient limit and plays every term its catalogue entry carries at the phantom's place in the bore: on DiSCo, a
 distance from isocentre the page offers, every voxel's delivered gradient exactly on the shape-moment layout (with
@@ -60,10 +61,10 @@ docker run -p 7860:7860 -e DISCO_MODE=full -e DISCO_COLUMNS=/columns -v /path/to
     ghcr.io/dmrai-lab/disco-space                                                        # full: the pack on disk
 ```
 
-**The data path.** `SubstrateCommons/disco-time-segments` is dmipy-sim's *time-segment layout* of the v2 DiSCo walk
+**The data path.** `SubstrateCommons/disco-time-segments` is the *time-segment layout* (dmipy-sim writes it, dmipy-replay reads it) of the v2 DiSCo walk
 (321 M walkers): per walker and term of each stored timing class, the term vector of its path, packed into 11-12-bit
 fields of 32-bit words, beside each sequence group's tier words (pool, gated contact, the field basis's channels) and
-background words. A class is ONE waveform (`space/classes.py` builds it from `[shapes]` with dmipy-sim's own builders
+background words. A class is ONE waveform (`space/classes.py` builds it from `[shapes]` with dmipy-replay's sequence builders
 and checks it against the layout's partition at load): square-lobe PGSE classes, a stimulated echo, and the cosine
 OGSE at 50 Hz (a shaped term, its 200 T/m/s edges as built at b = 1000). A shell plays its class's waveform at its
 b-values and directions; the image streams the packed words to the device a chunk at a time and decodes them in the
@@ -78,7 +79,7 @@ protocol bare / 3 T / 7 T and every preset.
 ```
 Dockerfile, entrypoint.sh   python:3.11-slim, the pinned stack, ldconfig for the CUDA wheels, caches on /data (self-contained)
 Dockerfile.base / .space    the same split in two: the stack as ghcr.io/dmrai-lab/disco-space (image.yml), the app on top
-requirements.txt            the pins (dmipy packages by commit)
+requirements.txt            the pins (the released dmipy 3.0 line from PyPI)
 space/config.toml           the DiSCo Space: dataset + layout revision, the timing classes, DiSCo's shells, presets, tracking, the gate
 space/brain.toml            the brain Space (DISCO_CONFIG=brain.toml): the asset, the pack menu, the timing classes, presets, the GPU budget
 space/pipeline.py           replay -> noise -> reconstruction -> track -> score, plain functions with timings; the Source interface
@@ -91,7 +92,7 @@ space/viewers.py            the figures (matplotlib slices and matrices, Plotly 
 data/                       DiSCo mask, regions, gradient table, ground-truth matrices and strands (CC BY 4.0, see SOURCE.md)
 tests/test_pipeline.py      CPU: protocol construction, DiSCo's table, the score on the ground truth itself
 tests/test_acceptance.py    GPU + data: the gate (Pearson, missed pairs, the reference volume, timings)
-tests/test_brain.py         the brain source on its local fixture: the replay against dmipy-sim's Phantom, the page's chain
+tests/test_brain.py         the brain source on its local fixture: the replay against dmipy-replay's Phantom, the page's chain
 tools/build_brain_fixture.py  the BATMAN subject in the brain asset's layout (local development fixture, never published)
 tools/measure_brain.py      the brain's costs per stage (the [budget] of brain.toml is refit from it)
 .github/workflows/gate.yml  the gate as a Hugging Face Job on an L4 (GitHub runners have no GPU)
@@ -109,8 +110,8 @@ the last digit, 0.9270634171621878, steady 18.4 s on an A10G). The app then need
 13 GB layout and compile before it serves, which is the storage item, not the image's.
 
 **Storage.** Both Spaces download the layout from the dataset at the config's pinned revision when their container
-starts (the Docker Space into `/data/hf` on its own disk, the ZeroGPU parent process into the Hub cache before the
-page serves), so a wake costs one download per container start, not per visitor; nothing is mounted. The Storage
+starts (dmipy-replay's Hub client writes it to `$DMIPY_REPLAY_CACHE`, else `~/.cache/dmipy-replay`: the Docker Space's image
+sets `/data/replay` on its own disk, the ZeroGPU parent process uses the default before the page serves), so a wake costs one download per container start, not per visitor; nothing is mounted. The Storage
 Bucket of the first deployment (`rfick/disco-space-data`) is retired by `tools/deploy.py`, which removes the
 `DISCO_MOMENTS` variable and any volume it finds. Measured 2026-09-29 (A10G, with the bucket): a wake without a
 build served in 16 s and the first DiSCo 364 request after it answered in 86 s wall; the Hub-download figures are
@@ -118,7 +119,7 @@ measured on the next deploy.
 
 ```bash
 pip install -r requirements.txt
-python -m space.app                              # http://localhost:7860; the layout downloads into the Hub cache
+python -m space.app                              # http://localhost:7860; the layout downloads into dmipy-replay's cache
 pytest tests/test_pipeline.py                    # CPU
 JAX_PLATFORMS=cuda XLA_FLAGS=--xla_gpu_deterministic_ops=true pytest tests/test_acceptance.py -s   # the gate, on a GPU
 ```
@@ -156,8 +157,8 @@ machinery are the same; the source (`space/sources/brain.py`) is a real brain co
 
 ## Measured
 
-**The gate at the current pins** (dmipy-sim 1b79d2e, dmipy-fit c3dcc54, dmipy-tract 7da22c3, the layout at dataset
-revision afe5589): DiSCo 364, noiseless, 659,840 seeds, deterministic XLA ops, JAX on a GH200 (XLA memory
+**The gate at the pins of 2026-10-04** (dmipy-sim 1b79d2e, dmipy-fit c3dcc54, dmipy-tract 7da22c3, the layout at dataset
+revision afe5589; not re-measured on the dmipy 3.0 line): DiSCo 364, noiseless, 659,840 seeds, deterministic XLA ops, JAX on a GH200 (XLA memory
 fraction 0.3), 2026-10-04; `tests/test_acceptance.py`, 7 of 7 passed in each of two runs.
 
 Two runs: the first with an empty Hub cache, the second right after it.
@@ -189,7 +190,7 @@ In run 1, on a quiet device, a machine's steady replay adds 1.4 s (the Prisma, t
 background columns) to the ideal scanner's 1.9 s: the delivered vectors on the host and the per-tile gather. Run 2's
 steady replays are 0.3-1.6 s higher, the ideal scanner's included: the box is shared.
 
-**Earlier pins, not re-measured at the current one** (dmipy-sim 22fc873 / a184a8f, 2026-09-29), the gate on the same
+**Earlier pins, not re-measured on the dmipy 3.0 line** (dmipy-sim 22fc873 / a184a8f, 2026-09-29), the gate on the same
 protocol:
 
 | stage | L40S first call (s) | L40S steady (s) | L4 first call (s) | L4 steady (s) |
@@ -204,7 +205,7 @@ Score on both: Pearson 0.927 vs strand count, 0.929 vs cross-sectional area; 120
 the replay within 2.0e-7 of the published bare reference (K = 64 bands, band error 1.4e-4 against the pack's floor
 4.8e-3). The L4 run is the gate job in the Space's own image (`tools/gate_job.py`, 2026-09-29).
 
-**Live Space** (not re-measured at the current pins; `rfick/disco`, A10G small after two "not enough hardware capacity" failures on the L4 on 2026-09-29,
+**Live Space** (not re-measured on the dmipy 3.0 line; `rfick/disco`, A10G small after two "not enough hardware capacity" failures on the L4 on 2026-09-29,
 through its API with `tools/live.py`): first request after a cold start 150 s wall (layout on the device 104 s
 once per process, then 49.6 s for DiSCo 364 at SNR 30 including every compile: replay 9.4, noise 1.1, CSD 6.5,
 tracking 32.4, score 0.3; Pearson 0.924 / 0.926). A custom two-shell protocol (77 measurements) right after: 34 s

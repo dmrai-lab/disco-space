@@ -1,8 +1,9 @@
-# The pinned stack of the DiSCo Space. The dmipy packages take no version bumps until after the replay paper, so
-# they are pinned by commit; jax at the version the numbers in README.md were measured with.
+# The pinned stack of the DiSCo Space: the released dmipy 3.0 line from PyPI; jax at the version the numbers in README.md
+# were measured with. dmipy-replay's extras: `pose` (the pose expansion and the CPU thread cap) and `jax` (the Docker
+# Space's compute backend).
 jax[cuda12]==0.10.2
 jaxopt==0.8.5
-numpy>=1.26,<3
+numpy>=2.0,<3
 scipy>=1.11
 nibabel==5.4.2
 safetensors>=0.4
@@ -12,8 +13,9 @@ matplotlib>=3.8
 plotly>=5.20
 pillow>=10
 gradio==6.28.0
-dipy>=1.9                       # dmipy-fit's tensor fit for the response function reads a dipy GradientTable
-# dmipy-sim: main at the merge of #828 (the columnar field window; after #823, the streamed time-segment image)
-dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@8d7b97f982e0c10e744d0065dd2cafbcc1c6d781
-dmipy-fit @ git+https://github.com/dmrai-lab/dmipy-fit@c3dcc546595cbde8e8e7c7bb2ff4e87f099d5dab
-dmipy-tract @ git+https://github.com/dmrai-lab/dmipy-tract@ffc8c8b32f61c26177ee8426e638aace1664b6d3
+dipy>=1.9                       # tools/build_brain_asset.py and tools/build_parcellation.py, and their tests; no Space code imports it
+dmipy-replay[pose,jax]==0.2.0
+dmipy-analytic==3.0.0
+dmipy-sim==3.0.0
+dmipy-fit==3.0.0
+dmipy-tract==0.1.0

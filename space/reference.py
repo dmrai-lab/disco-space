@@ -9,7 +9,7 @@ import numpy as np
 
 def open_pack(uri, workers=8):
     """The columnar replay pack at ``uri`` (``hf://owner/name/prefix`` or a directory)."""
-    from dmipy_sim.replay.columnar import ColumnarPack
+    from dmipy_replay.replay.columnar import ColumnarPack
     return ColumnarPack(uri, workers=workers)
 
 
@@ -25,7 +25,7 @@ def replay_at(pack, voxels, sequence, tissue=None, scanner=None):
     """``(n_voxels, n_meas)``: each voxel's weighted ensemble magnitude under ``sequence`` (normalised by its walkers'
     weight, as the layout's image is), from the pack's own rows at ``voxels`` (every band; the field modes and the
     contact read when the tissue needs them)."""
-    from dmipy_sim.phantom.grid import Grid
+    from dmipy_replay.phantom.grid import Grid
     grid = Grid.from_meta(pack.index["grid"])
     need_field = tissue is not None and (getattr(tissue, "chi_iso", None) or getattr(tissue, "chi_aniso", None))
     view = pack.view(voxels=voxels, contact=tissue is not None,

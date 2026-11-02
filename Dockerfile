@@ -1,9 +1,8 @@
 # The DiSCo Space image: python 3.11, the pinned stack (requirements.txt), the app on port 7860.
 # Built by Hugging Face on every push to the Space repo (no GPU at build time: JAX compiles at first use, into
-# JAX_COMPILATION_CACHE_DIR, which lives on the Space's persistent storage when one is mounted at /data).
+# JAX_COMPILATION_CACHE_DIR, which lives on the Space's persistent storage when one is mounted at /data; the layout
+# dmipy-replay downloads from the Hub goes to DMIPY_REPLAY_CACHE beside it).
 FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 user
 ENV PATH=/home/user/.local/bin:$PATH \
@@ -13,6 +12,7 @@ ENV PATH=/home/user/.local/bin:$PATH \
     JAX_COMPILATION_CACHE_DIR=/data/jax-cache \
     JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0.5 \
     HF_HOME=/data/hf \
+    DMIPY_REPLAY_CACHE=/data/replay \
     MPLCONFIGDIR=/tmp/mpl
 
 WORKDIR /app

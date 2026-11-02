@@ -1,5 +1,5 @@
 """The b-tensor class's encodings (space/tensor.py) without the layout: every row's b-tensor, read off the sequence by
-dmipy-sim, is the encoding asked for; the class's waveform stays inside the scanner it was designed for; the maps
+dmipy-replay, is the encoding asked for; the class's waveform stays inside the scanner it was designed for; the maps
 recover a known microscopic anisotropy from Gaussian compartments played through the same rows."""
 import numpy as np
 import pytest
@@ -17,9 +17,9 @@ def _rows(bvals=(500.0, 1000.0, 2000.0), n=12):
 
 def test_every_row_is_the_encoding_asked_for():
     """b to 1e-6 relative and b_delta to 1e-6 (1, -1/2, 0) for every row; the b = 0 row plays nothing."""
-    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
+    from dmipy_replay.acquisition.waveforms import btensor_invariants
     seq, enc, bs = _rows()
-    B = calc_btensor(seq)
+    B = seq.btensor()
     b, b_delta, _ = btensor_invariants(B)
     assert enc[0] == "b0" and abs(b[0]) < 1e-6
     for e in T.ENCODINGS:
@@ -46,8 +46,7 @@ def test_the_maps_recover_a_known_microscopic_anisotropy(bvals):
     own b-tensors: MD within 3 %, muFA within 0.03 over the b-values (the cumulant fits' own truncation); the powder
     averages are read by the b-values as given (700 is not 0.7 x 1e3 in floating point)."""
     seq, enc, bs = _rows(bvals=bvals, n=30)
-    from dmipy_sim.acquisition.waveforms import calc_btensor
-    B = calc_btensor(seq) * 1e-9                                       # s/m^2 -> ms/um^2
+    B = seq.btensor() * 1e-9                                           # s/m^2 -> ms/um^2
     D_iso, mufa = 1.0, 0.8
     x = mufa ** 2 * D_iso ** 2 / (3 - 2 * mufa ** 2)                  # (D_iso D_Delta)^2 of an axisymmetric tensor of that muFA
     D_delta = np.sqrt(x) / D_iso
@@ -65,9 +64,9 @@ def test_the_maps_recover_a_known_microscopic_anisotropy(bvals):
 
 def test_the_tensor_preset_is_linear_and_spherical_rows_on_the_class_and_flags_a_prisma():
     """The preset: one b = 0 row, then LTE and STE interleaved at b 100, 700, 1400, 2000 with 6, 6, 10, 16 axes, every
-    row's b-tensor the one asked for as dmipy-sim reads it off the sequence the Layout plays; rotated, the rows need
+    row's b-tensor the one asked for as dmipy-replay reads it off the sequence the Layout plays; rotated, the rows need
     more than a Prisma's 80 mT/m on one axis, so the page flags that machine and passes the ideal scanner."""
-    from dmipy_sim.acquisition.waveforms import btensor_invariants, calc_btensor
+    from dmipy_replay.acquisition.waveforms import btensor_invariants
     from space import classes as C
     name = next(n for n in CFG["presets"] if "tensor" in CFG["presets"][n])
     p = P.preset_protocol(CFG, name)
@@ -75,7 +74,7 @@ def test_the_tensor_preset_is_linear_and_spherical_rows_on_the_class_and_flags_a
         (e, b, n) for b, n in ((100.0, 6), (700.0, 6), (1400.0, 10), (2000.0, 16)) for e in ("LTE", "STE")]
     m = P.measurements(p, CFG["shapes"])
     G = C.tensor_rows(TC, m.encoding, m.bvals, m.dirs)
-    b, b_delta, _ = btensor_invariants(calc_btensor(T._sequence(G)))
+    b, b_delta, _ = btensor_invariants(T._sequence(G).btensor())
     np.testing.assert_allclose(b[1:] / 1e6, m.bvals[1:], rtol=1e-6)
     np.testing.assert_allclose(b_delta[m.encoding == "LTE"], 1.0, atol=1e-6); np.testing.assert_allclose(b_delta[m.encoding == "STE"], 0.0, atol=1e-6)
     rows = P.playable(p, CFG["shapes"], "siemens_magnetom_prisma_3T")
@@ -89,8 +88,7 @@ def test_the_maps_hold_under_noise_on_one_b0_row():
     0.08 of the truth and MD within 5 % (a fit through ln S/S0 = 0 at b = 0 reads that noise as curvature)."""
     bvals = (100.0, 700.0, 1400.0, 2000.0)
     seq, enc, bs = _rows(bvals=bvals, n=10)
-    from dmipy_sim.acquisition.waveforms import calc_btensor
-    B = calc_btensor(seq) * 1e-9
+    B = seq.btensor() * 1e-9
     D_iso, mufa = 0.8, 0.7
     x = mufa ** 2 * D_iso ** 2 / (3 - 2 * mufa ** 2); D_delta = np.sqrt(x) / D_iso
     rng = np.random.default_rng(1)

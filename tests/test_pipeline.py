@@ -39,7 +39,6 @@ def test_each_class_plays_its_one_waveform():
     """A class's rows are its one shape scaled to each row's b along each row's direction: the b of every row is its
     own; a square PGSE class needs the textbook amplitude; the OGSE class keeps the 200 T/m/s edges of its b = 1000
     build at every b (the shape is fixed), a b = 0 row plays nothing."""
-    from dmipy_sim.acquisition.waveforms import calc_b
     from space import classes as C
     u = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8], [0.0, 0.0, 1.0]])
     for name, sh in CFG["shapes"].items():
@@ -47,7 +46,7 @@ def test_each_class_plays_its_one_waveform():
             continue
         b = np.array([500.0, 1000.0, 0.0]) if C.kind(sh) == "ogse" else np.array([1000.0, 3000.0, 0.0])
         seq = C.play(sh, b * 1e6, u)
-        np.testing.assert_allclose(calc_b(seq), b * 1e6, rtol=1e-5, atol=1e3)
+        np.testing.assert_allclose(seq.b(), b * 1e6, rtol=1e-5, atol=1e3)
         G = np.asarray(seq.G, np.float64)
         assert not G[2].any()
         if C.kind(sh) == "pgse":
@@ -311,7 +310,7 @@ def test_the_layout_at_the_pinned_revision_holds_the_configs_classes_and_tiers()
     waveform (its template fits them), and the tiers when the tissue panel starts on (needs the Hub; skipped offline)."""
     import hashlib
     import json
-    from dmipy_sim.replay.time_segments import Partition, Shape
+    from dmipy_replay.replay.time_segments import Partition, Shape
     from space import classes as C
     hf = pytest.importorskip("huggingface_hub")
     d = CFG["data"]
@@ -390,7 +389,7 @@ def test_a_machine_reaches_the_layout_as_a_delivery_at_the_placement():
     hands it to that class's image; the image's normalised signal is scaled by every voxel's walker weight; a machine
     with its own gradient on a class without background vectors, and any machine on a shaped class (the OGSE), is
     refused by name."""
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from space import classes as C
     seen = []
 
@@ -440,7 +439,7 @@ def test_each_preset_starts_at_its_own_snr():
 
 
 def test_a_tractogram_writes_to_tck_and_reads_back(tmp_path):
-    """The .tck download: dmipy-tract's writer through dmipy-sim's at the pinned commits (their signatures agree)."""
+    """The .tck download: dmipy-tract's writer read back through dmipy-sim's reader (their conventions agree)."""
     from dmipy_sim.io.strands import read_tck
     from dmipy_tract import Tractogram
     t = Tractogram(np.random.default_rng(0).random((10, 3)).astype(np.float32), np.array([0, 4, 10]), np.array([0, 1]), np.zeros((2, 2), int))

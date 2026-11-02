@@ -1,7 +1,7 @@
 """The DiSCo source: the DiSCo phantom's 40^3 grid replayed from its stored walk, tracked from the sixteen regions
 and scored against the dataset's strand-count and cross-sectional-area matrices (CC BY 4.0, ``data/SOURCE.md``).
 
-Two sources replay the same walk. :class:`Layout` (demo mode) is dmipy-sim's time-segment layout: the DiSCo walk
+Two sources replay the same walk. :class:`Layout` (demo mode) is dmipy-replay's time-segment layout: the DiSCo walk
 contracted once per stored waveform ("class"), so a protocol on those classes at any b-values, directions,
 tissue and field is an elementwise kernel on device-resident rows, in seconds. :class:`Columns` (full mode) is the
 columnar replay pack itself, read once per run for any pulse timing, in minutes. Both are a :class:`Disco`: the
@@ -418,7 +418,7 @@ def compare(a, b):
 
 
 class Layout(Disco):
-    """Demo mode: dmipy-sim's time-segment layout (``dmipy_sim.replay.time_segments``) at the config's dataset revision,
+    """Demo mode: dmipy-replay's time-segment layout (``dmipy_replay.replay.time_segments``) at the config's dataset revision,
     or a local copy. Every stored class is one waveform (:mod:`space.classes`), checked at load to be the layout's
     partition of that name; a shell plays it at its b-values and directions."""
     mode = "demo"
@@ -430,13 +430,13 @@ class Layout(Disco):
 
     def __init__(self, cfg, *, local=None):
         import hashlib
-        from dmipy_sim.replay.time_segments import MANIFEST, TimeSegmentLayout
+        from dmipy_replay.replay.time_segments import MANIFEST, TimeSegmentLayout
         from .. import classes as C
         super().__init__(cfg)
         d = cfg["data"]
         uri = local or f"hf://{d['repo']}/{d['layout']}"
         names = list(self.shapes)
-        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or None, partitions=names)
+        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or "main", partitions=names)
         self.resident = P.resident(cfg)
         want = d.get("manifest_sha256")
         with open(os.path.join(self.layout.path, MANIFEST), "rb") as f:
@@ -508,7 +508,7 @@ class Layout(Disco):
 
     def delivered(self, name, seq, physics):
         """What the run's machine delivers at every voxel with rows for the class ``name`` playing ``seq``: the layout's
-        :meth:`~dmipy_sim.replay.time_segments.TimeSegmentLayout.delivery` with the grid's centre at the physics'
+        :meth:`~dmipy_replay.replay.time_segments.TimeSegmentLayout.delivery` with the grid's centre at the physics'
         offset; None on the ideal scanner."""
         if physics is None or physics.scanner is None:
             return None
@@ -536,7 +536,7 @@ class Layout(Disco):
 
     def ingredients(self, meas, physics=None, prepared=None):
         """What each tier multiplies into the sum, per voxel, for the run's first class (the layout's
-        :meth:`~dmipy_sim.replay.time_segments.TimeSegmentLayout.tier_maps`): ``intra_fraction`` (the walker weight in
+        :meth:`~dmipy_replay.replay.time_segments.TimeSegmentLayout.tier_maps`): ``intra_fraction`` (the walker weight in
         the intra-axonal pool over the voxel's), ``wall_contact_um`` (the walkers' boundary local time l under the
         class's gate, a length; the layout stores it signed as the exponent's term, -l, so the contact tier's weight is
         exp(rho2 c / D) = exp(-rho2 l / D)), ``contact_survival`` (that factor at the run's rho2, None without the
@@ -610,7 +610,7 @@ class Layout(Disco):
 
 
 class Columns(Disco):
-    """Full mode: the columnar replay pack (:class:`dmipy_sim.replay.columnar.ColumnarPack`) at
+    """Full mode: the columnar replay pack (:class:`dmipy_replay.replay.columnar.ColumnarPack`) at
     :func:`space.pipeline.columns_uri`, read once per run: one ScannerSequence per run (one echo time, one RF schedule;
     the stored classes' waveforms, square pulses for a free timing), the tissue and field of the run, the field along
     the pack's z."""
@@ -618,7 +618,7 @@ class Columns(Disco):
     RATE = {True: 45e6, False: 500e6}                # bytes/s read from the Hub, from a local disk
 
     def __init__(self, cfg, *, uri=None):
-        from dmipy_sim.replay.columnar import ColumnarPack
+        from dmipy_replay.replay.columnar import ColumnarPack
         super().__init__(cfg)
         self.uri = uri or P.columns_uri(cfg)
         self.pack = ColumnarPack(self.uri, workers=int(cfg["mode"]["workers"]))
@@ -648,8 +648,8 @@ class Columns(Disco):
         """The one ScannerSequence of the measurements, rows in order: a stored class's rows play its waveform
         (:mod:`space.classes`, the layout's own), a free shell square PGSE lobes at its delta / Delta, all at the rows'
         common TE on the layout's grid."""
-        import dmipy_sim as d
-        from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+        from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
+        from dmipy_replay.sequences import pgse
         from .. import classes as C
         TE = float(np.unique(np.round(meas.TE, 9))[0])
         G = np.zeros((len(meas.bvals), C.N_T, 3), np.float32); tmpl = None
@@ -660,8 +660,8 @@ class Columns(Disco):
             elif name in self.shapes:
                 seq = C.play(self.shapes[name], meas.bvals[rows] * 1e6, meas.dirs[rows])
             else:
-                seq = d.pgse(meas.dirs[rows].tolist(), meas.delta[rows], meas.Delta[rows], bvalues=meas.bvals[rows] * 1e6, TE=TE,
-                             n_t=C.N_T, slew_rate=np.inf)
+                seq = pgse(meas.dirs[rows].tolist(), meas.delta[rows], meas.Delta[rows], bvalues=meas.bvals[rows] * 1e6, TE=TE,
+                           n_t=C.N_T, slew_rate=np.inf)
             if tmpl is not None and (seq.dt != tmpl.dt or seq.rf.to_dicts() != tmpl.rf.to_dicts()):
                 raise ValueError("full mode replays one RF schedule and grid per run")
             tmpl = seq; G[rows] = np.asarray(seq.G, np.float32)
@@ -676,11 +676,11 @@ class Columns(Disco):
         return plan
 
     def replay(self, meas, physics=None, prepared=None, *, progress=None):
-        from dmipy_sim.replay.study import Study, Protocol as SProtocol, Acquisition
+        from dmipy_replay.replay.study import Acquisition, Study, StudyProtocol
         t0 = time.perf_counter()
         tissue, scanner = P.tissue_and_scanner(physics, self.unseeded)
-        study = Study(SProtocol([Acquisition(self.sequence(meas), name="run")]), tissues=[tissue], scanners=[scanner])
-        S, floor, plan = self.pack.image_study(study, tol=P.BAND_TOL, chunk_rows=1_000_000, progress=progress)
+        study = Study(StudyProtocol([Acquisition(self.sequence(meas), name="run")]), tissues=[tissue], scanners=[scanner])
+        S, floor, plan = self.pack.image_study(study, tol=P.BAND_TOL, chunk_rows=1_000_000, backend="jax", progress=progress)
         self.last_plan = plan
         dwi, factor = P.s0_normalised(S[0], meas.b0)      # the pack's bare weights are not read here: the factor is 1
         return dwi, floor[0], factor, time.perf_counter() - t0

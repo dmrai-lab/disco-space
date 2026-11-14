@@ -417,9 +417,30 @@ def compare(a, b):
                 delta_count=b.score["pearson_count"] - a.score["pearson_count"], delta_area=b.score["pearson_area"] - a.score["pearson_area"])
 
 
+def hub_blobs(data):
+    """The directory the Hub library's downloads of the config's layout dataset land in (its ``blobs``, where a file's
+    bytes arrive, partial ones included): ``$HF_HOME/hub`` (else ``~/.cache/huggingface/hub``) / ``datasets--<owner>--<name>``."""
+    from huggingface_hub import constants
+    from huggingface_hub.file_download import repo_folder_name
+    return os.path.join(constants.HF_HUB_CACHE, repo_folder_name(repo_id=data["repo"], repo_type="dataset"), "blobs")
+
+
+def hub_layout_dir(data, partitions):
+    """The layout's local directory, fetched by the Hub library (a large file in parallel pieces) at the config's pinned
+    revision: the manifest, then exactly the files dmipy-replay's ``TimeSegmentLayout.files`` names for ``partitions``."""
+    import json
+    from huggingface_hub import hf_hub_download, snapshot_download
+    from dmipy_replay.replay.time_segments import MANIFEST, TimeSegmentLayout
+    repo, prefix, rev = data["repo"], data["layout"], data["revision"]
+    with open(hf_hub_download(repo, f"{prefix}/{MANIFEST}", repo_type="dataset", revision=rev)) as f:
+        files = TimeSegmentLayout.files(json.load(f), partitions=partitions)
+    snapshot = snapshot_download(repo, repo_type="dataset", revision=rev, allow_patterns=[f"{prefix}/{name}" for name in files])
+    return os.path.join(snapshot, prefix)
+
+
 class Layout(Disco):
-    """Demo mode: dmipy-replay's time-segment layout (``dmipy_replay.replay.time_segments``) at the config's dataset revision,
-    or a local copy. Every stored class is one waveform (:mod:`space.classes`), checked at load to be the layout's
+    """Demo mode: dmipy-replay's time-segment layout (``dmipy_replay.replay.time_segments``) at the config's dataset revision
+    (downloaded by the Hub library, then opened as a local directory), or a local copy. Every stored class is one waveform (:mod:`space.classes`), checked at load to be the layout's
     partition of that name; a shell plays it at its b-values and directions."""
     mode = "demo"
 
@@ -434,19 +455,19 @@ class Layout(Disco):
         from .. import classes as C
         super().__init__(cfg)
         d = cfg["data"]
-        uri = local or f"hf://{d['repo']}/{d['layout']}"
         names = list(self.shapes)
-        self.layout = TimeSegmentLayout.open(uri, revision=d.get("revision") or "main", partitions=names)
+        path = local or hub_layout_dir(d, names)
+        self.layout = TimeSegmentLayout.open(path)
         self.resident = P.resident(cfg)
         want = d.get("manifest_sha256")
         with open(os.path.join(self.layout.path, MANIFEST), "rb") as f:
             got = hashlib.sha256(f.read()).hexdigest()
         if want and got != want:
-            raise ValueError(f"the layout at {uri} has manifest {got[:12]}, the config pins {want[:12]}")
+            raise ValueError(f"the layout at {path} has manifest {got[:12]}, the config pins {want[:12]}")
         self.manifest_sha256 = got
         missing = [s for s in names if s not in self.layout.partitions]
         if missing:
-            raise ValueError(f"the layout at {uri} lacks the timing classes {missing}; it holds {list(self.layout.partitions)}")
+            raise ValueError(f"the layout at {path} lacks the timing classes {missing}; it holds {list(self.layout.partitions)}")
         for name, sh in self.shapes.items():                 # each class's waveform is the stored partition's
             got_name, _ = self.layout.fit(C.template(sh), partition=name)
             if not self.layout.partitions[name].is_constant and C.kind(sh) not in ("ogse", "tensor"):

@@ -110,8 +110,12 @@ the last digit, 0.9270634171621878, steady 18.4 s on an A10G). The app then need
 13 GB layout and compile before it serves, which is the storage item, not the image's.
 
 **Storage.** Both Spaces download the layout from the dataset at the config's pinned revision when their container
-starts (dmipy-replay's Hub client writes it to `$DMIPY_REPLAY_CACHE`, else `~/.cache/dmipy-replay`: the Docker Space's image
-sets `/data/replay` on its own disk, the ZeroGPU parent process uses the default before the page serves), so a wake costs one download per container start, not per visitor; nothing is mounted. The Storage
+starts, with the Hub library's `snapshot_download` (a large file in parallel pieces; dmipy-replay's own client fetches one
+connection a file, which took 13 minutes for the 54.7 GB layout on the ZeroGPU Space), restricted to the files
+dmipy-replay's `TimeSegmentLayout.files` names for the config's classes, and then open the layout from that local
+directory. The files land in the Hub cache, `$HF_HOME/hub` (else `~/.cache/huggingface/hub`): the Docker Space's image
+sets `HF_HOME=/data/hf`, on its own disk, the ZeroGPU parent process uses the default before the page serves; the start's
+progress lines name the directory they measure. A wake costs one download per container start, not per visitor; nothing is mounted. The Storage
 Bucket of the first deployment (`rfick/disco-space-data`) is retired by `tools/deploy.py`, which removes the
 `DISCO_MOMENTS` variable and any volume it finds. Measured 2026-09-29 (A10G, with the bucket): a wake without a
 build served in 16 s and the first DiSCo 364 request after it answered in 86 s wall; the Hub-download figures are

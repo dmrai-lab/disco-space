@@ -1,9 +1,9 @@
 """What a starting container is doing, said once every few seconds: the source loads before the page serves (the
 Hub download, then the layout's host arrays), and a start that says nothing cannot be told from one that hangs.
 
-:func:`start` prints the container's limits once (memory and CPUs from its cgroup, the free disk where the client's
-cache lives) and then, until :func:`stop`, one line per period: the seconds since the start, this process's resident
-memory (anonymous and file-backed), the bytes in the cache and the free disk. Lines are flushed. No numpy import."""
+:func:`start` prints the container's limits once (memory and CPUs from its cgroup, the free disk where the cache directory
+lives) and then, until :func:`stop`, one line per period: the seconds since the start, this process's resident
+memory (anonymous and file-backed), the bytes in the cache directory (named in the line) and the free disk. Lines are flushed. No numpy import."""
 import os
 import shutil
 import sys
@@ -67,7 +67,7 @@ def limits_line(*, memory_max="/sys/fs/cgroup/memory.max", cpus=None, cache=None
 
 
 def progress_line(t0, *, cache=None, status="/proc/self/status", now=time.monotonic):
-    """One progress line: seconds since ``t0``, this process's memory, the cache's bytes and the free disk."""
+    """One progress line: seconds since ``t0``, this process's memory, the bytes under the cache directory ``cache`` (named in the line) and the free disk."""
     try:
         with open(status) as f:
             m = memory_of(f.read())
@@ -75,7 +75,7 @@ def progress_line(t0, *, cache=None, status="/proc/self/status", now=time.monoto
         m = {"rss": None, "anon": None, "file": None}
     line = f"start: {now() - t0:6.0f} s, memory {_gb(m['rss'])} (own {_gb(m['anon'])}, files {_gb(m['file'])})"
     if cache:
-        line += f", cache {tree_bytes(cache) / 1e9:.1f} GB, free disk {_gb(_free_disk(cache))}"
+        line += f", cache {cache} {tree_bytes(cache) / 1e9:.1f} GB, free disk {_gb(_free_disk(cache))}"
     return line
 
 

@@ -42,7 +42,7 @@ def test_a_progress_line_carries_the_seconds_the_memory_and_the_cache(tmp_path):
     (tmp_path / "c").mkdir()
     (tmp_path / "c" / "f").write_bytes(b"0" * 2_000_000)
     line = startlog.progress_line(10.0, cache=str(tmp_path / "c"), status=str(s), now=lambda: 75.0)
-    assert line.startswith("start:     65 s, memory 2.1 GB (own 1.1 GB, files 0.5 GB), cache 0.0 GB, free disk ")
+    assert line.startswith("start:     65 s, memory 2.1 GB (own 1.1 GB, files 0.5 GB), cache " + str(tmp_path / "c") + " 0.0 GB, free disk ")
     absent = startlog.progress_line(10.0, status=str(tmp_path / "absent"), now=lambda: 75.0)
     assert absent == "start:     65 s, memory unknown (own unknown, files unknown)"
 

@@ -82,7 +82,12 @@ def probe():
 
 if __name__ == "__main__":
     import gradio as gr
-    A._load()                                            # the layout from the Hub, once per container, on the CPU side
+    from space import startlog
+    from space.limits import cpu_quota
+    from dmipy_replay.replay.hub import cache_dir
+    startlog.start(cache=cache_dir(), cpus=cpu_quota())  # a start that says what it is doing: the download, then the host arrays
+    st = A._load()                                       # the layout from the Hub, once per container, on the CPU side
+    startlog.stop(f"the source did not load: {st['error']}" if st.get("error") else f"the source loaded in {st['load_seconds']:.0f} s")
     demo = A.build(runner=gpu_runner)
     with demo:
         probe_out = gr.Textbox(visible=False)

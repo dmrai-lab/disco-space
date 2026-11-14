@@ -9,6 +9,7 @@ app_file: app.py
 pinned: false
 license: agpl-3.0
 short_description: DiSCo replay to connectome on the shared GPU pool
+startup_duration_timeout: 1h
 ---
 
 # The DiSCo replay Space (`rfick/disco-replay`)
